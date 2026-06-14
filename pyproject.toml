@@ -1,13 +1,16 @@
 [project]
 name = "openmed-explore"
 version = "0.1.0"
-description = "Working examples for exploring OpenMed clinical NLP — starting with PII / PHI de-identification."
+description = "PII / PHI de-identification for clinical text, built on the OpenMed clinical-NLP library."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     # Clinical NLP framework + the Hugging Face / PyTorch backend used for inference.
     # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
     "openmed[hf]>=1.5.5",
+    # Web service layer: the de-identification API in `openmed_deid/`.
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
 ]
 
 [project.optional-dependencies]
@@ -19,13 +22,15 @@ mlx = [
     "openmed[mlx]>=1.5.5",
 ]
 
-# This repo is a collection of runnable examples, not an importable package,
-# so uv should install the dependencies without trying to build a wheel for it.
+# This project runs as an application (a FastAPI service plus a demo script), not an
+# importable package, so uv installs the dependencies without building a wheel for it.
 [tool.uv]
 package = false
 
 [dependency-groups]
 dev = [
+    # httpx backs fastapi.testclient.TestClient used in tests/test_api.py.
+    "httpx>=0.27",
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "ty>=0.0.49",
@@ -43,6 +48,9 @@ python-version = "3.10"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# This is a uv non-package project, so put the repo root on sys.path for tests to
+# import the local `openmed_deid` package (uvicorn does the same via its CWD).
+pythonpath = ["."]
 # -ra shows reasons for skips/xfails; strict flags turn marker/config typos into errors.
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [

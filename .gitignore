@@ -12,6 +12,10 @@ __pycache__/
 .venv/
 venv/
 
+# Environment / secrets (the API reads OPENMED_DEID_API_KEY / OPENMED_DEID_HOST / OPENMED_DEID_PORT)
+.env
+.env.*
+
 # Note: uv.lock is intentionally committed — this is an application-style
 # project, so the lockfile is tracked for reproducible `uv sync`.
 

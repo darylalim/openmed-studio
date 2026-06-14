@@ -4,10 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-`openmed-explore` is a collection of **runnable examples** for the [OpenMed](https://openmed.life/docs/)
-clinical-NLP library (PyPI package `openmed`). It is *not* the library itself — the
-library source lives at `github.com/maziyarpanahi/openmed`. Examples live under `examples/`;
-each is a standalone script demonstrating one capability.
+`openmed-explore` is a focused **PII / PHI de-identification** project built on the
+[OpenMed](https://openmed.life/docs/) clinical-NLP library (PyPI package `openmed`). It is
+*not* the library itself — the library source lives at `github.com/maziyarpanahi/openmed`.
+The scope is deliberately narrow: detecting and de-identifying PII/PHI in clinical text and
+nothing else (no other OpenMed capabilities). The project is a
+[FastAPI](https://fastapi.tiangolo.com/) de-identification service in `openmed_deid/` (a
+reusable framework-free `PIIEngine` + thin HTTP endpoints); `examples/deidentify_pii.py`
+remains as a library-level demo of the same OpenMed calls.
 
 ## Working with Python
 
@@ -19,8 +23,12 @@ This is a [uv](https://docs.astral.sh/uv/) **non-package** project (`[tool.uv] p
 in `pyproject.toml`) — uv installs the declared dependencies into `.venv` but builds no wheel.
 
 ```bash
-# Run an example. uv auto-creates .venv and installs openmed[hf] from pyproject.toml.
+# Run the de-identification demo. uv auto-creates .venv and installs deps from pyproject.toml.
 uv run python examples/deidentify_pii.py
+
+# Serve the de-identification API (interactive docs at http://127.0.0.1:8080/docs).
+# Set OPENMED_DEID_API_KEY to require an X-API-Key header on /pii/* (unset = open, local-only).
+uv run uvicorn openmed_deid.main:app --port 8080   # or: uv run python -m openmed_deid
 
 # Re-run fully offline once the model is cached (skips HF Hub network checks + token warning).
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run python examples/deidentify_pii.py
@@ -46,8 +54,11 @@ uv run pytest                  # fast tests only; model tests are skipped
 uv run pytest --run-model      # also run the tests that load the OpenMed PII model
 ```
 
-Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`; tests that load the
-model are in `test_pii_model.py`, all marked `@pytest.mark.model` and **skipped by default**.
+Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`, `test_api.py`, and
+`test_engine.py` (the API tests inject a stub engine via FastAPI `dependency_overrides`, and the
+engine tests check `PIIEngine`'s lazy-loading contract — neither loads a model). Model tests are
+in `test_pii_model.py` plus the `@pytest.mark.model` tests in `test_api.py` and `test_engine.py`
+(which drive the real engine via the shared `loader` fixture), all **skipped by default**.
 The `--run-model` opt-in is wired via `pytest_addoption` + `pytest_collection_modifyitems` in
 `conftest.py`, which also provides the session-scoped `loader` fixture (model loads once) and a
 `note` fixture. The `shift_dates` upstream bug (see Known gotchas) is captured as a `strict=True`
@@ -55,9 +66,10 @@ The `--run-model` opt-in is wired via `pytest_addoption` + `pytest_collection_mo
 
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
-keep the example's `DeidMethod` alias in sync with those.
+keep the `DeidMethod` aliases (in `examples/deidentify_pii.py` and `openmed_deid/engine.py`) in
+sync with those; `test_pii_pure.py` and `test_api.py` enforce each.
 
-## How the examples work
+## How it works
 
 - **Backend:** the default dependency is `openmed[hf]` (Hugging Face / PyTorch), which runs
   everywhere (CPU, CUDA, Apple MPS). The `mlx` extra is Apple-Silicon-only and expects an
@@ -68,8 +80,22 @@ keep the example's `DeidMethod` alias in sync with those.
 - **Model reuse:** construct one `ModelLoader()` and pass `loader=` to every `extract_pii` /
   `deidentify` call so the model loads once instead of per-call. This is the pattern in
   `examples/deidentify_pii.py` and the documented best practice.
-- **Python:** `requires-python = ">=3.10"`; examples are verified on 3.11, but uv may pick a
+- **Python:** `requires-python = ">=3.10"`; the demo is verified on 3.11, but uv may pick a
   newer interpreter (e.g. 3.13) for `.venv`.
+- **App structure:** `openmed_deid/` is the FastAPI app — `engine.py` (framework-free
+  `PIIEngine`: one shared `ModelLoader`, lazy model load, wrappers over `extract_pii`/
+  `deidentify`/`reidentify` with per-call `lang`/`model_name`/`date_shift_days`/`keep_year`),
+  `schemas.py` (Pydantic models, `extra="forbid"`, `text` capped at 50k chars), `main.py`
+  (`create_app()` + the module-level `app`, `get_engine` as an overridable dependency, and
+  `_run` translating backend failures to `400`/`503`), and `__main__.py` (`python -m
+  openmed_deid`). Routes: `GET /health` and `POST /pii/{extract,deidentify,deidentify/batch,
+  reidentify}`; the `/pii/*` routes depend on `require_api_key`, which enforces an `X-API-Key`
+  header only when `OPENMED_DEID_API_KEY` is set (otherwise open, with a startup warning). It
+  stays a uv **non-package** project, so pytest and uvicorn import `openmed_deid` via the repo
+  root on `sys.path` (`pythonpath = ["."]` for pytest; uvicorn adds its CWD). The `DeidMethod`
+  `Literal` lives in `engine.py` and is re-exported by `schemas.py`;
+  `tests/test_api.py::test_schema_deidmethod_matches_openmed` keeps it in sync with openmed's
+  canonical method set.
 
 ## OpenMed PII API (verified against installed v1.5.5)
 
@@ -95,6 +121,6 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
   per entry, so a key that is a prefix of another (e.g. `ALIAS_1` vs `ALIAS_10`)
   corrupts the longer one. `tests/test_pii_pure.py` captures this as a `strict` xfail.
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
-  literals; they are harmless. Examples silence them with
+  literals; they are harmless. The demo and `openmed_deid/engine.py` silence them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.
 - The `.venv` here is ~600 MB (Torch + Transformers) and is gitignored.
