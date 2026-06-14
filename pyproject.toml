@@ -1,0 +1,50 @@
+[project]
+name = "openmed-explore"
+version = "0.1.0"
+description = "Working examples for exploring OpenMed clinical NLP — starting with PII / PHI de-identification."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Clinical NLP framework + the Hugging Face / PyTorch backend used for inference.
+    # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
+    "openmed[hf]>=1.5.5",
+]
+
+[project.optional-dependencies]
+# Native Apple Silicon acceleration (M-series Macs). Install with:
+#   uv sync --extra mlx
+# Note: the MLX backend expects an MLX-packaged model (an `...-mlx` repo id);
+# see README "Native Apple Silicon (MLX)".
+mlx = [
+    "openmed[mlx]>=1.5.5",
+]
+
+# This repo is a collection of runnable examples, not an importable package,
+# so uv should install the dependencies without trying to build a wheel for it.
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
+    "ty>=0.0.49",
+]
+
+[tool.ruff.lint]
+# pyflakes (F), the recommended pycodestyle error subset (E4/E7/E9), import
+# sorting (I), and pyupgrade (UP). Line length (E501) is left to `ruff format`.
+select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.ty.environment]
+# Type-check against the minimum supported Python so the examples stay portable
+# (third-party types are still resolved from the project's .venv).
+python-version = "3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -ra shows reasons for skips/xfails; strict flags turn marker/config typos into errors.
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+markers = [
+    "model: requires loading the OpenMed PII model (slow; downloads on first run). Enabled with --run-model.",
+]
