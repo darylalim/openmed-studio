@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-`openmed-explore` is a focused **PII / PHI de-identification** project built on the
+`openmed-deid` is a focused **PII / PHI de-identification** project built on the
 [OpenMed](https://openmed.life/docs/) clinical-NLP library (PyPI package `openmed`). It is
 *not* the library itself — the library source lives at `github.com/maziyarpanahi/openmed`.
 The scope is deliberately narrow: detecting and de-identifying PII/PHI in clinical text and

@@ -1,4 +1,4 @@
-# openmed-explore
+# openmed-deid
 
 **PII / PHI de-identification for clinical text**, built on
 [OpenMed](https://openmed.life/docs/).

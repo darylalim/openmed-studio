@@ -1,5 +1,5 @@
 [project]
-name = "openmed-explore"
+name = "openmed-deid"
 version = "0.1.0"
 description = "PII / PHI de-identification for clinical text, built on the OpenMed clinical-NLP library."
 readme = "README.md"

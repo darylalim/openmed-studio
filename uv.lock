@@ -1003,7 +1003,7 @@ mlx = [
 ]
 
 [[package]]
-name = "openmed-explore"
+name = "openmed-deid"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
