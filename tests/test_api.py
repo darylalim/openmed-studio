@@ -20,9 +20,11 @@ from fastapi.testclient import TestClient
 from openmed_studio.engine import PIIEngine
 from openmed_studio.main import (
     API_KEY_ENV,
+    APP_VERSION,
     BACKEND_ENV,
     _resolve_backend,
     app,
+    create_app,
     get_engine,
 )
 
@@ -96,8 +98,10 @@ def test_health_ok(client) -> None:
     body = resp.json()
     assert body["status"] == "ok"
     assert body["service"] == "openmed-studio"
+    assert body["version"] == APP_VERSION
     assert body["model"] == "stub-model"
     assert body["backend"] == "auto"  # stub engine has backend=None -> "auto"
+    assert body["max_text_chars"] == 50_000  # OPENMED_STUDIO_MAX_TEXT_LENGTH default
     assert body["model_loaded"] is True
     assert body["auth_required"] is False  # no OPENMED_STUDIO_API_KEY set in tests
 
@@ -149,6 +153,78 @@ def test_get_engine_wires_resolved_backend(monkeypatch) -> None:
     assert isinstance(engine, PIIEngine)
     assert engine.backend == "mlx"
     assert engine.is_loaded is False  # constructed but no model loaded
+
+
+# --- Startup model preload (OPENMED_STUDIO_PRELOAD) --------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("on", True),
+        ("0", False),
+        ("", False),
+        ("nope", False),
+    ],
+)
+def test_preload_enabled_parses_truthy(monkeypatch, value, expected) -> None:
+    import openmed_studio.main as main
+
+    monkeypatch.setenv(main.PRELOAD_ENV, value)
+    assert main._preload_enabled() is expected
+
+
+class _RecordingEngine(_StubEngine):
+    """Stub that records the warm-up extract() the startup lifespan makes."""
+
+    def __init__(self) -> None:
+        self.warmed: list[str] = []
+
+    def extract(self, text, **_):
+        self.warmed.append(text)
+        return []
+
+
+def test_preload_warms_model_when_enabled(monkeypatch) -> None:
+    import openmed_studio.main as main
+
+    engine = _RecordingEngine()
+    monkeypatch.setattr(main, "_engine", engine)  # get_engine() returns this stub
+    monkeypatch.setenv(main.PRELOAD_ENV, "1")
+    with TestClient(main.app):  # entering runs the lifespan startup
+        pass
+    assert engine.warmed == ["warm-up"]
+
+
+def test_preload_skipped_by_default(monkeypatch) -> None:
+    import openmed_studio.main as main
+
+    engine = _RecordingEngine()
+    monkeypatch.setattr(main, "_engine", engine)
+    monkeypatch.delenv(main.PRELOAD_ENV, raising=False)
+    with TestClient(main.app):
+        pass
+    assert engine.warmed == []  # no warm-up without the flag
+
+
+def test_preload_failure_degrades_gracefully(monkeypatch, caplog) -> None:
+    import openmed_studio.main as main
+
+    class _BoomEngine(_StubEngine):
+        model_name = "boom-model"
+
+        def extract(self, text, **_):
+            raise RuntimeError("model download failed")
+
+    monkeypatch.setattr(main, "_engine", _BoomEngine())
+    monkeypatch.setenv(main.PRELOAD_ENV, "1")
+    with caplog.at_level(logging.WARNING, logger="openmed_studio"):
+        with TestClient(main.app):  # must not raise despite the failed warm-up
+            pass
+    assert "falling back to lazy load" in caplog.text
 
 
 def test_extract_returns_entities(client) -> None:
@@ -249,6 +325,78 @@ def test_rejects_oversize_text(client) -> None:
     assert client.post("/pii/extract", json={"text": "x" * 50_001}).status_code == 422
 
 
+def test_max_text_chars_env_override(monkeypatch) -> None:
+    # The cap is read from OPENMED_STUDIO_MAX_TEXT_LENGTH; invalid/non-positive/unset
+    # values fall back to the 50k default so a typo can't silently disable the guard.
+    from openmed_studio import schemas
+
+    monkeypatch.setenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", "1234")
+    assert schemas._max_text_chars() == 1234
+    monkeypatch.setenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", "not-a-number")
+    assert schemas._max_text_chars() == 50_000
+    monkeypatch.setenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", "0")
+    assert schemas._max_text_chars() == 50_000
+    monkeypatch.delenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", raising=False)
+    assert schemas._max_text_chars() == 50_000
+
+
+# --- OpenMed-REST compat surface (/compat, OPENMED_STUDIO_COMPAT) ------------
+
+
+@pytest.fixture
+def compat_client(monkeypatch):
+    # The compat surface mounts only when OPENMED_STUDIO_COMPAT is truthy, so build a
+    # fresh app with it enabled (create_app re-reads the env on each call).
+    monkeypatch.setenv("OPENMED_STUDIO_COMPAT", "1")
+    compat_app = create_app()
+    compat_app.dependency_overrides[get_engine] = lambda: _StubEngine()
+    with TestClient(compat_app) as test_client:
+        yield test_client
+    compat_app.dependency_overrides.clear()
+
+
+def test_compat_routes_absent_by_default(client) -> None:
+    # The module app is built without OPENMED_STUDIO_COMPAT, so /compat 404s.
+    assert client.post("/compat/pii/extract", json={"text": "x"}).status_code == 404
+
+
+def test_compat_extract_returns_openmed_entity_shape(compat_client) -> None:
+    # keep_alive is an upstream-only field; it must be accepted (not 422'd), and the
+    # entities come back in openmed's shape (entity_type + metadata).
+    resp = compat_client.post(
+        "/compat/pii/extract", json={"text": "Patient John.", "keep_alive": "10m"}
+    )
+    assert resp.status_code == 200
+    entity = resp.json()["entities"][0]
+    assert entity["label"] == "first_name"
+    assert entity["entity_type"] == "first_name"  # mirrored from label
+    assert "metadata" in entity
+
+
+def test_compat_deidentify_returns_openmed_result_shape(compat_client) -> None:
+    resp = compat_client.post(
+        "/compat/pii/deidentify",
+        json={"text": "Patient John.", "method": "mask", "keep_alive": 600},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deidentified_text"] == "[first_name] A. Doe"
+    assert body["original_text"] == "Patient John."  # upstream echoes the input
+    assert body["num_entities_redacted"] == 1
+    assert isinstance(body["timestamp"], str)
+    assert "pii_entities" in body and "entities" not in body  # upstream key name
+    assert "redacted_text" in body["pii_entities"][0]
+
+
+def test_compat_deidentify_includes_mapping_when_requested(compat_client) -> None:
+    resp = compat_client.post(
+        "/compat/pii/deidentify",
+        json={"text": "Patient John.", "method": "replace", "keep_mapping": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["mapping"] == {"[first_name]": "John"}
+
+
 def test_rejects_invalid_model_name(client) -> None:
     resp = client.post(
         "/pii/extract", json={"text": "x", "model_name": "../etc/passwd"}
@@ -296,14 +444,30 @@ def test_value_error_from_engine_maps_to_400() -> None:
     with _override_engine(_RaisingEngine(ValueError("bad option"))) as override:
         resp = override.post("/pii/deidentify", json={"text": "x", "method": "mask"})
     assert resp.status_code == 400
-    assert "bad option" in resp.json()["detail"]
+    error = resp.json()["error"]
+    assert error["code"] == "bad_request"
+    assert error["message"] == "bad option"
 
 
 def test_backend_failure_maps_to_503() -> None:
     with _override_engine(_RaisingEngine(RuntimeError("model load exploded"))) as ov:
         resp = ov.post("/pii/extract", json={"text": "x"})
     assert resp.status_code == 503
-    assert "exploded" not in resp.json()["detail"]  # internal detail must not leak
+    error = resp.json()["error"]
+    assert error["code"] == "service_unavailable"
+    assert "exploded" not in error["message"]  # internal detail must not leak
+
+
+def test_validation_error_uses_error_envelope(client) -> None:
+    # Schema failures (422) are wrapped in the same {"error": {...}} envelope, with the
+    # field errors carried in `details` — and `input` stripped so PHI isn't echoed back.
+    resp = client.post("/pii/extract", json={"text": "x", "bogus": 1})
+    assert resp.status_code == 422
+    error = resp.json()["error"]
+    assert error["code"] == "validation_error"
+    assert isinstance(error["message"], str)
+    assert isinstance(error["details"], list) and error["details"]  # the field errors
+    assert all("input" not in item for item in error["details"])  # no request echo
 
 
 def test_pii_requires_api_key_when_configured(client, monkeypatch) -> None:
