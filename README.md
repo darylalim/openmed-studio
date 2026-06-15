@@ -21,7 +21,7 @@ Interactive docs are then at `http://127.0.0.1:8080/docs`. Endpoints:
 
 | Method & path | Purpose |
 |---|---|
-| `GET /health` | Liveness; reports the configured model, backend, lazy-load state, and whether auth is on |
+| `GET /health` | Liveness; reports version, configured model, backend, text cap, lazy-load state, and whether auth is on |
 | `POST /pii/extract` | Detect PII entities (label, text, char offsets, confidence) |
 | `POST /pii/deidentify` | Redact via `mask` / `remove` / `replace` / `hash` / `shift_dates`; returns the surrogate→original `mapping` when `keep_mapping=true` |
 | `POST /pii/deidentify/batch` | De-identify up to 100 texts in one call (`{"items": [...]}`) |
@@ -30,7 +30,12 @@ Interactive docs are then at `http://127.0.0.1:8080/docs`. Endpoints:
 Request options (see `/docs` for the full schema): `lang` (9 supported languages),
 `model_name` (override the default model), `confidence_threshold`, `consistent`/`seed`
 (deterministic `replace`), and `date_shift_days`/`keep_year` (for `shift_dates`). `text` is
-capped at 50k characters.
+capped at 50k characters (override with `OPENMED_STUDIO_MAX_TEXT_LENGTH`).
+
+Every non-2xx response uses a uniform envelope — `{"error": {"code", "message", "details"}}` —
+so `validation_error` / `bad_request` / `service_unavailable` all parse the same way; for a
+`validation_error` the `details` list the offending fields, with request content stripped so PHI
+isn't echoed back.
 
 ```bash
 curl -s localhost:8080/pii/deidentify -H 'content-type: application/json' \
@@ -39,7 +44,8 @@ curl -s localhost:8080/pii/deidentify -H 'content-type: application/json' \
 ```
 
 The model loads lazily on the first `/pii/*` request and is then reused across all
-subsequent requests (one shared `ModelLoader`).
+subsequent requests (one shared `ModelLoader`). Set `OPENMED_STUDIO_PRELOAD=1` to warm it at
+startup instead, so the first request doesn't pay the load cost.
 
 The inference backend is auto-detected (MLX on Apple Silicon when the `mlx` extra is
 installed, else Hugging Face/PyTorch); pin it explicitly with `OPENMED_STUDIO_BACKEND=hf|mlx`,
@@ -123,24 +129,29 @@ uv run pytest --run-model    # also run tests that load the OpenMed PII model
 
 Tests live in [`tests/`](tests/). The fast tests need no model: `test_api.py` exercises the API
 with a stubbed engine (including backend resolution and the `/health` report), `test_engine.py`
-checks `PIIEngine`'s lazy-loading contract, backend selection, and the engine-side `shift_dates`,
-and `test_pii_pure.py` covers OpenMed's pure-Python surface (e.g. `reidentify` round-trips). The
-`--run-model` tests — `test_pii_model.py` plus the `@pytest.mark.model` tests in the other two
-files — load the real model to verify detection, masking, deterministic replacement, round-trips,
-and real date shifting.
+checks `PIIEngine`'s lazy-loading contract, backend selection, and that `deidentify` forwards
+every method (including `shift_dates`) to OpenMed, and `test_pii_pure.py` covers OpenMed's
+pure-Python surface (e.g. `reidentify` round-trips). The `--run-model` tests — `test_pii_model.py`
+plus the `@pytest.mark.model` tests in the other two files — load the real model to verify
+detection, masking, deterministic replacement, and round-trips.
 
 ## Notes
 
 - All identifiers in the example note are fabricated.
 - Smart entity merging is on by default (`use_smart_merging=True`) and recombines
   token-fragmented PII like dates and SSNs into whole spans.
-- **`shift_dates` — the API shifts; raw OpenMed 1.5.5 does not.** OpenMed's own
-  shift path matches the literal label `"DATE"` (`openmed/core/pii.py:905`), but the
-  default model emits lowercase `"date"`, so calling `openmed.deidentify` directly
-  *masks* dates instead of shifting them. The service works around this: `PIIEngine`
-  handles `method="shift_dates"` itself, so `POST /pii/deidentify` really shifts dates
-  (format-preserving, one consistent offset, `keep_year` honored). The standalone demo
-  still calls raw OpenMed, detects the no-op, and prints a note.
+- **`shift_dates` is a no-op with the default model.** OpenMed's shift path matches the
+  literal label `"DATE"` (`openmed/core/pii.py:905`), but the default model emits lowercase
+  `"date"`, so `shift_dates` *masks* dates instead of shifting them. The service delegates
+  `shift_dates` to OpenMed like every other method (no workaround), so `POST /pii/deidentify`
+  masks dates on the default model — switch to a model that emits canonical `"DATE"` labels for
+  real shifting. The demo detects the no-op and prints a note.
+- **OpenMed-REST compatibility (opt-in).** Set `OPENMED_STUDIO_COMPAT=1` to mount a `/compat`
+  surface that mirrors [OpenMed's own REST service](https://openmed.life/docs/rest-service/):
+  point a client's base URL at `<host>/compat`, and `POST /pii/{extract,deidentify}` accept the
+  upstream body (including an ignored `keep_alive`) and return openmed's response shape
+  (`pii_entities`, `num_entities_redacted`, `timestamp`, and the echoed `original_text`). It is
+  off by default because echoing `original_text` returns the input (possible PHI).
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).

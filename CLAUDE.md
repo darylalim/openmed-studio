@@ -62,16 +62,16 @@ Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`, `test_a
 `test_engine.py` (the API tests inject a stub engine via FastAPI `dependency_overrides` and cover
 `_resolve_backend` + the `/health` backend report; the engine tests cover `PIIEngine`'s
 lazy-loading contract, backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), and
-the engine-side `shift_dates` — the `shift_date_text`/`_is_date_label` helpers plus the
-`_shift_dates` orchestration, which stubs `extract` via `monkeypatch` so no model loads). Model
-tests are
+that `deidentify` forwards every method — including `shift_dates` with its `date_shift_days`/
+`keep_year` controls — straight to openmed, monkeypatching `openmed.deidentify` so no model
+loads). Model tests are
 in `test_pii_model.py` plus the `@pytest.mark.model` tests in `test_api.py` and `test_engine.py`
-(which drive the real engine via the shared `loader` fixture — including one asserting the
-engine-side `shift_dates` really shifts dates with the default model), all **skipped by default**.
+(which drive the real engine via the shared `loader` fixture), all **skipped by default**.
 The `--run-model` opt-in is wired via `pytest_addoption` + `pytest_collection_modifyitems` in
 `conftest.py`, which also provides the session-scoped `loader` fixture (model loads once) and a
-`note` fixture. The `shift_dates` upstream bug (see Known gotchas) is captured as a `strict=True`
-`xfail` — if it ever xpasses, the suite fails, signalling the bug was fixed.
+`note` fixture. The `shift_dates` upstream no-op (see Known gotchas) is captured as a `strict=True`
+`xfail` — if it ever xpasses, the suite fails, signalling a model swap made the canonical `"DATE"`
+labels shift for real.
 
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
@@ -99,19 +99,31 @@ sync with those; `test_pii_pure.py` and `test_api.py` enforce each.
   newer interpreter (e.g. 3.13) for `.venv`.
 - **App structure:** `openmed_studio/` is the FastAPI app — `engine.py` (framework-free
   `PIIEngine`: one shared `ModelLoader` (built with an optional `backend` →
-  `OpenMedConfig(backend=...)`, else bare so openmed auto-detects), lazy model load, wrappers over `extract_pii`/
-  `deidentify`/`reidentify` with per-call `lang`/`model_name`/`date_shift_days`/`keep_year`;
-  `method="shift_dates"` is handled in-engine by `_shift_dates` — `shift_date_text` +
-  `_is_date_label` — rather than delegated to openmed (whose shift path is a no-op; see Known
-  gotchas), returning a `_ShiftDatesResult` that duck-types openmed's `DeidentificationResult`),
-  `schemas.py` (Pydantic models, `extra="forbid"`, `text` capped at 50k chars), `main.py`
+  `OpenMedConfig(backend=...)`, else bare so openmed auto-detects), lazy model load, thin wrappers over `extract_pii`/
+  `deidentify`/`reidentify` with per-call `lang`/`model_name`/`date_shift_days`/`keep_year`; every
+  method — including `method="shift_dates"` — is delegated straight to openmed (with the default
+  model `shift_dates` masks dates rather than shifting them; see Known gotchas)),
+  `schemas.py` (Pydantic models, `extra="forbid"`, `text` capped via
+  `OPENMED_STUDIO_MAX_TEXT_LENGTH` (default 50k, read at import by `_max_text_chars`), plus the
+  `ErrorResponse`/`ErrorDetail` envelope), `main.py`
   (`create_app()` + the module-level `app`, `get_engine` (overridable dependency) wiring
-  `OPENMED_STUDIO_BACKEND` via `_resolve_backend` into `PIIEngine(backend=...)`, `/health`
-  reporting the configured backend, and `_run` translating backend failures to `400`/`503`),
+  `OPENMED_STUDIO_BACKEND` via `_resolve_backend` into `PIIEngine(backend=...)`, an optional
+  startup model-preload lifespan gated by `OPENMED_STUDIO_PRELOAD` (`_lifespan` warms the model
+  off the event loop via `run_in_threadpool`; a failure degrades to lazy load), `/health`
+  reporting version/model/backend/`max_text_chars` and load+auth state, `_run` translating
+  backend failures to `400`/`503`, and global exception handlers wrapping every non-2xx in the
+  `{"error": {code, message, details}}` envelope via `_error_response`/`_ERROR_RESPONSES` — the
+  `validation_error` handler strips `input` so request PHI isn't echoed back),
   and `__main__.py` (`python -m
   openmed_studio`). Routes: `GET /health` and `POST /pii/{extract,deidentify,deidentify/batch,
   reidentify}`; the `/pii/*` routes depend on `require_api_key`, which enforces an `X-API-Key`
-  header only when `OPENMED_STUDIO_API_KEY` is set (otherwise open, with a startup warning). It
+  header only when `OPENMED_STUDIO_API_KEY` is set (otherwise open, with a startup warning). An
+  opt-in `/compat` router (mounted by `create_app` only when `OPENMED_STUDIO_COMPAT` is set via
+  `_compat_enabled`/`_build_compat_router`) mirrors OpenMed's own REST surface —
+  `POST /compat/pii/{extract,deidentify}` with lenient (`extra="ignore"`) request models that
+  accept+ignore `keep_alive`, and openmed-shaped responses (`pii_entities`,
+  `num_entities_redacted`, `timestamp`, echoed `original_text` — the input-echo is why it's off
+  by default). It
   stays a uv **non-package** project, so pytest and uvicorn import `openmed_studio` via the repo
   root on `sys.path` (`pythonpath = ["."]` for pytest; uvicorn adds its CWD). The `DeidMethod`
   `Literal` lives in `engine.py` and is re-exported by `schemas.py`;
@@ -133,18 +145,20 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
 
 ## Known gotchas
 
-- **OpenMed's `shift_dates` is a no-op; the engine works around it.** `openmed/core/pii.py:905`
-  shifts only entities whose label is the exact string `"DATE"`, but the default model emits
-  lowercase `"date"`, so openmed masks dates instead of shifting them. Model choice does **not**
-  fix this (a tempting but wrong assumption): smart-merging (`openmed/core/pii_entity_merger.py`)
-  relabels regex-detected dates to lowercase `"date"`, overriding whatever the model emits — and
-  `date_of_birth`/`DATEOFBIRTH` aren't in openmed's shiftable set anyway. So the service handles
-  `method="shift_dates"` itself in `PIIEngine._shift_dates` (`engine.py`): it normalizes date
-  labels via `_is_date_label`, shifts each with `shift_date_text` (format-preserving, `keep_year`
-  honored), masks all non-date PII, and applies one consistent offset — so the HTTP `shift_dates`
-  path produces real shifted dates with the default model. The raw openmed no-op stays documented
-  two ways: the `strict` xfail `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates`,
-  and the runtime note `examples/deidentify_pii.py` prints (it still calls openmed directly).
+- **OpenMed's `shift_dates` is a no-op with the default model.** `openmed/core/pii.py:905`
+  shifts only entities whose label is the exact string `"DATE"`, but the default
+  `OpenMed-PII-SuperClinical-Small-44M-v1` model emits lowercase `"date"`, so openmed masks dates
+  instead of shifting them. Smart-merging (`openmed/core/pii_entity_merger.py`) compounds it:
+  it relabels regex-detected dates to lowercase `"date"`, overriding whatever the model emits —
+  and `date_of_birth`/`DATEOFBIRTH` aren't in openmed's shiftable set anyway. The service does
+  **not** work around this — `PIIEngine.deidentify` delegates `shift_dates` to openmed like every
+  other method — so on the default model the `shift_dates` path masks dates. Switching to a model
+  that emits canonical `"DATE"` labels makes native shifting work; the Privacy Filter family
+  (`OpenMed/privacy-filter-*`) is a candidate because it decodes with Viterbi-constrained BIOES and
+  *bypasses* regex smart-merging, so its labels aren't relabeled to lowercase `"date"` (verify
+  before relying on it). The no-op is pinned two ways: the `strict` xfail
+  `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates` (an XPASS means a model swap
+  fixed it — delete the xfail), and the runtime note `examples/deidentify_pii.py` prints.
 - **`reidentify()` mis-restores overlapping mapping keys.** It applies `str.replace`
   per entry, so a key that is a prefix of another (e.g. `ALIAS_1` vs `ALIAS_10`)
   corrupts the longer one. `tests/test_pii_pure.py` captures this as a `strict` xfail.
