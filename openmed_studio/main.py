@@ -140,7 +140,7 @@ def create_app() -> FastAPI:
 
     if not os.environ.get(API_KEY_ENV):
         logger.warning(
-            "%s is not set: the de-identification API is running WITHOUT authentication. "
+            "%s is not set: the openmed-studio API is running WITHOUT authentication. "
             "Set %s (and use TLS) before exposing it on a network or processing real PHI.",
             API_KEY_ENV,
             API_KEY_ENV,
