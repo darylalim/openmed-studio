@@ -4,14 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-`openmed-deid` is a focused **PII / PHI de-identification** project built on the
+`openmed-studio` is a **clinical-NLP application** built on the
 [OpenMed](https://openmed.life/docs/) clinical-NLP library (PyPI package `openmed`). It is
 *not* the library itself — the library source lives at `github.com/maziyarpanahi/openmed`.
-The scope is deliberately narrow: detecting and de-identifying PII/PHI in clinical text and
-nothing else (no other OpenMed capabilities). The project is a
-[FastAPI](https://fastapi.tiangolo.com/) de-identification service in `openmed_deid/` (a
-reusable framework-free `PIIEngine` + thin HTTP endpoints); `examples/deidentify_pii.py`
-remains as a library-level demo of the same OpenMed calls.
+The aim is an app that surfaces OpenMed's full capability set (clinical NER, PII/PHI
+de-identification, anonymization, zero-shot extraction). **Today it implements PII/PHI
+de-identification only**; the other capabilities are the roadmap. The project is a
+[FastAPI](https://fastapi.tiangolo.com/) service in `openmed_studio/` (a reusable
+framework-free `PIIEngine` + thin HTTP endpoints); `examples/deidentify_pii.py` remains as a
+library-level demo of the same OpenMed calls.
 
 ## Working with Python
 
@@ -27,8 +28,8 @@ in `pyproject.toml`) — uv installs the declared dependencies into `.venv` but 
 uv run python examples/deidentify_pii.py
 
 # Serve the de-identification API (interactive docs at http://127.0.0.1:8080/docs).
-# Set OPENMED_DEID_API_KEY to require an X-API-Key header on /pii/* (unset = open, local-only).
-uv run uvicorn openmed_deid.main:app --port 8080   # or: uv run python -m openmed_deid
+# Set OPENMED_STUDIO_API_KEY to require an X-API-Key header on /pii/* (unset = open, local-only).
+uv run uvicorn openmed_studio.main:app --port 8080   # or: uv run python -m openmed_studio
 
 # Re-run fully offline once the model is cached (skips HF Hub network checks + token warning).
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run python examples/deidentify_pii.py
@@ -37,7 +38,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run python examples/deidentify_pii.py
 uv sync --extra mlx
 # Force a backend for the service (default unset = openmed auto-detects: MLX on Apple Silicon
 # when the mlx extra is installed, else HuggingFace). "mlx" fails loudly if MLX is unavailable.
-OPENMED_DEID_BACKEND=mlx uv run uvicorn openmed_deid.main:app --port 8080
+OPENMED_STUDIO_BACKEND=mlx uv run uvicorn openmed_studio.main:app --port 8080
 ```
 
 Lint, format, and type-check with the project-pinned tools (configured under
@@ -74,7 +75,7 @@ The `--run-model` opt-in is wired via `pytest_addoption` + `pytest_collection_mo
 
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
-keep the `DeidMethod` aliases (in `examples/deidentify_pii.py` and `openmed_deid/engine.py`) in
+keep the `DeidMethod` aliases (in `examples/deidentify_pii.py` and `openmed_studio/engine.py`) in
 sync with those; `test_pii_pure.py` and `test_api.py` enforce each.
 
 ## How it works
@@ -83,7 +84,7 @@ sync with those; `test_pii_pure.py` and `test_api.py` enforce each.
   everywhere (CPU, CUDA, Apple MPS). The `mlx` extra adds Apple's native MLX backend
   (Apple-Silicon-only). openmed auto-detects the backend (`openmed/core/backends.py`
   `get_backend`): it prefers MLX on Apple Silicon when `mlx` imports, else HuggingFace.
-  `PIIEngine(backend=...)` / the `OPENMED_DEID_BACKEND` env var pin it explicitly (`"mlx"` raises
+  `PIIEngine(backend=...)` / the `OPENMED_STUDIO_BACKEND` env var pin it explicitly (`"mlx"` raises
   off-Apple; `None`/unset = auto). The default English model is **not** in openmed's
   `_MLX_MODEL_MAP`, so on MLX it converts on-the-fly on first run (cached under
   `~/.cache/openmed/mlx/`); pre-converted `-mlx` repos exist but must be passed as a local dir
@@ -96,7 +97,7 @@ sync with those; `test_pii_pure.py` and `test_api.py` enforce each.
   `examples/deidentify_pii.py` and the documented best practice.
 - **Python:** `requires-python = ">=3.10"`; the demo is verified on 3.11, but uv may pick a
   newer interpreter (e.g. 3.13) for `.venv`.
-- **App structure:** `openmed_deid/` is the FastAPI app — `engine.py` (framework-free
+- **App structure:** `openmed_studio/` is the FastAPI app — `engine.py` (framework-free
   `PIIEngine`: one shared `ModelLoader` (built with an optional `backend` →
   `OpenMedConfig(backend=...)`, else bare so openmed auto-detects), lazy model load, wrappers over `extract_pii`/
   `deidentify`/`reidentify` with per-call `lang`/`model_name`/`date_shift_days`/`keep_year`;
@@ -105,13 +106,13 @@ sync with those; `test_pii_pure.py` and `test_api.py` enforce each.
   gotchas), returning a `_ShiftDatesResult` that duck-types openmed's `DeidentificationResult`),
   `schemas.py` (Pydantic models, `extra="forbid"`, `text` capped at 50k chars), `main.py`
   (`create_app()` + the module-level `app`, `get_engine` (overridable dependency) wiring
-  `OPENMED_DEID_BACKEND` via `_resolve_backend` into `PIIEngine(backend=...)`, `/health`
+  `OPENMED_STUDIO_BACKEND` via `_resolve_backend` into `PIIEngine(backend=...)`, `/health`
   reporting the configured backend, and `_run` translating backend failures to `400`/`503`),
   and `__main__.py` (`python -m
-  openmed_deid`). Routes: `GET /health` and `POST /pii/{extract,deidentify,deidentify/batch,
+  openmed_studio`). Routes: `GET /health` and `POST /pii/{extract,deidentify,deidentify/batch,
   reidentify}`; the `/pii/*` routes depend on `require_api_key`, which enforces an `X-API-Key`
-  header only when `OPENMED_DEID_API_KEY` is set (otherwise open, with a startup warning). It
-  stays a uv **non-package** project, so pytest and uvicorn import `openmed_deid` via the repo
+  header only when `OPENMED_STUDIO_API_KEY` is set (otherwise open, with a startup warning). It
+  stays a uv **non-package** project, so pytest and uvicorn import `openmed_studio` via the repo
   root on `sys.path` (`pythonpath = ["."]` for pytest; uvicorn adds its CWD). The `DeidMethod`
   `Literal` lives in `engine.py` and is re-exported by `schemas.py`;
   `tests/test_api.py::test_schema_deidmethod_matches_openmed` keeps it in sync with openmed's
@@ -148,6 +149,6 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
   per entry, so a key that is a prefix of another (e.g. `ALIAS_1` vs `ALIAS_10`)
   corrupts the longer one. `tests/test_pii_pure.py` captures this as a `strict` xfail.
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
-  literals; they are harmless. The demo and `openmed_deid/engine.py` silence them with
+  literals; they are harmless. The demo and `openmed_studio/engine.py` silence them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.
 - The `.venv` here is ~600 MB (Torch + Transformers) and is gitignored.

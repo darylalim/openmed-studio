@@ -1,4 +1,4 @@
-"""Tests for the framework-free PIIEngine (openmed_deid.engine).
+"""Tests for the framework-free PIIEngine (openmed_studio.engine).
 
 The fast tests verify the lazy-loading contract without touching a model; the
 ``@pytest.mark.model`` tests drive the real OpenMed model and are skipped unless
@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from openmed_deid import DEFAULT_PII_MODEL, PIIEngine
-from openmed_deid.engine import _is_date_label, shift_date_text
+from openmed_studio import DEFAULT_PII_MODEL, PIIEngine
+from openmed_studio.engine import _is_date_label, shift_date_text
 
 
 def test_engine_is_lazy_by_default() -> None:
@@ -194,7 +194,7 @@ def test_shift_dates_drops_overlapping_spans(monkeypatch) -> None:
 def test_shift_dates_uses_random_offset_when_unspecified(monkeypatch) -> None:
     # date_shift_days=None -> one random offset in [-365, 365] applied to *every*
     # date, so intervals between dates within the document are preserved.
-    import openmed_deid.engine as engine_module
+    import openmed_studio.engine as engine_module
 
     calls: dict[str, tuple[int, int]] = {}
 

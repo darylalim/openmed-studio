@@ -1,4 +1,4 @@
-"""openmed-deid: PII / PHI de-identification for clinical text, built on OpenMed."""
+"""openmed-studio: PII / PHI de-identification for clinical text, built on OpenMed."""
 
 from __future__ import annotations
 

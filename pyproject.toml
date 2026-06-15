@@ -1,14 +1,14 @@
 [project]
-name = "openmed-deid"
+name = "openmed-studio"
 version = "0.1.0"
-description = "PII / PHI de-identification for clinical text, built on the OpenMed clinical-NLP library."
+description = "Clinical-NLP app over the OpenMed library: PII/PHI de-identification today, with NER, anonymization, and zero-shot extraction planned."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     # Clinical NLP framework + the Hugging Face / PyTorch backend used for inference.
     # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
     "openmed[hf]>=1.5.5",
-    # Web service layer: the de-identification API in `openmed_deid/`.
+    # Web service layer: the clinical-NLP API in `openmed_studio/`.
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
 ]
@@ -16,7 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 # Native Apple Silicon acceleration (M-series Macs). Install with:
 #   uv sync --extra mlx
-# openmed then auto-detects MLX; pin it for the service with OPENMED_DEID_BACKEND=mlx.
+# openmed then auto-detects MLX; pin it for the service with OPENMED_STUDIO_BACKEND=mlx.
 # The default model converts on the fly on MLX (cached under ~/.cache/openmed/mlx/); a
 # pre-converted `...-mlx` repo is an optional local-dir shortcut. See README "Native
 # Apple Silicon (MLX)".
@@ -51,7 +51,7 @@ python-version = "3.10"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # This is a uv non-package project, so put the repo root on sys.path for tests to
-# import the local `openmed_deid` package (uvicorn does the same via its CWD).
+# import the local `openmed_studio` package (uvicorn does the same via its CWD).
 pythonpath = ["."]
 # -ra shows reasons for skips/xfails; strict flags turn marker/config typos into errors.
 addopts = ["-ra", "--strict-markers", "--strict-config"]

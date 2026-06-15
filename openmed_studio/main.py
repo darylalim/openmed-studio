@@ -2,12 +2,12 @@
 
 Launch with::
 
-    uv run uvicorn openmed_deid.main:app --port 8080
-    # or: uv run python -m openmed_deid
+    uv run uvicorn openmed_studio.main:app --port 8080
+    # or: uv run python -m openmed_studio
 
 Then open http://127.0.0.1:8080/docs for interactive API docs.
 
-Authentication: if ``OPENMED_DEID_API_KEY`` is set, every ``/pii/*`` request must
+Authentication: if ``OPENMED_STUDIO_API_KEY`` is set, every ``/pii/*`` request must
 send a matching ``X-API-Key`` header (otherwise 401). If it is unset the API runs
 UNAUTHENTICATED for local use and logs a startup warning — set the key (and use
 TLS) before exposing the service on a network or processing real PHI.
@@ -27,17 +27,17 @@ from fastapi.security import APIKeyHeader
 from . import schemas
 from .engine import DEFAULT_PII_MODEL, Backend, PIIEngine
 
-logger = logging.getLogger("openmed_deid")
+logger = logging.getLogger("openmed_studio")
 
-API_KEY_ENV = "OPENMED_DEID_API_KEY"
-BACKEND_ENV = "OPENMED_DEID_BACKEND"
+API_KEY_ENV = "OPENMED_STUDIO_API_KEY"
+BACKEND_ENV = "OPENMED_STUDIO_BACKEND"
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 _engine: PIIEngine | None = None
 
 
 def _resolve_backend() -> Backend | None:
-    """Read OPENMED_DEID_BACKEND -> 'hf'/'mlx', or None (auto-detect) when unset.
+    """Read OPENMED_STUDIO_BACKEND -> 'hf'/'mlx', or None (auto-detect) when unset.
 
     An invalid value degrades to auto-detection with a warning rather than
     crashing the service on a typo.
@@ -67,7 +67,7 @@ def get_engine() -> PIIEngine:
 
 
 def require_api_key(provided: str | None = Depends(_api_key_header)) -> None:
-    """Enforce ``X-API-Key`` when ``OPENMED_DEID_API_KEY`` is set; a no-op otherwise."""
+    """Enforce ``X-API-Key`` when ``OPENMED_STUDIO_API_KEY`` is set; a no-op otherwise."""
     expected = os.environ.get(API_KEY_ENV)
     if not expected:
         return  # auth disabled for local use; create_app() warns at startup
@@ -133,7 +133,7 @@ def _deidentify_one(
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="openmed-deid",
+        title="openmed-studio",
         description="PII / PHI de-identification for clinical text, built on OpenMed.",
         version="0.1.0",
     )
@@ -152,7 +152,7 @@ def create_app() -> FastAPI:
     def health(engine: PIIEngine = Depends(get_engine)) -> schemas.HealthResponse:
         return schemas.HealthResponse(
             status="ok",
-            service="openmed-deid",
+            service="openmed-studio",
             model=engine.model_name or DEFAULT_PII_MODEL,
             backend=engine.backend or "auto",
             model_loaded=engine.is_loaded,

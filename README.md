@@ -1,21 +1,20 @@
-# openmed-deid
+# openmed-studio
 
-**PII / PHI de-identification for clinical text**, built on
-[OpenMed](https://openmed.life/docs/).
+**A clinical-NLP application built on [OpenMed](https://openmed.life/docs/).**
 
-This project is deliberately narrow in scope: detect and de-identify protected health
-information in clinical notes — and nothing else. It ships a
-[FastAPI](https://fastapi.tiangolo.com/) service (the primary deliverable) plus a
-library-level demo of the same OpenMed calls.
+The goal is an app over OpenMed's full toolkit — clinical NER, PII/PHI de-identification,
+anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification**
+(the rest is on the roadmap), shipped as a [FastAPI](https://fastapi.tiangolo.com/) service
+plus a library-level demo of the same OpenMed calls.
 
 ## The de-identification API
 
-A small FastAPI service in [`openmed_deid/`](openmed_deid/) wraps OpenMed's PII functions
-behind HTTP. A reusable, framework-free [`PIIEngine`](openmed_deid/engine.py) holds one
+A small FastAPI service in [`openmed_studio/`](openmed_studio/) wraps OpenMed's PII functions
+behind HTTP. A reusable, framework-free [`PIIEngine`](openmed_studio/engine.py) holds one
 shared `ModelLoader`; the endpoints are thin adapters over it.
 
 ```bash
-uv run uvicorn openmed_deid.main:app --port 8080   # or: uv run python -m openmed_deid
+uv run uvicorn openmed_studio.main:app --port 8080   # or: uv run python -m openmed_studio
 ```
 
 Interactive docs are then at `http://127.0.0.1:8080/docs`. Endpoints:
@@ -43,24 +42,24 @@ The model loads lazily on the first `/pii/*` request and is then reused across a
 subsequent requests (one shared `ModelLoader`).
 
 The inference backend is auto-detected (MLX on Apple Silicon when the `mlx` extra is
-installed, else Hugging Face/PyTorch); pin it explicitly with `OPENMED_DEID_BACKEND=hf|mlx`,
+installed, else Hugging Face/PyTorch); pin it explicitly with `OPENMED_STUDIO_BACKEND=hf|mlx`,
 which `/health` echoes back.
 
 ### Authentication & PHI safety
 
 The `/pii/*` endpoints process Protected Health Information. By default (no
-`OPENMED_DEID_API_KEY` set) the service runs **unauthenticated** for local use and logs a
+`OPENMED_STUDIO_API_KEY` set) the service runs **unauthenticated** for local use and logs a
 startup warning. Before exposing it on a network or sending it real PHI:
 
-- **Set `OPENMED_DEID_API_KEY`** — every `/pii/*` request must then send a matching
+- **Set `OPENMED_STUDIO_API_KEY`** — every `/pii/*` request must then send a matching
   `X-API-Key` header (else `401`); `/health` stays open.
 - **Terminate TLS** in front of it (e.g. a reverse proxy) — the API itself speaks plain HTTP.
 - **Treat any returned `mapping` as re-identification material** — it is as sensitive as the
   raw PHI; store it encrypted and access-controlled, never beside the redacted text.
 
 ```bash
-export OPENMED_DEID_API_KEY=$(openssl rand -hex 16)
-curl -s localhost:8080/pii/extract -H "X-API-Key: $OPENMED_DEID_API_KEY" \
+export OPENMED_STUDIO_API_KEY=$(openssl rand -hex 16)
+curl -s localhost:8080/pii/extract -H "X-API-Key: $OPENMED_STUDIO_API_KEY" \
   -H 'content-type: application/json' -d '{"text": "Patient John Doe."}'
 ```
 
@@ -105,7 +104,7 @@ uv sync --extra mlx
 
 With the backend unset, openmed auto-detects MLX on Apple Silicon and falls back to
 Hugging Face/PyTorch when it's unavailable. Pin it for the service with
-`OPENMED_DEID_BACKEND=mlx` — but note an explicit `mlx` pin *raises* on a non-MLX host
+`OPENMED_STUDIO_BACKEND=mlx` — but note an explicit `mlx` pin *raises* on a non-MLX host
 rather than falling back.
 
 The default model runs on MLX directly: it isn't pre-packaged, so openmed converts it on

@@ -17,8 +17,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from openmed_deid.engine import PIIEngine
-from openmed_deid.main import (
+from openmed_studio.engine import PIIEngine
+from openmed_studio.main import (
     API_KEY_ENV,
     BACKEND_ENV,
     _resolve_backend,
@@ -95,11 +95,11 @@ def test_health_ok(client) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert body["service"] == "openmed-deid"
+    assert body["service"] == "openmed-studio"
     assert body["model"] == "stub-model"
     assert body["backend"] == "auto"  # stub engine has backend=None -> "auto"
     assert body["model_loaded"] is True
-    assert body["auth_required"] is False  # no OPENMED_DEID_API_KEY set in tests
+    assert body["auth_required"] is False  # no OPENMED_STUDIO_API_KEY set in tests
 
 
 def test_health_reports_configured_backend() -> None:
@@ -132,7 +132,7 @@ def test_resolve_backend_invalid_falls_back_to_auto(monkeypatch, caplog) -> None
     # A typo must degrade to auto-detect (None) AND warn, naming the bad value, so the
     # silent fallback is observable rather than crashing the service.
     monkeypatch.setenv(BACKEND_ENV, "cuda")
-    with caplog.at_level(logging.WARNING, logger="openmed_deid"):
+    with caplog.at_level(logging.WARNING, logger="openmed_studio"):
         assert _resolve_backend() is None
     assert "cuda" in caplog.text
 
@@ -141,7 +141,7 @@ def test_get_engine_wires_resolved_backend(monkeypatch) -> None:
     # get_engine() must build a real PIIEngine carrying the resolved backend while
     # staying lazy (no model load). Reset the cached module singleton first so a
     # fresh engine is constructed; monkeypatch restores it after the test.
-    import openmed_deid.main as main
+    import openmed_studio.main as main
 
     monkeypatch.setattr(main, "_engine", None)
     monkeypatch.setenv(BACKEND_ENV, "mlx")
@@ -218,7 +218,7 @@ def test_schema_deidmethod_matches_openmed() -> None:
     # Keep the API's method enum in sync with openmed's canonical set (no model load).
     from openmed.core.pii import DeidentificationMethod
 
-    from openmed_deid.schemas import DeidMethod
+    from openmed_studio.schemas import DeidMethod
 
     assert set(typing.get_args(DeidMethod)) == set(
         typing.get_args(DeidentificationMethod)
@@ -229,7 +229,7 @@ def test_to_entity_maps_deidentify_entity_shape() -> None:
     # deidentify() entities expose entity_type/original_text (not label/text) and may
     # carry no confidence; _to_entity must normalize that shape too. (The stub engine
     # above uses the extract_pii shape, so this covers the other branch.)
-    from openmed_deid.main import _to_entity
+    from openmed_studio.main import _to_entity
 
     raw = SimpleNamespace(
         entity_type="ssn", original_text="123-45-6789", start=5, end=16
