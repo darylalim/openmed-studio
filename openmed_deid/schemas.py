@@ -115,6 +115,11 @@ class HealthResponse(_Strict):
     status: str
     service: str
     model: str
+    backend: str = Field(
+        description="Configured inference backend: 'auto' (openmed detects — MLX on Apple "
+        "Silicon when the mlx extra is installed, else HuggingFace), 'hf', or 'mlx'. Reflects "
+        "the OPENMED_DEID_BACKEND setting, not the backend actually resolved at model load."
+    )
     model_loaded: bool = Field(
         description="True once the engine has initialized its ModelLoader (on the served "
         "path, after the first /pii/* request); not a guarantee the model is resident."

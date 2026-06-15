@@ -16,8 +16,10 @@ dependencies = [
 [project.optional-dependencies]
 # Native Apple Silicon acceleration (M-series Macs). Install with:
 #   uv sync --extra mlx
-# Note: the MLX backend expects an MLX-packaged model (an `...-mlx` repo id);
-# see README "Native Apple Silicon (MLX)".
+# openmed then auto-detects MLX; pin it for the service with OPENMED_DEID_BACKEND=mlx.
+# The default model converts on the fly on MLX (cached under ~/.cache/openmed/mlx/); a
+# pre-converted `...-mlx` repo is an optional local-dir shortcut. See README "Native
+# Apple Silicon (MLX)".
 mlx = [
     "openmed[mlx]>=1.5.5",
 ]

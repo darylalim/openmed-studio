@@ -22,7 +22,7 @@ Interactive docs are then at `http://127.0.0.1:8080/docs`. Endpoints:
 
 | Method & path | Purpose |
 |---|---|
-| `GET /health` | Liveness; reports the configured model, lazy-load state, and whether auth is on |
+| `GET /health` | Liveness; reports the configured model, backend, lazy-load state, and whether auth is on |
 | `POST /pii/extract` | Detect PII entities (label, text, char offsets, confidence) |
 | `POST /pii/deidentify` | Redact via `mask` / `remove` / `replace` / `hash` / `shift_dates`; returns the surrogate→original `mapping` when `keep_mapping=true` |
 | `POST /pii/deidentify/batch` | De-identify up to 100 texts in one call (`{"items": [...]}`) |
@@ -41,6 +41,10 @@ curl -s localhost:8080/pii/deidentify -H 'content-type: application/json' \
 
 The model loads lazily on the first `/pii/*` request and is then reused across all
 subsequent requests (one shared `ModelLoader`).
+
+The inference backend is auto-detected (MLX on Apple Silicon when the `mlx` extra is
+installed, else Hugging Face/PyTorch); pin it explicitly with `OPENMED_DEID_BACKEND=hf|mlx`,
+which `/health` echoes back.
 
 ### Authentication & PHI safety
 
@@ -70,7 +74,7 @@ OpenMed's de-identification on a synthetic clinical note. It walks through:
 3. **`method="remove"`** — delete PII spans entirely
 4. **`method="replace"`** — realistic, format-preserving [Faker](https://faker.readthedocs.io/) surrogates, made deterministic with `consistent=True, seed=...`
 5. **`method="hash"`** — stable typed digests for linking the same entity across documents
-6. **`method="shift_dates"`** — move every date by N days while preserving relative time (see limitation below)
+6. **`method="shift_dates"`** — move every date by N days while preserving relative time (raw OpenMed no-op — see note below)
 7. **round-trip** — keep the surrogate→original mapping, then `reidentify()` back to the original
 
 The model is loaded once via a shared `ModelLoader` and reused across all calls
@@ -99,9 +103,15 @@ native [MLX](https://github.com/ml-explore/mlx) backend:
 uv sync --extra mlx
 ```
 
-MLX auto-detects on Apple Silicon and falls back to Hugging Face/PyTorch when
-unavailable. It expects an MLX-packaged model (a repo id ending in `-mlx`, e.g.
-`OpenMed/OpenMed-PII-ClinicalE5-Small-33M-v1-mlx`); pass it via
+With the backend unset, openmed auto-detects MLX on Apple Silicon and falls back to
+Hugging Face/PyTorch when it's unavailable. Pin it for the service with
+`OPENMED_DEID_BACKEND=mlx` — but note an explicit `mlx` pin *raises* on a non-MLX host
+rather than falling back.
+
+The default model runs on MLX directly: it isn't pre-packaged, so openmed converts it on
+the fly on first run and caches the result under `~/.cache/openmed/mlx/`. A pre-converted
+`-mlx` repo (e.g. `OpenMed/OpenMed-PII-ClinicalE5-Small-33M-v1-mlx`) is an optional
+shortcut that skips conversion — pass it as a **local directory** via
 `extract_pii(..., model_name=...)` / `deidentify(..., model_name=...)`. See the
 [MLX backend docs](https://openmed.life/docs/mlx-backend/).
 
@@ -113,21 +123,25 @@ uv run pytest --run-model    # also run tests that load the OpenMed PII model
 ```
 
 Tests live in [`tests/`](tests/). The fast tests need no model: `test_api.py` exercises the API
-with a stubbed engine, `test_engine.py` checks `PIIEngine`'s lazy-loading contract, and
-`test_pii_pure.py` covers OpenMed's pure-Python surface (e.g. `reidentify` round-trips). The
+with a stubbed engine (including backend resolution and the `/health` report), `test_engine.py`
+checks `PIIEngine`'s lazy-loading contract, backend selection, and the engine-side `shift_dates`,
+and `test_pii_pure.py` covers OpenMed's pure-Python surface (e.g. `reidentify` round-trips). The
 `--run-model` tests — `test_pii_model.py` plus the `@pytest.mark.model` tests in the other two
-files — load the real model to verify detection, masking, deterministic replacement, and round-trips.
+files — load the real model to verify detection, masking, deterministic replacement, round-trips,
+and real date shifting.
 
 ## Notes
 
 - All identifiers in the example note are fabricated.
 - Smart entity merging is on by default (`use_smart_merging=True`) and recombines
   token-fragmented PII like dates and SSNs into whole spans.
-- **`shift_dates` limitation (OpenMed 1.5.5):** with the default model, dates are
-  *masked* rather than shifted. OpenMed's shift path matches the literal label
-  `"DATE"` (`openmed/core/pii.py:905`), but this model emits lowercase `"date"`,
-  so dates fall through to masking. The example detects this and prints a note.
-  A model emitting canonical `"DATE"` labels would shift dates as documented.
+- **`shift_dates` — the API shifts; raw OpenMed 1.5.5 does not.** OpenMed's own
+  shift path matches the literal label `"DATE"` (`openmed/core/pii.py:905`), but the
+  default model emits lowercase `"date"`, so calling `openmed.deidentify` directly
+  *masks* dates instead of shifting them. The service works around this: `PIIEngine`
+  handles `method="shift_dates"` itself, so `POST /pii/deidentify` really shifts dates
+  (format-preserving, one consistent offset, `keep_year` honored). The standalone demo
+  still calls raw OpenMed, detects the no-op, and prints a note.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).

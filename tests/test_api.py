@@ -10,6 +10,7 @@ unless ``--run-model`` is passed.
 from __future__ import annotations
 
 import contextlib
+import logging
 import typing
 from types import SimpleNamespace
 
@@ -17,13 +18,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from openmed_deid.engine import PIIEngine
-from openmed_deid.main import API_KEY_ENV, app, get_engine
+from openmed_deid.main import (
+    API_KEY_ENV,
+    BACKEND_ENV,
+    _resolve_backend,
+    app,
+    get_engine,
+)
 
 
 class _StubEngine:
     """A model-free stand-in for PIIEngine with the same call surface."""
 
     model_name = "stub-model"
+    backend: str | None = None
     is_loaded = True
 
     def extract(self, text, **_):
@@ -89,8 +97,58 @@ def test_health_ok(client) -> None:
     assert body["status"] == "ok"
     assert body["service"] == "openmed-deid"
     assert body["model"] == "stub-model"
+    assert body["backend"] == "auto"  # stub engine has backend=None -> "auto"
     assert body["model_loaded"] is True
     assert body["auth_required"] is False  # no OPENMED_DEID_API_KEY set in tests
+
+
+def test_health_reports_configured_backend() -> None:
+    engine = SimpleNamespace(model_name=None, backend="mlx", is_loaded=False)
+    with _override_engine(engine) as override:
+        assert override.get("/health").json()["backend"] == "mlx"
+
+
+def test_resolve_backend_unset_is_none(monkeypatch) -> None:
+    monkeypatch.delenv(BACKEND_ENV, raising=False)
+    assert _resolve_backend() is None
+
+
+def test_resolve_backend_empty_is_none(monkeypatch) -> None:
+    # A set-but-empty value is treated like unset (auto-detect), not an error.
+    monkeypatch.setenv(BACKEND_ENV, "")
+    assert _resolve_backend() is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("mlx", "mlx"), ("hf", "hf"), ("  MLX ", "mlx"), ("HF", "hf")],
+)
+def test_resolve_backend_normalizes_valid_values(monkeypatch, value, expected) -> None:
+    monkeypatch.setenv(BACKEND_ENV, value)
+    assert _resolve_backend() == expected
+
+
+def test_resolve_backend_invalid_falls_back_to_auto(monkeypatch, caplog) -> None:
+    # A typo must degrade to auto-detect (None) AND warn, naming the bad value, so the
+    # silent fallback is observable rather than crashing the service.
+    monkeypatch.setenv(BACKEND_ENV, "cuda")
+    with caplog.at_level(logging.WARNING, logger="openmed_deid"):
+        assert _resolve_backend() is None
+    assert "cuda" in caplog.text
+
+
+def test_get_engine_wires_resolved_backend(monkeypatch) -> None:
+    # get_engine() must build a real PIIEngine carrying the resolved backend while
+    # staying lazy (no model load). Reset the cached module singleton first so a
+    # fresh engine is constructed; monkeypatch restores it after the test.
+    import openmed_deid.main as main
+
+    monkeypatch.setattr(main, "_engine", None)
+    monkeypatch.setenv(BACKEND_ENV, "mlx")
+    engine = get_engine()
+    assert isinstance(engine, PIIEngine)
+    assert engine.backend == "mlx"
+    assert engine.is_loaded is False  # constructed but no model loaded
 
 
 def test_extract_returns_entities(client) -> None:

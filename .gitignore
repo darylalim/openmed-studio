@@ -7,12 +7,13 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.coverage
 
 # Virtual environments
 .venv/
 venv/
 
-# Environment / secrets (the API reads OPENMED_DEID_API_KEY / OPENMED_DEID_HOST / OPENMED_DEID_PORT)
+# Environment / secrets (the API reads OPENMED_DEID_API_KEY / OPENMED_DEID_BACKEND / OPENMED_DEID_HOST / OPENMED_DEID_PORT)
 .env
 .env.*
 

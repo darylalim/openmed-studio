@@ -25,21 +25,44 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import APIKeyHeader
 
 from . import schemas
-from .engine import DEFAULT_PII_MODEL, PIIEngine
+from .engine import DEFAULT_PII_MODEL, Backend, PIIEngine
 
 logger = logging.getLogger("openmed_deid")
 
 API_KEY_ENV = "OPENMED_DEID_API_KEY"
+BACKEND_ENV = "OPENMED_DEID_BACKEND"
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 _engine: PIIEngine | None = None
+
+
+def _resolve_backend() -> Backend | None:
+    """Read OPENMED_DEID_BACKEND -> 'hf'/'mlx', or None (auto-detect) when unset.
+
+    An invalid value degrades to auto-detection with a warning rather than
+    crashing the service on a typo.
+    """
+    raw = os.environ.get(BACKEND_ENV)
+    if not raw:
+        return None
+    value = raw.strip().lower()
+    if value == "hf":
+        return "hf"
+    if value == "mlx":
+        return "mlx"
+    logger.warning(
+        "%s=%r is not a valid backend ('hf' or 'mlx'); using auto-detection instead.",
+        BACKEND_ENV,
+        raw,
+    )
+    return None
 
 
 def get_engine() -> PIIEngine:
     """Return the process-wide engine (overridden in tests via dependency_overrides)."""
     global _engine
     if _engine is None:
-        _engine = PIIEngine()
+        _engine = PIIEngine(backend=_resolve_backend())
     return _engine
 
 
@@ -131,6 +154,7 @@ def create_app() -> FastAPI:
             status="ok",
             service="openmed-deid",
             model=engine.model_name or DEFAULT_PII_MODEL,
+            backend=engine.backend or "auto",
             model_loaded=engine.is_loaded,
             auth_required=bool(os.environ.get(API_KEY_ENV)),
         )
