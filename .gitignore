@@ -13,7 +13,8 @@ __pycache__/
 .venv/
 venv/
 
-# Environment / secrets (the API reads OPENMED_STUDIO_API_KEY / OPENMED_STUDIO_BACKEND / OPENMED_STUDIO_HOST / OPENMED_STUDIO_PORT)
+# Environment / secrets — the API reads several OPENMED_STUDIO_* env vars (see the
+# README "Authentication & PHI safety" section and openmed_studio/ for the full set)
 .env
 .env.*
 
@@ -26,3 +27,6 @@ venv/
 models/
 *.safetensors
 *.npz
+
+# Streamlit local secrets (e.g. the UI's X-API-Key) — never commit
+.streamlit/secrets.toml

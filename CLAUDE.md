@@ -12,7 +12,9 @@ de-identification, anonymization, zero-shot extraction). **Today it implements P
 de-identification only**; the other capabilities are the roadmap. The project is a
 [FastAPI](https://fastapi.tiangolo.com/) service in `openmed_studio/` (a reusable
 framework-free `PIIEngine` + thin HTTP endpoints); `examples/deidentify_pii.py` remains as a
-library-level demo of the same OpenMed calls.
+library-level demo of the same OpenMed calls. `streamlit_app.py` (the `ui` extra) is an
+optional [Streamlit](https://streamlit.io/) front-end — a thin HTTP client over the `/pii/*`
+API (no model in-process), so the service still enforces auth/validation.
 
 ## Working with Python
 
@@ -30,6 +32,10 @@ uv run python examples/deidentify_pii.py
 # Serve the de-identification API (interactive docs at http://127.0.0.1:8080/docs).
 # Set OPENMED_STUDIO_API_KEY to require an X-API-Key header on /pii/* (unset = open, local-only).
 uv run uvicorn openmed_studio.main:app --port 8080   # or: uv run python -m openmed_studio
+
+# Run the optional Streamlit UI (thin HTTP client over /pii/*; needs the service running above).
+uv sync --extra ui
+uv run streamlit run streamlit_app.py                # opens http://localhost:8501
 
 # Re-run fully offline once the model is cached (skips HF Hub network checks + token warning).
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run python examples/deidentify_pii.py
@@ -49,6 +55,7 @@ uv run ruff check .            # lint
 uv run ruff check --fix .      # lint + auto-fix
 uv run ruff format .           # format
 uv run ty check                # type-check (resolves openmed types from .venv)
+uv run --extra ui ty check     # include the UI (streamlit_app.py imports streamlit at top level)
 ```
 
 Run the test suite with pytest (configured under `[tool.pytest.ini_options]`):
@@ -72,6 +79,16 @@ The `--run-model` opt-in is wired via `pytest_addoption` + `pytest_collection_mo
 `note` fixture. The `shift_dates` upstream no-op (see Known gotchas) is captured as a `strict=True`
 `xfail` — if it ever xpasses, the suite fails, signalling a model swap made the canonical `"DATE"`
 labels shift for real.
+
+UI tests cover the Streamlit front-end: `test_ui_helpers.py` unit-tests the pure helpers in
+`ui_helpers.py` (`render_highlighted` escaping/overlap handling, `build_base_opts` payload logic)
+and runs in the default suite (no extra needed — `ui_helpers` imports only the stdlib).
+`test_ui_app.py` drives `streamlit_app.py` via `streamlit.testing.v1.AppTest` (render path) and
+calls `api`/`fetch_health` directly, mocking `requests.Session.request` (no service, no model); it
+opens with `pytest.importorskip("streamlit")` so it **skips unless the `ui` extra is installed**.
+Because `streamlit_app.py` imports `streamlit` at module top, type-checking and exercising the UI
+need the extra: `uv sync --extra ui` then `uv run --extra ui pytest` / `uv run --extra ui ty check`
+(mirroring how the `mlx` extra gates that backend).
 
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
@@ -129,6 +146,15 @@ sync with those; `test_pii_pure.py` and `test_api.py` enforce each.
   `Literal` lives in `engine.py` and is re-exported by `schemas.py`;
   `tests/test_api.py::test_schema_deidmethod_matches_openmed` keeps it in sync with openmed's
   canonical method set.
+- **UI structure:** the optional Streamlit front-end lives at the repo root (not in
+  `openmed_studio/`): `streamlit_app.py` (the app — `get_session`/`fetch_health`/`api` as an HTTP
+  client over `/pii/*`, `_call` wrapping `api` in a spinner, the sidebar + four tabs
+  (`Detect` → `/pii/extract`, `Single note`/`Batch` → `/pii/deidentify[/batch]`, `Re-identify`) in
+  `main()`, guarded by `if __name__ == "__main__"` so importing the module for tests has no side
+  effects) and `ui_helpers.py` (pure, Streamlit-free `render_highlighted`/`render_legend`/
+  `render_plain`/`build_base_opts`, kept separate so they unit-test without a browser). Gated by the
+  `ui` extra (`requests`, `streamlit>=1.58` — the UI uses 1.58 horizontal/`stretch` flex layout).
+  The confidence slider defaults to `0.5` (the de-identify API default is `0.7`).
 
 ## OpenMed PII API (verified against installed v1.5.5)
 

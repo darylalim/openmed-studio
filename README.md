@@ -69,6 +69,34 @@ curl -s localhost:8080/pii/extract -H "X-API-Key: $OPENMED_STUDIO_API_KEY" \
   -H 'content-type: application/json' -d '{"text": "Patient John Doe."}'
 ```
 
+## The de-identification UI
+
+[`streamlit_app.py`](streamlit_app.py) is an optional [Streamlit](https://streamlit.io/)
+front-end for the API. It is a **thin HTTP client** — it holds no model and calls the
+`/pii/*` endpoints over the network, so the service still enforces auth, validation, and the
+text cap. Install the `ui` extra and run it alongside the service:
+
+```bash
+uv sync --extra ui
+uv run uvicorn openmed_studio.main:app --port 8080   # terminal 1: the API
+uv run streamlit run streamlit_app.py                # terminal 2: the UI
+```
+
+It opens at `http://localhost:8501` with four tabs:
+
+- **Detect** — `/pii/extract` only: highlight detected PII (with a color legend) and an entity
+  table, without redacting — for auditing what the model finds before choosing a method.
+- **Single note** — de-identify one note; shows the original with detected PII highlighted
+  side-by-side with the redacted text, plus an entity table and (optionally) the mapping.
+- **Batch** — edit a table of notes (up to 100) and de-identify them in one `/pii/deidentify/batch` call.
+- **Re-identify** — restore originals from a kept mapping (auto-filled from the last single-note run).
+
+The sidebar holds the service URL + API key (sent as `X-API-Key`), a live `/health` status, and
+the shared de-identification options (method, language, confidence, `keep_mapping`, and the
+deterministic-`replace` / `shift_dates` controls). The confidence slider defaults to **0.5** for
+higher PHI recall — note the de-identify API's own default is `0.7`. The model loads on the first
+request, so the first call shows a spinner and is slower than the rest.
+
 ## The de-identification demo
 
 [`examples/deidentify_pii.py`](examples/deidentify_pii.py) is an end-to-end demo of
@@ -125,6 +153,7 @@ shortcut that skips conversion — pass it as a **local directory** via
 ```bash
 uv run pytest                # fast tests only (model-loading tests are skipped)
 uv run pytest --run-model    # also run tests that load the OpenMed PII model
+uv run --extra ui pytest     # also run the Streamlit UI tests (needs the ui extra)
 ```
 
 Tests live in [`tests/`](tests/). The fast tests need no model: `test_api.py` exercises the API
@@ -133,7 +162,11 @@ checks `PIIEngine`'s lazy-loading contract, backend selection, and that `deident
 every method (including `shift_dates`) to OpenMed, and `test_pii_pure.py` covers OpenMed's
 pure-Python surface (e.g. `reidentify` round-trips). The `--run-model` tests — `test_pii_model.py`
 plus the `@pytest.mark.model` tests in the other two files — load the real model to verify
-detection, masking, deterministic replacement, and round-trips.
+detection, masking, deterministic replacement, and round-trips. The UI tests are
+`test_ui_helpers.py` (pure rendering/payload helpers — always run) and `test_ui_app.py` (drives
+`streamlit_app.py` via Streamlit's `AppTest` with the network mocked; **skipped unless the `ui`
+extra is installed**). Type-checking the UI also needs the extra
+(`uv run --extra ui ty check`), since `streamlit_app.py` imports `streamlit` at module top.
 
 ## Notes
 

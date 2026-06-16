@@ -23,6 +23,15 @@ dependencies = [
 mlx = [
     "openmed[mlx]>=1.5.5",
 ]
+# Optional Streamlit front-end (`streamlit_app.py`), a thin HTTP client over the
+# /pii/* API. Install with `uv sync --extra ui`, then run alongside the service:
+#   uv run streamlit run streamlit_app.py
+# Needs streamlit>=1.58 for the horizontal/`width`-`height="stretch"` flex-layout
+# containers the UI uses (and the bundled `developing-with-streamlit` agent skill).
+ui = [
+    "requests>=2.32",
+    "streamlit>=1.58",
+]
 
 # This project runs as an application (a FastAPI service plus a demo script), not an
 # importable package, so uv installs the dependencies without building a wheel for it.
