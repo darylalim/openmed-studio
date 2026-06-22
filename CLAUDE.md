@@ -12,8 +12,7 @@ de-identification, anonymization, zero-shot extraction). **Today it implements P
 de-identification only**; the other capabilities are the roadmap. The project is a
 [Streamlit](https://streamlit.io/) app (`streamlit_app.py`) that runs the model **in-process**
 through a reusable, framework-free `PIIEngine` and a thin in-process service seam
-(`openmed_studio/service.py`); `examples/deidentify_pii.py` remains as a library-level demo of
-the same OpenMed calls. There is no separate web service — the app *is* the delivery surface
+(`openmed_studio/service.py`). There is no separate web service — the app *is* the delivery surface
 (it was a FastAPI service + thin HTTP client; that boundary was removed, see "What was dropped").
 
 ## Working with Python
@@ -29,11 +28,8 @@ in `pyproject.toml`) — uv installs the declared dependencies into `.venv` but 
 # Run the Streamlit app (opens http://localhost:8501). uv auto-creates .venv and installs deps.
 uv run streamlit run streamlit_app.py
 
-# Run the de-identification demo (library-level, independent of the app).
-uv run python examples/deidentify_pii.py
-
 # Re-run fully offline once the model is cached (skips HF Hub network checks + token warning).
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run python examples/deidentify_pii.py
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run streamlit run streamlit_app.py
 
 # Swap the portable Torch/Transformers backend for Apple's native MLX backend (Apple Silicon).
 uv sync --extra mlx
@@ -90,9 +86,9 @@ and `uv run ty check` already sees `streamlit_app.py` — no `--extra ui` needed
 
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
-keep the `DeidMethod` aliases (in `examples/deidentify_pii.py` and `openmed_studio/engine.py`) in
-sync with those; `test_pii_pure.py` and `test_validation.py` enforce each. Tests pass the
-`PIIEngine`-typed seam a structural stub via `typing.cast` (the repo convention, also in
+keep the `DeidMethod` alias (in `openmed_studio/engine.py`, re-exported by `schemas.py`) in
+sync with those; `test_validation.py::test_schema_deidmethod_matches_openmed` enforces it. Tests
+pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo convention, also in
 `test_engine.py`).
 
 ## How it works
@@ -112,8 +108,8 @@ sync with those; `test_pii_pure.py` and `test_validation.py` enforce each. Tests
 - **Model reuse:** the app builds one `PIIEngine` (one shared `ModelLoader`) cached via Streamlit's
   `st.cache_resource`, so the model loads at most once per process and is reused across every tab
   and request. The engine pattern (construct one `ModelLoader`, pass `loader=` to every call) is the
-  documented best practice, also shown in `examples/deidentify_pii.py`.
-- **Python:** `requires-python = ">=3.10"`; the demo is verified on 3.11, but uv may pick a
+  documented best practice.
+- **Python:** `requires-python = ">=3.10"`; verified on 3.11, but uv may pick a
   newer interpreter (e.g. 3.13) for `.venv`.
 - **App structure:** `openmed_studio/` is the framework-free core (no Streamlit, no HTTP):
   - `engine.py` — the `PIIEngine`: one shared `ModelLoader` (built with an optional `backend` →
@@ -194,11 +190,11 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
   *bypasses* regex smart-merging, so its labels aren't relabeled to lowercase `"date"` (verify
   before relying on it). The no-op is pinned by the `strict` xfail
   `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates` (an XPASS means a model swap
-  fixed it — delete the xfail), and the runtime note `examples/deidentify_pii.py` prints.
+  fixed it — delete the xfail).
 - **`reidentify()` mis-restores overlapping mapping keys.** It applies `str.replace`
   per entry, so a key that is a prefix of another (e.g. `ALIAS_1` vs `ALIAS_10`)
   corrupts the longer one. `tests/test_pii_pure.py` captures this as a `strict` xfail.
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
-  literals; they are harmless. The demo and `openmed_studio/engine.py` silence them with
+  literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.
 - The `.venv` here is ~600 MB (Torch + Transformers) and is gitignored.

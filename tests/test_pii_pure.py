@@ -15,8 +15,8 @@ def test_public_pii_api_is_importable() -> None:
 
 
 def test_known_deidentification_methods() -> None:
-    # The canonical method set. test_example_deidmethod_matches_openmed (below)
-    # enforces that the example's `DeidMethod` alias stays in sync with it.
+    # The canonical method set. test_validation.py::test_schema_deidmethod_matches_openmed
+    # enforces that the engine/schema `DeidMethod` alias stays in sync with it.
     from openmed.core.pii import DeidentificationMethod
 
     assert set(typing.get_args(DeidentificationMethod)) == {
@@ -43,26 +43,6 @@ def test_known_deidentification_methods() -> None:
 def test_reidentify_substitutes_mapping(deidentified, mapping, expected) -> None:
     # reidentify() is a plain str.replace over {redacted: original} — no model.
     assert reidentify(deidentified, mapping) == expected
-
-
-def test_example_deidmethod_matches_openmed() -> None:
-    # Enforce the sync promised above: load the example module by path (importing
-    # it does not load the model) and compare its alias to openmed's Literal.
-    import importlib.util
-    from pathlib import Path
-
-    from openmed.core.pii import DeidentificationMethod
-
-    example = Path(__file__).resolve().parent.parent / "examples" / "deidentify_pii.py"
-    spec = importlib.util.spec_from_file_location("deidentify_pii_example", example)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    deid_method = getattr(module, "DeidMethod")
-    assert set(typing.get_args(deid_method)) == set(
-        typing.get_args(DeidentificationMethod)
-    )
 
 
 @pytest.mark.parametrize(

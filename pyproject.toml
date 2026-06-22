@@ -28,8 +28,8 @@ mlx = [
     "openmed[mlx]>=1.5.5",
 ]
 
-# This project runs as an application (a Streamlit app plus a library demo script), not
-# an importable package, so uv installs the dependencies without building a wheel for it.
+# This project runs as an application (a Streamlit app), not an importable package,
+# so uv installs the dependencies without building a wheel for it.
 [tool.uv]
 package = false
 
@@ -46,7 +46,7 @@ dev = [
 select = ["E4", "E7", "E9", "F", "I", "UP"]
 
 [tool.ty.environment]
-# Type-check against the minimum supported Python so the examples stay portable
+# Type-check against the minimum supported Python so the code stays portable
 # (third-party types are still resolved from the project's .venv).
 python-version = "3.10"
 

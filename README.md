@@ -4,8 +4,7 @@
 
 The goal is an app over OpenMed's full toolkit — clinical NER, PII/PHI de-identification,
 anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification**
-(the rest is on the roadmap), shipped as a [Streamlit](https://streamlit.io/) app plus a
-library-level demo of the same OpenMed calls.
+(the rest is on the roadmap), shipped as a [Streamlit](https://streamlit.io/) app.
 
 ## Quickstart
 
@@ -74,26 +73,7 @@ value checks, backend pinning, and not echoing input on a validation error — a
 in-process by the service seam. Treat any returned `mapping` as re-identification material: it is as
 sensitive as the raw PHI.
 
-## The de-identification demo
-
-[`examples/deidentify_pii.py`](examples/deidentify_pii.py) is an end-to-end demo of OpenMed's
-de-identification on a synthetic clinical note, independent of the app. It walks through:
-
-1. **`extract_pii`** — detect PII spans (label, text, confidence, character offsets)
-2. **`method="mask"`** — replace entities with `[LABEL]` placeholders
-3. **`method="remove"`** — delete PII spans entirely
-4. **`method="replace"`** — realistic [Faker](https://faker.readthedocs.io/) surrogates, made deterministic with `consistent=True, seed=...`
-5. **`method="hash"`** — stable typed digests for linking the same entity across documents
-6. **`method="shift_dates"`** — move every date by N days while preserving relative time (raw OpenMed no-op — see note below)
-7. **round-trip** — keep the surrogate→original mapping, then `reidentify()` back to the original
-
-```bash
-uv run python examples/deidentify_pii.py
-```
-
-The model is loaded once via a shared `ModelLoader` and reused across all calls.
-
-### Native Apple Silicon (MLX)
+## Native Apple Silicon (MLX)
 
 On M-series Macs you can swap the portable Torch/Transformers backend for Apple's native
 [MLX](https://github.com/ml-explore/mlx) backend:
@@ -140,15 +120,14 @@ uv run ty check              # type-check
 
 ## Notes
 
-- All identifiers in the example note are fabricated.
+- All identifiers in the app's sample note are fabricated.
 - Smart entity merging is on by default (`use_smart_merging=True`) and recombines
   token-fragmented PII like dates and SSNs into whole spans.
 - **`shift_dates` is a no-op with the default model.** OpenMed's shift path matches the literal
   label `"DATE"` (`openmed/core/pii.py:905`), but the default model emits lowercase `"date"`, so
   `shift_dates` *masks* dates instead of shifting them. The engine delegates `shift_dates` to OpenMed
   like every other method (no workaround), so the De-identify tab masks dates on the default model —
-  switch to a model that emits canonical `"DATE"` labels for real shifting. The demo detects the
-  no-op and prints a note.
+  switch to a model that emits canonical `"DATE"` labels for real shifting.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).
