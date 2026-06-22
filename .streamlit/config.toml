@@ -1,0 +1,10 @@
+# Streamlit configuration for the openmed-studio app.
+# Any local secrets belong in .streamlit/secrets.toml (gitignored), not here.
+
+[browser]
+# This app handles clinical text locally; don't send usage telemetry.
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"

@@ -2,7 +2,7 @@
 
 This is the single chokepoint the Streamlit app funnels every engine call through.
 It is framework-free — no Streamlit, no HTTP — so it unit-tests without a browser
-or a server. It reuses the Pydantic request models in :mod:`openmed_studio.schemas`
+or a server. It reuses the Pydantic request models in :mod:`openmed_studio.validation`
 as the in-process validation layer, so the text/batch/mapping caps and value checks
 the old FastAPI service enforced survive the move off HTTP. It then adapts openmed's
 result objects into the plain dicts the UI helpers consume.
@@ -23,7 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from . import schemas
+from . import validation
 from .engine import Backend, PIIEngine
 
 logger = logging.getLogger("openmed_studio")
@@ -143,7 +143,7 @@ def _deidentify_call(engine: PIIEngine, text: str, req: Any) -> Any:
 
 def extract(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
     """Detect PII entities; returns ``{"entities": [...]}``."""
-    req = _validate(schemas.ExtractRequest, {"text": text, **opts})
+    req = _validate(validation.ExtractRequest, {"text": text, **opts})
     entities = _run(
         lambda: engine.extract(
             req.text,
@@ -158,7 +158,7 @@ def extract(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
 
 def deidentify(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
     """De-identify one note; returns ``{deidentified_text, method, entities, mapping}``."""
-    req = _validate(schemas.DeidentifyRequest, {"text": text, **opts})
+    req = _validate(validation.DeidentifyRequest, {"text": text, **opts})
     result = _run(lambda: _deidentify_call(engine, req.text, req))
     return _deidentify_dict(result, method=req.method, keep_mapping=req.keep_mapping)
 
@@ -167,7 +167,7 @@ def deidentify_batch(
     engine: PIIEngine, items: list[str], **opts: Any
 ) -> dict[str, Any]:
     """De-identify many notes in order; returns ``{"results": [...]}`` (one per item)."""
-    req = _validate(schemas.DeidentifyBatchRequest, {"items": items, **opts})
+    req = _validate(validation.DeidentifyBatchRequest, {"items": items, **opts})
     results = _run(
         lambda: [
             _deidentify_dict(
@@ -186,7 +186,7 @@ def reidentify(
 ) -> dict[str, Any]:
     """Restore originals from a kept mapping; returns ``{"text": ...}``."""
     req = _validate(
-        schemas.ReidentifyRequest,
+        validation.ReidentifyRequest,
         {"deidentified_text": deidentified_text, "mapping": mapping},
     )
     return {"text": engine.reidentify(req.deidentified_text, req.mapping)}

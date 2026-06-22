@@ -16,7 +16,7 @@ from typing import cast
 
 import pytest
 
-from openmed_studio import PIIEngine, schemas, service
+from openmed_studio import PIIEngine, service, validation
 from openmed_studio.service import ServiceError
 
 
@@ -90,7 +90,7 @@ def test_batch_rejects_too_many_items() -> None:
 
 
 def test_reidentify_rejects_oversize_mapping() -> None:
-    big = {str(i): "y" for i in range(schemas.MAX_MAPPING_ENTRIES + 1)}
+    big = {str(i): "y" for i in range(validation.MAX_MAPPING_ENTRIES + 1)}
     with pytest.raises(ServiceError):
         service.reidentify(ENGINE, "x", big)
 
@@ -126,19 +126,19 @@ def test_max_text_chars_env_override(monkeypatch) -> None:
     # The cap is read from OPENMED_STUDIO_MAX_TEXT_LENGTH; invalid/non-positive/unset
     # values fall back to the 50k default so a typo can't silently disable the guard.
     monkeypatch.setenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", "1234")
-    assert schemas._max_text_chars() == 1234
+    assert validation._max_text_chars() == 1234
     monkeypatch.setenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", "not-a-number")
-    assert schemas._max_text_chars() == 50_000
+    assert validation._max_text_chars() == 50_000
     monkeypatch.setenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", "0")
-    assert schemas._max_text_chars() == 50_000
+    assert validation._max_text_chars() == 50_000
     monkeypatch.delenv("OPENMED_STUDIO_MAX_TEXT_LENGTH", raising=False)
-    assert schemas._max_text_chars() == 50_000
+    assert validation._max_text_chars() == 50_000
 
 
 def test_schema_deidmethod_matches_openmed() -> None:
     # Keep the schema's method enum in sync with openmed's canonical set (no model load).
     from openmed.core.pii import DeidentificationMethod
 
-    assert set(typing.get_args(schemas.DeidMethod)) == set(
+    assert set(typing.get_args(validation.DeidMethod)) == set(
         typing.get_args(DeidentificationMethod)
     )

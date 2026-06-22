@@ -3,7 +3,7 @@
 This is the project's only delivery surface. It calls the OpenMed model
 **in-process** through :mod:`openmed_studio.service` — a framework-free seam that
 validates each request (reusing the Pydantic models in
-:mod:`openmed_studio.schemas`, so the text/batch/mapping caps still apply),
+:mod:`openmed_studio.validation`, so the text/batch/mapping caps still apply),
 invokes the shared :class:`~openmed_studio.engine.PIIEngine`, and adapts the
 result to plain dicts. There is no HTTP service to run and no API key: this is a
 local, single-user tool (see the README's "What we dropped vs the old service").
@@ -35,7 +35,7 @@ from ui_helpers import (
     render_plain,
 )
 
-# Mirror the engine/schema surface (engine.DeidMethod / schemas.Lang).
+# Mirror the engine/schema surface (engine.DeidMethod / validation.Lang).
 METHODS = ["mask", "remove", "replace", "hash", "shift_dates"]
 LANGS = ["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt"]
 

@@ -12,7 +12,7 @@ dependencies = [
     # Needs streamlit>=1.58 for the horizontal/`height="stretch"` flex-layout
     # containers the UI uses (and the bundled `developing-with-streamlit` agent skill).
     "streamlit>=1.58",
-    # The in-process validation seam (`openmed_studio/schemas.py` +
+    # The in-process validation seam (`openmed_studio/validation.py` +
     # `service.py`) imports pydantic directly, so pin it (openmed pulls it in too).
     "pydantic>=2",
 ]

@@ -45,7 +45,7 @@ the rest.
 ### How it works
 
 - **Validation is in-process.** The Pydantic models in
-  [`openmed_studio/schemas.py`](openmed_studio/schemas.py) are reused as a validation layer:
+  [`openmed_studio/validation.py`](openmed_studio/validation.py) are reused as a validation layer:
   every request is checked before it reaches the model, so the per-request **text cap** (50k chars,
   override with `OPENMED_STUDIO_MAX_TEXT_LENGTH`), the **batch** (≤100) and **mapping** (≤5,000)
   bounds, the language/method enums, and the confidence range all still apply. Invalid input is
