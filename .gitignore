@@ -28,5 +28,5 @@ models/
 *.safetensors
 *.npz
 
-# Streamlit local secrets — never commit
+# Streamlit local secrets — never commit (.streamlit/config.toml is tracked; secrets are not)
 .streamlit/secrets.toml

@@ -9,8 +9,8 @@ dependencies = [
     # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
     "openmed[hf]>=1.5.5",
     # The Streamlit app (`streamlit_app.py`) — the project's only delivery surface.
-    # Needs streamlit>=1.58 for the horizontal/`height="stretch"` flex-layout
-    # containers the UI uses (and the bundled `developing-with-streamlit` agent skill).
+    # Needs streamlit>=1.58 for the horizontal / `height="stretch"` flex-layout
+    # containers the UI uses.
     "streamlit>=1.58",
     # The in-process validation seam (`openmed_studio/validation.py` +
     # `service.py`) imports pydantic directly, so pin it (openmed pulls it in too).

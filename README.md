@@ -118,6 +118,9 @@ uv run ruff format .         # format
 uv run ty check              # type-check
 ```
 
+CI (`.github/workflows/ci.yml`) runs these checks and the fast test suite on every push and pull
+request, across Python 3.10 and 3.13.
+
 ## Notes
 
 - All identifiers in the app's sample note are fabricated.

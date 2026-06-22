@@ -55,6 +55,10 @@ uv run pytest                  # fast tests only; model tests are skipped
 uv run pytest --run-model      # also run the tests that load the OpenMed PII model
 ```
 
+CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `ty check`, and `pytest`
+on every push and PR across Python 3.10 and 3.13 (model tests stay skipped, so CI needs no model
+download).
+
 Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`, `test_service.py`,
 `test_validation.py`, `test_engine.py`, `test_ui_helpers.py`, and `test_ui_app.py`.
 `test_service.py` covers the in-process seam (`PIIEngine`-stub) — `resolve_backend`/`build_engine`
@@ -81,8 +85,8 @@ drives `streamlit_app.py` via `streamlit.testing.v1.AppTest`, stubbing the engin
 patching `service.build_engine` (the shared module the running app imports) — no model, no network;
 sentinel values a real model would never produce (`[[STUB-DEID-OUTPUT]]`, `STUB/sentinel-model`)
 prove the rendered data came from the stub. It opens with `pytest.importorskip("streamlit")`, but
-streamlit is now a **core** dependency (not an extra), so the default suite runs both UI test files
-and `uv run ty check` already sees `streamlit_app.py` — no `--extra ui` needed anymore.
+streamlit is a **core** dependency, so the default suite runs both UI test files and `ty check`
+sees `streamlit_app.py` — no extra needed.
 
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
@@ -151,7 +155,10 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   `build_base_opts`/`build_batch_table`, kept separate so they unit-test without a browser). The UI
   consumes the plain dicts `service` produces (`result["entities"]`, `result["deidentified_text"]`,
   `result.get("mapping")`). `streamlit>=1.58` (1.58 horizontal/`height="stretch"` flex layout) is a
-  core dependency. The confidence slider defaults to `0.5` (the de-identify default is `0.7`).
+  core dependency. The confidence slider defaults to `0.5` (the de-identify default is `0.7`). App
+  config lives in `.streamlit/config.toml` (light theme; `gatherUsageStats = false` — a
+  clinical-text tool shouldn't phone home); any local secrets go in the gitignored
+  `.streamlit/secrets.toml`.
 - **What was dropped (vs the old FastAPI service):** the HTTP boundary and everything that only
   existed because of it — API-key auth (`OPENMED_STUDIO_API_KEY` / `X-API-Key`), the `{"error":
   {...}}` JSON envelope, the `/compat` OpenMed-REST surface (`OPENMED_STUDIO_COMPAT`), the startup
