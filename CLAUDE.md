@@ -87,7 +87,7 @@ and `uv run ty check` already sees `streamlit_app.py` — no `--extra ui` needed
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
 keep the `DeidMethod` alias (in `openmed_studio/engine.py`, re-exported by `validation.py`) in
-sync with those; `test_validation.py::test_schema_deidmethod_matches_openmed` enforces it. Tests
+sync with those; `test_validation.py::test_validation_deidmethod_matches_openmed` enforces it. Tests
 pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo convention, also in
 `test_engine.py`).
 
@@ -139,7 +139,7 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   It stays a uv **non-package** project, so pytest imports `openmed_studio` via the repo root on
   `sys.path` (`pythonpath = ["."]` for pytest; Streamlit adds the app's directory). The `DeidMethod`
   `Literal` lives in `engine.py`, is re-exported by `validation.py`, and
-  `tests/test_validation.py::test_schema_deidmethod_matches_openmed` keeps it in sync with openmed's
+  `tests/test_validation.py::test_validation_deidmethod_matches_openmed` keeps it in sync with openmed's
   canonical method set.
 - **UI structure:** the Streamlit app lives at the repo root: `streamlit_app.py` (the app —
   `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call` runs a `service.*`

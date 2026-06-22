@@ -35,7 +35,7 @@ from ui_helpers import (
     render_plain,
 )
 
-# Mirror the engine/schema surface (engine.DeidMethod / validation.Lang).
+# Mirror the engine/validation surface (engine.DeidMethod / validation.Lang).
 METHODS = ["mask", "remove", "replace", "hash", "shift_dates"]
 LANGS = ["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt"]
 

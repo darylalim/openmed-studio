@@ -15,8 +15,8 @@ def test_public_pii_api_is_importable() -> None:
 
 
 def test_known_deidentification_methods() -> None:
-    # The canonical method set. test_validation.py::test_schema_deidmethod_matches_openmed
-    # enforces that the engine/schema `DeidMethod` alias stays in sync with it.
+    # The canonical method set. test_validation.py::test_validation_deidmethod_matches_openmed
+    # enforces that the engine/validation `DeidMethod` alias stays in sync with it.
     from openmed.core.pii import DeidentificationMethod
 
     assert set(typing.get_args(DeidentificationMethod)) == {

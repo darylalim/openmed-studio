@@ -74,6 +74,12 @@ def test_rejects_out_of_range_confidence() -> None:
         service.extract(ENGINE, "x", confidence_threshold=1.5)
 
 
+def test_rejects_negative_confidence() -> None:
+    # confidence_threshold is a two-sided range (ge=0.0, le=1.0); cover the lower bound.
+    with pytest.raises(ServiceError):
+        service.extract(ENGINE, "x", confidence_threshold=-0.1)
+
+
 def test_rejects_invalid_model_name() -> None:
     with pytest.raises(ServiceError):
         service.extract(ENGINE, "x", model_name="../etc/passwd")
@@ -135,8 +141,8 @@ def test_max_text_chars_env_override(monkeypatch) -> None:
     assert validation._max_text_chars() == 50_000
 
 
-def test_schema_deidmethod_matches_openmed() -> None:
-    # Keep the schema's method enum in sync with openmed's canonical set (no model load).
+def test_validation_deidmethod_matches_openmed() -> None:
+    # Keep validation's method enum in sync with openmed's canonical set (no model load).
     from openmed.core.pii import DeidentificationMethod
 
     assert set(typing.get_args(validation.DeidMethod)) == set(

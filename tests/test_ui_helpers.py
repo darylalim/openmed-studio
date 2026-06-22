@@ -1,7 +1,7 @@
 """Unit tests for the pure UI helpers in ``ui_helpers`` (no Streamlit, no model).
 
-These need neither the ``ui`` extra nor a running service — ``ui_helpers`` imports
-only the stdlib — so they run in the default fast suite.
+``ui_helpers`` imports only the stdlib (no Streamlit, no network), so they run in
+the default fast suite with no extras and no model.
 """
 
 from __future__ import annotations
