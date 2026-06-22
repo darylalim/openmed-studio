@@ -8,40 +8,33 @@ dependencies = [
     # Clinical NLP framework + the Hugging Face / PyTorch backend used for inference.
     # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
     "openmed[hf]>=1.5.5",
-    # Web service layer: the clinical-NLP API in `openmed_studio/`.
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
+    # The Streamlit app (`streamlit_app.py`) — the project's only delivery surface.
+    # Needs streamlit>=1.58 for the horizontal/`height="stretch"` flex-layout
+    # containers the UI uses (and the bundled `developing-with-streamlit` agent skill).
+    "streamlit>=1.58",
+    # The in-process validation seam (`openmed_studio/schemas.py` +
+    # `service.py`) imports pydantic directly, so pin it (openmed pulls it in too).
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]
 # Native Apple Silicon acceleration (M-series Macs). Install with:
 #   uv sync --extra mlx
-# openmed then auto-detects MLX; pin it for the service with OPENMED_STUDIO_BACKEND=mlx.
+# openmed then auto-detects MLX; pin it with OPENMED_STUDIO_BACKEND=mlx.
 # The default model converts on the fly on MLX (cached under ~/.cache/openmed/mlx/); a
 # pre-converted `...-mlx` repo is an optional local-dir shortcut. See README "Native
 # Apple Silicon (MLX)".
 mlx = [
     "openmed[mlx]>=1.5.5",
 ]
-# Optional Streamlit front-end (`streamlit_app.py`), a thin HTTP client over the
-# /pii/* API. Install with `uv sync --extra ui`, then run alongside the service:
-#   uv run streamlit run streamlit_app.py
-# Needs streamlit>=1.58 for the horizontal/`width`-`height="stretch"` flex-layout
-# containers the UI uses (and the bundled `developing-with-streamlit` agent skill).
-ui = [
-    "requests>=2.32",
-    "streamlit>=1.58",
-]
 
-# This project runs as an application (a FastAPI service plus a demo script), not an
-# importable package, so uv installs the dependencies without building a wheel for it.
+# This project runs as an application (a Streamlit app plus a library demo script), not
+# an importable package, so uv installs the dependencies without building a wheel for it.
 [tool.uv]
 package = false
 
 [dependency-groups]
 dev = [
-    # httpx backs fastapi.testclient.TestClient used in tests/test_api.py.
-    "httpx>=0.27",
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "ty>=0.0.49",
@@ -60,7 +53,7 @@ python-version = "3.10"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # This is a uv non-package project, so put the repo root on sys.path for tests to
-# import the local `openmed_studio` package (uvicorn does the same via its CWD).
+# import the local `openmed_studio` package (Streamlit does the same via the app's CWD).
 pythonpath = ["."]
 # -ra shows reasons for skips/xfails; strict flags turn marker/config typos into errors.
 addopts = ["-ra", "--strict-markers", "--strict-config"]

@@ -1,29 +1,32 @@
-"""Streamlit UI for openmed-studio's PII/PHI de-identification service.
+"""Streamlit app for openmed-studio's PII/PHI de-identification.
 
-This is a thin HTTP client over the FastAPI service in ``openmed_studio`` — it
-holds no model and calls the ``/pii/*`` endpoints over the network, so the
-service enforces auth (``X-API-Key``), request validation, and the text cap
-exactly as it would for any other client.
+This is the project's only delivery surface. It calls the OpenMed model
+**in-process** through :mod:`openmed_studio.service` — a framework-free seam that
+validates each request (reusing the Pydantic models in
+:mod:`openmed_studio.schemas`, so the text/batch/mapping caps still apply),
+invokes the shared :class:`~openmed_studio.engine.PIIEngine`, and adapts the
+result to plain dicts. There is no HTTP service to run and no API key: this is a
+local, single-user tool (see the README's "What we dropped vs the old service").
 
-The pure helpers (HTML rendering, payload building) live in ``ui_helpers`` so
-they stay unit-testable; this module is the Streamlit glue. The UI lives in
-``main()`` (run under ``__main__``) so importing this module for tests has no
-side effects.
+The pure helpers (HTML rendering, payload building) live in ``ui_helpers`` so they
+stay unit-testable; this module is the Streamlit glue. The UI lives in ``main()``
+(run under ``__main__``) so importing this module for tests has no side effects.
 
-Run the API first, then this UI::
+Run it::
 
-    uv run uvicorn openmed_studio.main:app --port 8080
     uv run streamlit run streamlit_app.py
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
-import requests
 import streamlit as st
 
+from openmed_studio import DEFAULT_PII_MODEL, __version__, service
+from openmed_studio.engine import PIIEngine
 from ui_helpers import (
     build_base_opts,
     build_batch_table,
@@ -32,10 +35,7 @@ from ui_helpers import (
     render_plain,
 )
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8080"
-REQUEST_TIMEOUT = 60  # seconds; the first call may load the model
-
-# Mirror the service's schema (engine.DeidMethod / schemas.Lang).
+# Mirror the engine/schema surface (engine.DeidMethod / schemas.Lang).
 METHODS = ["mask", "remove", "replace", "hash", "shift_dates"]
 LANGS = ["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt"]
 
@@ -48,77 +48,34 @@ EXAMPLE_NOTE = (
 
 
 @st.cache_resource(show_spinner=False)
-def get_session(api_key: str) -> requests.Session:
-    """One reused HTTP session per API key; rebuilt when the key changes."""
-    session = requests.Session()
-    if api_key:
-        session.headers["X-API-Key"] = api_key
-    return session
-
-
-@st.cache_data(ttl="10s", show_spinner=False)
-def fetch_health(base_url: str, api_key: str) -> dict[str, Any] | None:
-    """GET /health; None when the service is unreachable or unhealthy."""
-    try:
-        resp = get_session(api_key).get(base_url.rstrip("/") + "/health", timeout=10)
-    except requests.RequestException:
-        return None
-    return resp.json() if resp.ok else None
-
-
-def api(
-    base_url: str, api_key: str, path: str, payload: dict[str, Any]
-) -> dict[str, Any] | None:
-    """POST ``payload`` to ``path``; surface the error envelope and return None on failure."""
-    try:
-        resp = get_session(api_key).post(
-            base_url.rstrip("/") + path, json=payload, timeout=REQUEST_TIMEOUT
-        )
-    except requests.RequestException:
-        st.error(
-            f"Could not reach the service at {base_url}. "
-            "Start it with `uv run uvicorn openmed_studio.main:app --port 8080`.",
-            icon=":material/wifi_off:",
-        )
-        return None
-    if resp.status_code >= 400:
-        try:
-            error = resp.json().get("error", {})
-            message = error.get("message") or resp.reason
-            details = error.get("details")
-        except ValueError:
-            message, details = resp.text, None
-        st.error(f"{resp.status_code} — {message}", icon=":material/error:")
-        if details:
-            st.json(details)
-        if resp.status_code == 401:
-            st.caption(
-                "Set the API key in the sidebar to match OPENMED_STUDIO_API_KEY."
-            )
-        return None
-    return resp.json()
+def get_engine() -> PIIEngine:
+    """The process-wide engine, built once (model loads lazily on first call)."""
+    return service.build_engine()
 
 
 def _call(
-    base_url: str,
-    api_key: str,
-    path: str,
-    payload: dict[str, Any],
-    *,
+    fn: Callable[..., dict[str, Any]],
+    *args: Any,
     action: str,
     model_loaded: bool,
+    **kwargs: Any,
 ) -> dict[str, Any] | None:
-    """``api()`` wrapped in a spinner; warns about the slow first (model-loading) call."""
+    """Run a ``service`` call in a spinner; render ``ServiceError`` and return None.
+
+    The first call loads the model, so warn about the wait until it's resident.
+    """
     hint = (
         "" if model_loaded else " — the first request loads the model (up to a minute)"
     )
     with st.spinner(f"{action}…{hint}"):
-        return api(base_url, api_key, path, payload)
+        try:
+            return fn(get_engine(), *args, **kwargs)
+        except service.ServiceError as exc:
+            st.error(str(exc), icon=":material/error:")
+            return None
 
 
-def _render_single(
-    base_url: str, api_key: str, base_opts: dict[str, Any], model_loaded: bool
-) -> None:
+def _render_single(base_opts: dict[str, Any], model_loaded: bool) -> None:
     with st.form("single"):
         text = st.text_area("Clinical note", value=EXAMPLE_NOTE, height=200)
         submitted = st.form_submit_button(
@@ -131,20 +88,19 @@ def _render_single(
         return
 
     result = _call(
-        base_url,
-        api_key,
-        "/pii/deidentify",
-        {"text": text, **base_opts},
+        service.deidentify,
+        text,
         action="De-identifying",
         model_loaded=model_loaded,
+        **base_opts,
     )
-    if not result:
+    if result is None:
         return
 
     entities = result["entities"]
     # Update both together so the Re-identify tab never prefills this run's text
-    # with a previous run's mapping (the API returns mapping=None when keep_mapping
-    # is off, which must clear any earlier mapping).
+    # with a previous run's mapping (a result with keep_mapping off has mapping=None,
+    # which must clear any earlier mapping).
     st.session_state.last_deidentified = result["deidentified_text"]
     st.session_state.last_mapping = result.get("mapping") or None
 
@@ -188,9 +144,7 @@ def _render_single(
             st.json(result["mapping"])
 
 
-def _render_batch(
-    base_url: str, api_key: str, base_opts: dict[str, Any], model_loaded: bool
-) -> None:
+def _render_batch(base_opts: dict[str, Any], model_loaded: bool) -> None:
     st.caption(
         "Edit the table (one note per row, up to 100), then de-identify all at once."
     )
@@ -221,21 +175,17 @@ def _render_batch(
         return
 
     result = _call(
-        base_url,
-        api_key,
-        "/pii/deidentify/batch",
-        {"items": notes, **base_opts},
+        service.deidentify_batch,
+        notes,
         action="De-identifying",
         model_loaded=model_loaded,
+        **base_opts,
     )
-    if not result:
+    if result is None:
         return
 
+    # The engine is called once per note, in order, so results and notes line up 1:1.
     results = result["results"]
-    if len(results) != len(notes):
-        st.warning(
-            f"Service returned {len(results)} results for {len(notes)} notes; showing the overlap."
-        )
     table = build_batch_table(notes, results)
     st.metric("Notes de-identified", len(table))
     st.dataframe(
@@ -256,7 +206,7 @@ def _render_batch(
     )
 
 
-def _render_reidentify(base_url: str, api_key: str, model_loaded: bool) -> None:
+def _render_reidentify(model_loaded: bool) -> None:
     st.caption(
         "Restore original text from a kept mapping (turn on 'Keep mapping' before de-identifying)."
     )
@@ -278,14 +228,13 @@ def _render_reidentify(base_url: str, api_key: str, model_loaded: bool) -> None:
             mapping = None
         if isinstance(mapping, dict) and mapping:
             result = _call(
-                base_url,
-                api_key,
-                "/pii/reidentify",
-                {"deidentified_text": deid_text, "mapping": mapping},
+                service.reidentify,
+                deid_text,
+                mapping,
                 action="Re-identifying",
                 model_loaded=model_loaded,
             )
-            if result:
+            if result is not None:
                 with st.container(border=True):
                     st.caption("Re-identified")
                     st.html(render_plain(result["text"]))
@@ -304,9 +253,7 @@ def _render_reidentify(base_url: str, api_key: str, model_loaded: bool) -> None:
     )
 
 
-def _render_detect(
-    base_url: str, api_key: str, base_opts: dict[str, Any], model_loaded: bool
-) -> None:
+def _render_detect(base_opts: dict[str, Any], model_loaded: bool) -> None:
     st.caption(
         "Detect PII entities without redacting — audit what the model finds (and misses) "
         "before choosing a redaction method."
@@ -328,19 +275,15 @@ def _render_detect(
         return
 
     result = _call(
-        base_url,
-        api_key,
-        "/pii/extract",
-        {
-            "text": text,
-            "confidence_threshold": base_opts["confidence_threshold"],
-            "use_smart_merging": smart,
-            "lang": base_opts["lang"],
-        },
+        service.extract,
+        text,
         action="Detecting",
         model_loaded=model_loaded,
+        confidence_threshold=base_opts["confidence_threshold"],
+        use_smart_merging=smart,
+        lang=base_opts["lang"],
     )
-    if not result:
+    if result is None:
         return
 
     entities = result["entities"]
@@ -362,37 +305,17 @@ def _render_detect(
     )
 
 
-def _render_sidebar() -> tuple[str, str, dict[str, Any], str, bool]:
-    """Draw the sidebar; return (base_url, api_key, base_opts, method, model_loaded)."""
+def _render_sidebar() -> tuple[dict[str, Any], str, bool]:
+    """Draw the sidebar; return (base_opts, method, model_loaded)."""
     with st.sidebar:
-        st.subheader("Service")
-        base_url = st.text_input("Service URL", value=DEFAULT_BASE_URL)
-        api_key = st.text_input(
-            "API key",
-            type="password",
-            help="Sent as X-API-Key. Leave blank if the service runs without OPENMED_STUDIO_API_KEY.",
+        st.subheader("Engine")
+        engine = get_engine()
+        model_loaded = engine.is_loaded
+        st.caption(f"Model: {engine.model_name or DEFAULT_PII_MODEL}")
+        st.caption(
+            f"Backend: {engine.backend or 'auto'} · v{__version__} · "
+            + ("model loaded" if model_loaded else "loads on first request")
         )
-
-        health = fetch_health(base_url, api_key)
-        with st.container(horizontal=True, vertical_alignment="center"):
-            st.markdown(
-                ":green-badge[Connected]" if health else ":red-badge[Not connected]"
-            )
-            st.button("Refresh", on_click=fetch_health.clear, icon=":material/refresh:")
-        if health:
-            st.caption(f"Model: {health['model']}")
-            st.caption(
-                f"Backend: {health['backend']} · v{health['version']} · "
-                + (
-                    "model loaded"
-                    if health["model_loaded"]
-                    else "loads on first request"
-                )
-            )
-            if health["auth_required"] and not api_key:
-                st.warning("Service requires an API key.", icon=":material/key:")
-        else:
-            st.caption("Start: uv run uvicorn openmed_studio.main:app --port 8080")
 
         st.subheader("De-identification")
         method = st.segmented_control("Method", METHODS, default="mask") or "mask"
@@ -404,7 +327,7 @@ def _render_sidebar() -> tuple[str, str, dict[str, Any], str, bool]:
             0.5,
             0.05,
             help="Minimum model confidence to keep an entity. The UI defaults to 0.5 for "
-            "higher PHI recall; the service's deidentify default is 0.7.",
+            "higher PHI recall; the de-identify default is 0.7.",
         )
         keep_mapping = st.toggle(
             "Keep mapping",
@@ -439,8 +362,7 @@ def _render_sidebar() -> tuple[str, str, dict[str, Any], str, bool]:
         date_shift_days=int(date_shift_days),
         keep_year=keep_year,
     )
-    model_loaded = bool(health and health.get("model_loaded"))
-    return base_url, api_key, base_opts, method, model_loaded
+    return base_opts, method, model_loaded
 
 
 def main() -> None:
@@ -452,13 +374,13 @@ def main() -> None:
     st.session_state.setdefault("last_mapping", None)
     st.session_state.setdefault("last_deidentified", "")
 
-    base_url, api_key, base_opts, method, model_loaded = _render_sidebar()
+    base_opts, method, model_loaded = _render_sidebar()
 
     st.title("PII / PHI de-identification")
     st.caption(
-        "A thin client over the openmed-studio API. Detect or de-identify clinical text, review "
-        "the entities, and round-trip with re-identification. Pick the service and method in the "
-        "sidebar."
+        "Detect or de-identify clinical text with OpenMed, review the entities, and "
+        "round-trip with re-identification. The model runs in-process; pick the method "
+        "in the sidebar."
     )
     if method == "shift_dates":
         st.caption(
@@ -475,13 +397,13 @@ def main() -> None:
         ]
     )
     with tab_detect:
-        _render_detect(base_url, api_key, base_opts, model_loaded)
+        _render_detect(base_opts, model_loaded)
     with tab_single:
-        _render_single(base_url, api_key, base_opts, model_loaded)
+        _render_single(base_opts, model_loaded)
     with tab_batch:
-        _render_batch(base_url, api_key, base_opts, model_loaded)
+        _render_batch(base_opts, model_loaded)
     with tab_reid:
-        _render_reidentify(base_url, api_key, model_loaded)
+        _render_reidentify(model_loaded)
 
 
 if __name__ == "__main__":

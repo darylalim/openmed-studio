@@ -1,10 +1,17 @@
-"""Pydantic request/response models for the de-identification API."""
+"""Pydantic request models for in-process de-identification.
+
+These import only ``pydantic``/``os``/``re`` (no web framework), so the Streamlit
+app reuses them as the in-process validation seam (``openmed_studio.service``):
+``model_validate`` enforces the text/batch/mapping caps and value checks before any
+engine call. They were the FastAPI request bodies; the HTTP-only response/error/
+health/compat models were removed with the service.
+"""
 
 from __future__ import annotations
 
 import os
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
@@ -14,10 +21,10 @@ from .engine import DeidMethod
 def _max_text_chars() -> int:
     """Per-request character cap, from ``OPENMED_STUDIO_MAX_TEXT_LENGTH`` (default 50k).
 
-    Read once at import (set the env var before launching the service, mirroring
+    Read once at import (set the env var before launching the app, mirroring
     OpenMed's own ``OPENMED_SERVICE_MAX_TEXT_LENGTH`` knob). A missing, non-integer,
     or non-positive value falls back to the default so a typo can't disable the
-    guard. The value is baked into ``ClinicalText``, so ``/docs`` reports the limit.
+    guard. The value is baked into ``ClinicalText``.
     """
     raw = os.environ.get("OPENMED_STUDIO_MAX_TEXT_LENGTH")
     if raw:
@@ -35,8 +42,8 @@ MAX_TEXT_CHARS = _max_text_chars()
 MAX_BATCH_ITEMS = 100
 MAX_MAPPING_ENTRIES = 5_000
 
-# Languages OpenMed ships PII models for (matches OpenMed's own service surface).
-# A non-"en" value makes openmed auto-select a larger language-specific model.
+# Languages OpenMed ships PII models for. A non-"en" value makes openmed
+# auto-select a larger language-specific model.
 Lang = Literal["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt"]
 
 # Strip surrounding whitespace, then require 1..MAX_TEXT_CHARS chars — this also
@@ -63,17 +70,9 @@ ModelName = Annotated[str | None, AfterValidator(_check_model_name)]
 
 
 class _Strict(BaseModel):
-    """Reject unknown fields so request typos fail loudly with a 422."""
+    """Reject unknown fields so request typos fail loudly with a validation error."""
 
     model_config = ConfigDict(extra="forbid")
-
-
-class Entity(_Strict):
-    label: str
-    text: str
-    start: int
-    end: int
-    confidence: float | None = None
 
 
 class ExtractRequest(_Strict):
@@ -82,10 +81,6 @@ class ExtractRequest(_Strict):
     use_smart_merging: bool = True
     lang: Lang = "en"
     model_name: ModelName = None
-
-
-class ExtractResponse(_Strict):
-    entities: list[Entity]
 
 
 class _DeidentifyOptions(_Strict):
@@ -108,19 +103,8 @@ class DeidentifyRequest(_DeidentifyOptions):
     text: ClinicalText
 
 
-class DeidentifyResponse(_Strict):
-    deidentified_text: str
-    method: DeidMethod
-    entities: list[Entity]
-    mapping: dict[str, str] | None = None
-
-
 class DeidentifyBatchRequest(_DeidentifyOptions):
     items: list[ClinicalText] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
-
-
-class DeidentifyBatchResponse(_Strict):
-    results: list[DeidentifyResponse]
 
 
 class ReidentifyRequest(_Strict):
@@ -128,104 +112,11 @@ class ReidentifyRequest(_Strict):
     mapping: dict[str, str] = Field(max_length=MAX_MAPPING_ENTRIES)
 
 
-class ReidentifyResponse(_Strict):
-    text: str
-
-
-# --- OpenMed-REST compatibility surface (opt-in, off by default) -------------
-# These deliberately do NOT use `_Strict`: Pydantic's default `extra="ignore"`
-# lets a request carry upstream-only fields (notably `keep_alive`) without a 422,
-# so an OpenMed-REST client can post unchanged.
-
-
-class CompatExtractRequest(BaseModel):
-    """OpenMed-REST-shaped ``/pii/extract`` body; unknown fields are ignored."""
-
-    text: ClinicalText
-    lang: str = "en"
-    use_smart_merging: bool = True
-    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    model_name: ModelName = None
-    keep_alive: str | int | None = Field(
-        default=None,
-        description="Accepted for OpenMed-REST parity; ignored (no model lifecycle).",
-    )
-
-
-class CompatDeidentifyRequest(BaseModel):
-    """OpenMed-REST-shaped ``/pii/deidentify`` body; unknown fields are ignored."""
-
-    text: ClinicalText
-    method: DeidMethod = "mask"
-    lang: str = "en"
-    keep_mapping: bool = False
-    date_shift_days: int | None = None
-    keep_year: bool = True
-    consistent: bool = False
-    seed: int | None = None
-    confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    model_name: ModelName = None
-    keep_alive: str | int | None = Field(
-        default=None,
-        description="Accepted for OpenMed-REST parity; ignored (no model lifecycle).",
-    )
-
-
-class HealthResponse(_Strict):
-    status: str
-    service: str
-    version: str = Field(description="openmed-studio application version.")
-    model: str
-    backend: str = Field(
-        description="Configured inference backend: 'auto' (openmed detects — MLX on Apple "
-        "Silicon when the mlx extra is installed, else HuggingFace), 'hf', or 'mlx'. Reflects "
-        "the OPENMED_STUDIO_BACKEND setting, not the backend actually resolved at model load."
-    )
-    max_text_chars: int = Field(
-        description="Per-request text length cap from OPENMED_STUDIO_MAX_TEXT_LENGTH "
-        "(default 50,000)."
-    )
-    model_loaded: bool = Field(
-        description="True once the engine has initialized its ModelLoader (on the served "
-        "path, after the first /pii/* request); not a guarantee the model is resident."
-    )
-    auth_required: bool
-
-
-class ErrorDetail(_Strict):
-    code: str = Field(
-        description="Machine-readable error class: 'validation_error', 'bad_request', "
-        "'unauthorized', 'not_found', 'service_unavailable', or 'internal_error'."
-    )
-    message: str = Field(description="Human-readable explanation.")
-    details: Any = Field(
-        default=None,
-        description="Optional structured context (e.g. the field errors for a "
-        "'validation_error'); null when absent.",
-    )
-
-
-class ErrorResponse(_Strict):
-    """Uniform error envelope returned for every non-2xx response."""
-
-    error: ErrorDetail
-
-
 __all__ = [
-    "CompatDeidentifyRequest",
-    "CompatExtractRequest",
     "DeidMethod",
     "DeidentifyBatchRequest",
-    "DeidentifyBatchResponse",
     "DeidentifyRequest",
-    "DeidentifyResponse",
-    "Entity",
-    "ErrorDetail",
-    "ErrorResponse",
     "ExtractRequest",
-    "ExtractResponse",
-    "HealthResponse",
     "Lang",
     "ReidentifyRequest",
-    "ReidentifyResponse",
 ]
