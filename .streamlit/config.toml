@@ -5,6 +5,11 @@
 # This app handles clinical text locally; don't send usage telemetry.
 gatherUsageStats = false
 
+[client]
+# The model runs in-process; never render exception messages/tracebacks in the
+# browser (they can contain note text). Full detail still goes to the server console.
+showErrorDetails = "none"
+
 [theme]
 base = "light"
 primaryColor = "#2563eb"

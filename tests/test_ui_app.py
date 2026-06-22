@@ -66,6 +66,9 @@ class _RaisingEngine(_StubEngine):
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
+    def extract(self, _text, **_):
+        raise self._exc
+
     def deidentify(self, _text, **_):
         raise self._exc
 
@@ -179,6 +182,27 @@ def test_engine_error_renders_message(monkeypatch):
 
     assert not at.exception
     assert any("bad option here" in e.value for e in at.error)
+    assert not at.metric
+
+
+def test_detect_error_renders_message(monkeypatch):
+    _use_engine(monkeypatch, _RaisingEngine(ValueError("detect boom")))
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to scan", "Patient John Doe.")
+    _click(at, "Detect")
+
+    assert not at.exception
+    assert any("detect boom" in e.value for e in at.error)
+    assert not at.metric
+
+
+def test_batch_error_renders_message(monkeypatch):
+    _use_engine(monkeypatch, _RaisingEngine(ValueError("batch boom")))
+    at = AppTest.from_file(APP).run(timeout=30)
+    _click(at, "De-identify all")
+
+    assert not at.exception
+    assert any("batch boom" in e.value for e in at.error)
     assert not at.metric
 
 

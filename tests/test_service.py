@@ -61,6 +61,9 @@ class _RaisingEngine(_StubEngine):
     def deidentify(self, _text, **_):
         raise self._exc
 
+    def reidentify(self, deidentified_text, mapping):
+        raise self._exc
+
 
 def _stub() -> PIIEngine:
     # The stub is structural, not a real PIIEngine; cast to satisfy the typed seam.
@@ -183,6 +186,35 @@ def test_backend_failure_does_not_leak_internal_message() -> None:
     message = str(excinfo.value)
     assert "exploded" not in message  # internal detail must not leak to the user
     assert "unavailable" in message.lower()
+
+
+def test_batch_value_error_maps_to_service_error() -> None:
+    # deidentify_batch wraps a per-item loop in one _run; a per-item raise is normalized.
+    with pytest.raises(ServiceError, match="bad option"):
+        service.deidentify_batch(_raising(ValueError("bad option")), ["x", "y"])
+
+
+def test_batch_backend_failure_does_not_leak() -> None:
+    with pytest.raises(ServiceError) as excinfo:
+        service.deidentify_batch(_raising(RuntimeError("kaboom")), ["x", "y"])
+    assert "kaboom" not in str(excinfo.value)
+
+
+def test_reidentify_error_maps_to_service_error() -> None:
+    # reidentify is wrapped in _run like the other entrypoints, so it can't leak raw.
+    with pytest.raises(ServiceError) as excinfo:
+        service.reidentify(_raising(RuntimeError("boom")), "x", {"A": "B"})
+    assert "boom" not in str(excinfo.value)
+
+
+def test_unexpected_engine_error_maps_to_service_error() -> None:
+    # An exception outside the ValueError/RuntimeError/OSError taxonomy must still be
+    # caught and normalized, so a raw message (possible PHI) never reaches the UI.
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract(_raising(KeyError("leak-me")), "x")
+    message = str(excinfo.value)
+    assert "leak-me" not in message
+    assert "unexpectedly" in message.lower()
 
 
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------

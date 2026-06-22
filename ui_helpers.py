@@ -137,9 +137,8 @@ def build_batch_table(
 ) -> list[dict[str, Any]]:
     """Pair each note with its de-identification result for the batch table.
 
-    The service returns one result per item, in order, so notes and results are
-    zipped positionally; a length mismatch yields only the overlapping rows (the
-    caller warns on the mismatch).
+    The in-process service returns exactly one result per item, in order, so notes
+    and results zip 1:1 (``zip`` stops at the shorter if they ever diverge).
     """
     return [
         {

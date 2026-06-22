@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, get_args
 
 import streamlit as st
 
 from openmed_studio import DEFAULT_PII_MODEL, __version__, service
-from openmed_studio.engine import PIIEngine
+from openmed_studio.engine import DeidMethod, PIIEngine
+from openmed_studio.validation import Lang
 from ui_helpers import (
     build_base_opts,
     build_batch_table,
@@ -35,9 +36,10 @@ from ui_helpers import (
     render_plain,
 )
 
-# Mirror the engine/validation surface (engine.DeidMethod / validation.Lang).
-METHODS = ["mask", "remove", "replace", "hash", "shift_dates"]
-LANGS = ["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt"]
+# Derived from the canonical Literals so the sidebar can't drift from the engine /
+# validation surface (a new method or language reaches the widgets automatically).
+METHODS = list(get_args(DeidMethod))
+LANGS = list(get_args(Lang))
 
 EXAMPLE_NOTE = (
     "Patient: John A. Doe (MRN 4827193). DOB 03/12/1972.\n"
@@ -53,29 +55,41 @@ def get_engine() -> PIIEngine:
     return service.build_engine()
 
 
+def _entity_columns() -> dict[str, Any]:
+    """Shared ``st.dataframe`` column config for the entity tables (Detect + Single)."""
+    return {
+        "confidence": st.column_config.NumberColumn(format="%.2f"),
+        "start": st.column_config.NumberColumn(width="small"),
+        "end": st.column_config.NumberColumn(width="small"),
+    }
+
+
 def _call(
     fn: Callable[..., dict[str, Any]],
     *args: Any,
     action: str,
-    model_loaded: bool,
     **kwargs: Any,
 ) -> dict[str, Any] | None:
     """Run a ``service`` call in a spinner; render ``ServiceError`` and return None.
 
-    The first call loads the model, so warn about the wait until it's resident.
+    The first call loads the model, so warn about the wait until it's resident
+    (read from the shared engine this call already holds).
     """
+    engine = get_engine()
     hint = (
-        "" if model_loaded else " — the first request loads the model (up to a minute)"
+        ""
+        if engine.is_loaded
+        else " — the first request loads the model (up to a minute)"
     )
     with st.spinner(f"{action}…{hint}"):
         try:
-            return fn(get_engine(), *args, **kwargs)
+            return fn(engine, *args, **kwargs)
         except service.ServiceError as exc:
             st.error(str(exc), icon=":material/error:")
             return None
 
 
-def _render_single(base_opts: dict[str, Any], model_loaded: bool) -> None:
+def _render_single(base_opts: dict[str, Any]) -> None:
     with st.form("single"):
         text = st.text_area("Clinical note", value=EXAMPLE_NOTE, height=200)
         submitted = st.form_submit_button(
@@ -87,13 +101,7 @@ def _render_single(base_opts: dict[str, Any], model_loaded: bool) -> None:
     if not submitted:
         return
 
-    result = _call(
-        service.deidentify,
-        text,
-        action="De-identifying",
-        model_loaded=model_loaded,
-        **base_opts,
-    )
+    result = _call(service.deidentify, text, action="De-identifying", **base_opts)
     if result is None:
         return
 
@@ -127,15 +135,7 @@ def _render_single(base_opts: dict[str, Any], model_loaded: bool) -> None:
         )
 
     with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
-        st.dataframe(
-            entities,
-            hide_index=True,
-            column_config={
-                "confidence": st.column_config.NumberColumn(format="%.2f"),
-                "start": st.column_config.NumberColumn(width="small"),
-                "end": st.column_config.NumberColumn(width="small"),
-            },
-        )
+        st.dataframe(entities, hide_index=True, column_config=_entity_columns())
     if result.get("mapping"):
         with st.expander("Mapping — re-identification key", icon=":material/key:"):
             st.caption(
@@ -144,7 +144,7 @@ def _render_single(base_opts: dict[str, Any], model_loaded: bool) -> None:
             st.json(result["mapping"])
 
 
-def _render_batch(base_opts: dict[str, Any], model_loaded: bool) -> None:
+def _render_batch(base_opts: dict[str, Any]) -> None:
     st.caption(
         "Edit the table (one note per row, up to 100), then de-identify all at once."
     )
@@ -175,11 +175,7 @@ def _render_batch(base_opts: dict[str, Any], model_loaded: bool) -> None:
         return
 
     result = _call(
-        service.deidentify_batch,
-        notes,
-        action="De-identifying",
-        model_loaded=model_loaded,
-        **base_opts,
+        service.deidentify_batch, notes, action="De-identifying", **base_opts
     )
     if result is None:
         return
@@ -206,7 +202,7 @@ def _render_batch(base_opts: dict[str, Any], model_loaded: bool) -> None:
     )
 
 
-def _render_reidentify(model_loaded: bool) -> None:
+def _render_reidentify() -> None:
     st.caption(
         "Restore original text from a kept mapping (turn on 'Keep mapping' before de-identifying)."
     )
@@ -228,11 +224,7 @@ def _render_reidentify(model_loaded: bool) -> None:
             mapping = None
         if isinstance(mapping, dict) and mapping:
             result = _call(
-                service.reidentify,
-                deid_text,
-                mapping,
-                action="Re-identifying",
-                model_loaded=model_loaded,
+                service.reidentify, deid_text, mapping, action="Re-identifying"
             )
             if result is not None:
                 with st.container(border=True):
@@ -253,7 +245,7 @@ def _render_reidentify(model_loaded: bool) -> None:
     )
 
 
-def _render_detect(base_opts: dict[str, Any], model_loaded: bool) -> None:
+def _render_detect(base_opts: dict[str, Any]) -> None:
     st.caption(
         "Detect PII entities without redacting — audit what the model finds (and misses) "
         "before choosing a redaction method."
@@ -278,7 +270,6 @@ def _render_detect(base_opts: dict[str, Any], model_loaded: bool) -> None:
         service.extract,
         text,
         action="Detecting",
-        model_loaded=model_loaded,
         confidence_threshold=base_opts["confidence_threshold"],
         use_smart_merging=smart,
         lang=base_opts["lang"],
@@ -294,27 +285,18 @@ def _render_detect(base_opts: dict[str, Any], model_loaded: bool) -> None:
         legend = render_legend(entities)
         if legend:
             st.html(legend)
-    st.dataframe(
-        entities,
-        hide_index=True,
-        column_config={
-            "confidence": st.column_config.NumberColumn(format="%.2f"),
-            "start": st.column_config.NumberColumn(width="small"),
-            "end": st.column_config.NumberColumn(width="small"),
-        },
-    )
+    st.dataframe(entities, hide_index=True, column_config=_entity_columns())
 
 
-def _render_sidebar() -> tuple[dict[str, Any], str, bool]:
-    """Draw the sidebar; return (base_opts, method, model_loaded)."""
+def _render_sidebar() -> tuple[dict[str, Any], str]:
+    """Draw the sidebar; return (base_opts, method)."""
     with st.sidebar:
         st.subheader("Engine")
         engine = get_engine()
-        model_loaded = engine.is_loaded
         st.caption(f"Model: {engine.model_name or DEFAULT_PII_MODEL}")
         st.caption(
             f"Backend: {engine.backend or 'auto'} · v{__version__} · "
-            + ("model loaded" if model_loaded else "loads on first request")
+            + ("model loaded" if engine.is_loaded else "loads on first request")
         )
 
         st.subheader("De-identification")
@@ -362,7 +344,7 @@ def _render_sidebar() -> tuple[dict[str, Any], str, bool]:
         date_shift_days=int(date_shift_days),
         keep_year=keep_year,
     )
-    return base_opts, method, model_loaded
+    return base_opts, method
 
 
 def main() -> None:
@@ -374,7 +356,7 @@ def main() -> None:
     st.session_state.setdefault("last_mapping", None)
     st.session_state.setdefault("last_deidentified", "")
 
-    base_opts, method, model_loaded = _render_sidebar()
+    base_opts, method = _render_sidebar()
 
     st.title("PII / PHI de-identification")
     st.caption(
@@ -397,13 +379,13 @@ def main() -> None:
         ]
     )
     with tab_detect:
-        _render_detect(base_opts, model_loaded)
+        _render_detect(base_opts)
     with tab_single:
-        _render_single(base_opts, model_loaded)
+        _render_single(base_opts)
     with tab_batch:
-        _render_batch(base_opts, model_loaded)
+        _render_batch(base_opts)
     with tab_reid:
-        _render_reidentify(model_loaded)
+        _render_reidentify()
 
 
 if __name__ == "__main__":

@@ -85,7 +85,7 @@ def _validate(model: type[BaseModel], data: dict[str, Any]) -> Any:
 
 
 def _run(call: Callable[[], Any]) -> Any:
-    """Run a model call, translating backend failures into ``ServiceError``."""
+    """Run a model call, translating failures into ``ServiceError``."""
     try:
         return call()
     except ValueError as exc:  # invalid options, e.g. date_shift_days w/o shift_dates
@@ -95,6 +95,12 @@ def _run(call: Callable[[], Any]) -> Any:
         raise ServiceError(
             "De-identification backend unavailable (model failed to load)."
         ) from exc
+    except Exception as exc:  # any other engine/pipeline error — never surface raw
+        # A raw exception would escape to Streamlit, whose default showErrorDetails
+        # renders the message in the browser (possible PHI). Normalize to a generic
+        # ServiceError; the detail goes to the server log, not the UI.
+        logger.exception("unexpected de-identification failure")
+        raise ServiceError("De-identification failed unexpectedly.") from exc
 
 
 def _entity_dict(entity: Any) -> dict[str, Any]:
@@ -189,4 +195,4 @@ def reidentify(
         validation.ReidentifyRequest,
         {"deidentified_text": deidentified_text, "mapping": mapping},
     )
-    return {"text": engine.reidentify(req.deidentified_text, req.mapping)}
+    return {"text": _run(lambda: engine.reidentify(req.deidentified_text, req.mapping))}
