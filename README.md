@@ -133,11 +133,6 @@ request, across Python 3.10 and 3.13.
 - All identifiers in the app's sample note are fabricated.
 - Smart entity merging is on by default (`use_smart_merging=True`) and recombines
   token-fragmented PII like dates and SSNs into whole spans.
-- **`shift_dates` is a no-op with the default model.** OpenMed's shift path matches the literal
-  label `"DATE"` (`openmed/core/pii.py:905`), but the default model emits lowercase `"date"`, so
-  `shift_dates` *masks* dates instead of shifting them. The engine delegates `shift_dates` to OpenMed
-  like every other method (no workaround), so the De-identify tab masks dates on the default model —
-  switch to a model that emits canonical `"DATE"` labels for real shifting.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).

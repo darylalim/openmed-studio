@@ -297,8 +297,8 @@ def _render_detect(base_opts: dict[str, Any]) -> None:
     st.dataframe(entities, hide_index=True, column_config=_entity_columns())
 
 
-def _render_sidebar() -> tuple[dict[str, Any], str]:
-    """Draw the sidebar; return (base_opts, method)."""
+def _render_sidebar() -> dict[str, Any]:
+    """Draw the sidebar and return the de-identification request options."""
     with st.sidebar:
         st.subheader("Engine")
         engine = get_engine()
@@ -353,7 +353,7 @@ def _render_sidebar() -> tuple[dict[str, Any], str]:
         date_shift_days=int(date_shift_days),
         keep_year=keep_year,
     )
-    return base_opts, method
+    return base_opts
 
 
 def main() -> None:
@@ -365,7 +365,7 @@ def main() -> None:
     st.session_state.setdefault("last_mapping", None)
     st.session_state.setdefault("last_deidentified", "")
 
-    base_opts, method = _render_sidebar()
+    base_opts = _render_sidebar()
 
     st.title("PII / PHI de-identification")
     st.caption(
@@ -373,11 +373,6 @@ def main() -> None:
         "round-trip with re-identification. The model runs in-process; pick the method "
         "in the sidebar."
     )
-    if method == "shift_dates":
-        st.caption(
-            ":material/info: With the default model, `shift_dates` masks dates rather than "
-            "shifting them (a known openmed behavior)."
-        )
 
     tab_detect, tab_single, tab_batch, tab_reid = st.tabs(
         [

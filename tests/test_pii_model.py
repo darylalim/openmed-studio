@@ -8,10 +8,26 @@ fixture so the model is initialized only once.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
+if TYPE_CHECKING:
+    from openmed import DeidentificationResult
+
 pytestmark = pytest.mark.model
+
+
+def _deidentify(*args, **kwargs) -> DeidentificationResult:
+    """Call ``openmed.deidentify``, narrowing its return type.
+
+    openmed 1.6.0 types ``deidentify()`` as ``DeidentificationResult | AuditReport``
+    (the ``AuditReport`` arm only occurs with ``audit=True``, which these tests never
+    pass), so cast back to ``DeidentificationResult`` for the type checker.
+    """
+    from openmed import deidentify
+
+    return cast("DeidentificationResult", deidentify(*args, **kwargs))
 
 
 def _entities(result):
@@ -40,21 +56,17 @@ def test_extract_pii_detects_expected_entities(loader, note, label, text) -> Non
 
 
 def test_mask_removes_raw_identifiers(loader, note) -> None:
-    from openmed import deidentify
-
-    masked = deidentify(note, method="mask", loader=loader).deidentified_text
+    masked = _deidentify(note, method="mask", loader=loader).deidentified_text
     for secret in ("John", "Doe", "123-45-6789", "john.doe@example.com"):
         assert secret not in masked
     assert "[ssn]" in masked  # replaced by a typed placeholder
 
 
 def test_replace_is_deterministic_and_changes_text(loader, note) -> None:
-    from openmed import deidentify
-
-    first = deidentify(
+    first = _deidentify(
         note, method="replace", consistent=True, seed=42, loader=loader
     ).deidentified_text
-    second = deidentify(
+    second = _deidentify(
         note, method="replace", consistent=True, seed=42, loader=loader
     ).deidentified_text
     assert first == second  # deterministic with a fixed seed
@@ -63,28 +75,24 @@ def test_replace_is_deterministic_and_changes_text(loader, note) -> None:
 
 
 def test_remove_deletes_identifiers(loader, note) -> None:
-    from openmed import deidentify
-
-    removed = deidentify(note, method="remove", loader=loader).deidentified_text
+    removed = _deidentify(note, method="remove", loader=loader).deidentified_text
     for secret in ("John", "Doe", "123-45-6789", "john.doe@example.com"):
         assert secret not in removed
     assert "[ssn]" not in removed  # remove deletes spans; it leaves no placeholders
 
 
 def test_hash_is_stable_and_typed(loader, note) -> None:
-    from openmed import deidentify
-
-    first = deidentify(note, method="hash", loader=loader).deidentified_text
-    second = deidentify(note, method="hash", loader=loader).deidentified_text
+    first = _deidentify(note, method="hash", loader=loader).deidentified_text
+    second = _deidentify(note, method="hash", loader=loader).deidentified_text
     assert first == second  # deterministic (no seed) → enables cross-document linking
     assert "123-45-6789" not in first
     assert re.search(r"ssn_[0-9a-f]{8}", first)  # typed digest shape, e.g. ssn_01a54629
 
 
 def test_round_trip_reidentify_restores_original(loader, note) -> None:
-    from openmed import deidentify, reidentify
+    from openmed import reidentify
 
-    res = deidentify(
+    res = _deidentify(
         note,
         method="replace",
         consistent=True,
@@ -99,19 +107,13 @@ def test_round_trip_reidentify_restores_original(loader, note) -> None:
     assert reidentify(res.deidentified_text, res.mapping) == note
 
 
-@pytest.mark.xfail(
-    reason="OpenMed 1.5.5 shift_dates matches the literal label 'DATE', but the "
-    "default model emits lowercase 'date', so dates are masked, not shifted "
-    "(openmed/core/pii.py:905). An XPASS here means upstream fixed it — delete this xfail.",
-    raises=AssertionError,  # narrow to the expected failure; surface any other error for real
-    strict=True,
-)
 def test_shift_dates_actually_shifts_dates(loader, note) -> None:
-    from openmed import deidentify
-
-    masked = deidentify(note, method="mask", loader=loader).deidentified_text
-    shifted = deidentify(
+    # openmed >=1.6.0 recognizes the default model's lowercase "date" label (via
+    # canonical-label normalization, openmed/core/pii.py:_is_date_entity), so
+    # shift_dates shifts dates instead of masking them — the shifted output therefore
+    # differs from plain masking. This was a strict xfail until the 1.6.0 upgrade.
+    masked = _deidentify(note, method="mask", loader=loader).deidentified_text
+    shifted = _deidentify(
         note, method="shift_dates", date_shift_days=180, loader=loader
     ).deidentified_text
-    # If shifting worked, the shifted output would differ from plain masking.
     assert shifted != masked

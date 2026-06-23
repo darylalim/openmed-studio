@@ -75,9 +75,12 @@ with its `date_shift_days`/`keep_year` controls — straight to openmed (monkeyp
 `@pytest.mark.model` tests in `test_engine.py` (which drive the real engine via the shared `loader`
 fixture), all **skipped by default**. The `--run-model` opt-in is wired via `pytest_addoption` +
 `pytest_collection_modifyitems` in `conftest.py`, which also provides the session-scoped `loader`
-fixture (model loads once) and a `note` fixture. The `shift_dates` upstream no-op (see Known
-gotchas) is captured as a `strict=True` `xfail` in `test_pii_model.py` — if it ever xpasses, the
-suite fails, signalling a model swap made the canonical `"DATE"` labels shift for real.
+fixture (model loads once) and a `note` fixture.
+`test_pii_model.py::test_shift_dates_actually_shifts_dates` asserts the date-shifting fix holds:
+openmed >=1.6.0 shifts the default model's lowercase-`"date"` entities (via canonical-label
+normalization) instead of masking them. (`test_pii_model.py` narrows openmed 1.6.0's
+`DeidentificationResult | AuditReport` return back to `DeidentificationResult` via a `_deidentify`
+cast helper, since it never passes `audit=True`.)
 
 UI tests: `test_ui_helpers.py` unit-tests the pure helpers in `ui_helpers.py`
 (`render_highlighted` escaping/overlap handling, the theme-agnostic marks — a translucent `color_for`
@@ -124,8 +127,8 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
     `OpenMedConfig(backend=...)`, else bare so openmed auto-detects), lazy model load, thin
     wrappers over `extract_pii`/`deidentify`/`reidentify` with per-call
     `lang`/`model_name`/`date_shift_days`/`keep_year`; every method — including
-    `method="shift_dates"` — is delegated straight to openmed (with the default model `shift_dates`
-    masks dates rather than shifting them; see Known gotchas). Defines the `DeidMethod` and
+    `method="shift_dates"` — is delegated straight to openmed (openmed >=1.6.0 shifts dates
+    correctly on the default model). Defines the `DeidMethod` and
     `Backend` `Literal`s and `DEFAULT_PII_MODEL`.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `DeidentifyRequest`,
     `DeidentifyBatchRequest`, `ReidentifyRequest`, `extra="forbid"`) and the bound primitives
@@ -184,35 +187,30 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   not echoing input on a validation error. Only `OPENMED_STUDIO_BACKEND` and
   `OPENMED_STUDIO_MAX_TEXT_LENGTH` remain as env knobs.
 
-## OpenMed PII API (verified against installed v1.5.5)
+## OpenMed PII API (verified against installed v1.6.0)
 
 Top-level imports: `from openmed import extract_pii, deidentify, reidentify, ModelLoader, OpenMedConfig`.
 
 - `extract_pii(text, model_name=<default>, confidence_threshold=0.5, use_smart_merging=True, lang="en", *, loader=None)`
   returns PII entities, each with `.label`, `.text`, `.start`, `.end`, `.confidence`.
   Labels are **lowercase** (`first_name`, `last_name`, `date`, `ssn`, `phone_number`, …).
-- `deidentify(text, method="mask", ..., keep_mapping=False, *, consistent=False, seed=None, locale=None, loader=None)`
-  returns a `DeidentificationResult` with `.deidentified_text`, `.pii_entities`, `.mapping`.
+- `deidentify(text, method="mask", ..., keep_mapping=False, *, consistent=False, seed=None, locale=None, audit=False, loader=None)`
+  returns a `DeidentificationResult` with `.deidentified_text`, `.pii_entities`, `.mapping`
+  (or an `AuditReport` when `audit=True` — 1.6.0 types the return as
+  `DeidentificationResult | AuditReport`; the app's engine returns it as `Any`, and
+  `tests/test_pii_model.py` casts it back to `DeidentificationResult` since it never sets `audit`).
   Methods: `mask`, `remove`, `replace` (Faker surrogates — use `consistent=True, seed=N` for
   determinism), `hash`, `shift_dates`.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
 
 ## Known gotchas
 
-- **OpenMed's `shift_dates` is a no-op with the default model.** `openmed/core/pii.py:905`
-  shifts only entities whose label is the exact string `"DATE"`, but the default
-  `OpenMed-PII-SuperClinical-Small-44M-v1` model emits lowercase `"date"`, so openmed masks dates
-  instead of shifting them. Smart-merging (`openmed/core/pii_entity_merger.py`) compounds it:
-  it relabels regex-detected dates to lowercase `"date"`, overriding whatever the model emits —
-  and `date_of_birth`/`DATEOFBIRTH` aren't in openmed's shiftable set anyway. The app does
-  **not** work around this — `PIIEngine.deidentify` delegates `shift_dates` to openmed like every
-  other method — so on the default model the `shift_dates` path masks dates. Switching to a model
-  that emits canonical `"DATE"` labels makes native shifting work; the Privacy Filter family
-  (`OpenMed/privacy-filter-*`) is a candidate because it decodes with Viterbi-constrained BIOES and
-  *bypasses* regex smart-merging, so its labels aren't relabeled to lowercase `"date"` (verify
-  before relying on it). The no-op is pinned by the `strict` xfail
-  `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates` (an XPASS means a model swap
-  fixed it — delete the xfail).
+- **`shift_dates` was fixed in openmed 1.6.0.** Earlier versions shifted only entities labelled
+  exactly `"DATE"`, but the default `OpenMed-PII-SuperClinical-Small-44M-v1` model emits lowercase
+  `"date"`, so they masked dates instead. openmed 1.6.0 matches dates by canonical label
+  (`openmed/core/pii.py:_is_date_entity` normalizes the model's `"date"`), so `shift_dates` now
+  shifts dates on the default model. `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates`
+  asserts this (it was a `strict` xfail before the upgrade).
 - **`reidentify()` mis-restores overlapping mapping keys.** It applies `str.replace`
   per entry, so a key that is a prefix of another (e.g. `ALIAS_1` vs `ALIAS_10`)
   corrupts the longer one. `tests/test_pii_pure.py` captures this as a `strict` xfail.

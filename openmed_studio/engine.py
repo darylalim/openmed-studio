@@ -140,11 +140,11 @@ class PIIEngine:
         method — including ``"shift_dates"`` — is delegated straight to openmed;
         ``date_shift_days``/``keep_year`` apply only to ``shift_dates``.
 
-        Note openmed's ``shift_dates`` shifts only entities labelled exactly
-        ``"DATE"``: with a model (or smart-merging) that emits lowercase
-        ``"date"`` it masks dates instead of shifting them. Use a model that
-        emits canonical ``"DATE"`` labels for real shifting (the no-op is pinned
-        by the strict xfail in ``tests/test_pii_model.py``).
+        openmed >=1.6.0 shifts dates correctly on the default model: it matches
+        date entities by canonical label (normalizing the model's lowercase
+        ``"date"``) rather than the literal ``"DATE"``, so ``shift_dates`` no
+        longer falls back to masking. (Earlier versions masked dates instead;
+        ``tests/test_pii_model.py`` verifies the shift now happens.)
         """
         from openmed import deidentify
 
