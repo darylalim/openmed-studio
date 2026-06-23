@@ -25,7 +25,6 @@ from typing import Any, get_args
 
 import streamlit as st
 
-from copy_button import copy_button
 from openmed_studio import DEFAULT_PII_MODEL, __version__, service
 from openmed_studio.engine import DeidMethod, PIIEngine
 from openmed_studio.validation import Lang
@@ -143,7 +142,6 @@ def _render_single(base_opts: dict[str, Any]) -> None:
             icon=":material/download:",
             key="dl_single",
         )
-        copy_button(result["deidentified_text"], key="copy_single")
 
     with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
         st.dataframe(entities, hide_index=True, column_config=_entity_columns())

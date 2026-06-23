@@ -112,8 +112,8 @@ knob, the `DeidMethod`↔openmed sync, and PHI-non-echo), `test_engine.py` check
 lazy-loading contract and that `deidentify` forwards every method (including `shift_dates`) to
 OpenMed, `test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
 the pure rendering/payload helpers. `test_ui_app.py` drives `streamlit_app.py` via Streamlit's
-`AppTest` with the engine stubbed in-process (covering the theme-aware highlighting, the fragmented
-tabs, and the copy-button mount). The `--run-model` tests — `test_pii_model.py` plus the
+`AppTest` with the engine stubbed in-process (covering the theme-aware highlighting and the fragmented
+tabs). The `--run-model` tests — `test_pii_model.py` plus the
 `@pytest.mark.model` tests in `test_engine.py` — load the real model to verify detection, masking,
 deterministic replacement, and round-trips.
 

@@ -297,9 +297,9 @@ def test_single_to_reidentify_handoff_across_fragments(monkeypatch):
 
 
 def test_no_duplicate_widget_keys_across_tabs(monkeypatch):
-    # Fragmenting the tabs (#3) and adding the copy button (#4) make a duplicate
-    # key=... the most likely regression; Streamlit raises StreamlitDuplicateElementKey,
-    # surfaced here as at.exception. Exercise each tab so every keyed widget mounts.
+    # Fragmenting the tabs (#3) makes a duplicate key=... a likely regression;
+    # Streamlit raises StreamlitDuplicateElementKey, surfaced here as at.exception.
+    # Exercise each tab so every keyed widget mounts.
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
     assert not at.exception
@@ -311,20 +311,6 @@ def test_no_duplicate_widget_keys_across_tabs(monkeypatch):
     assert not at.exception
     _click(at, "De-identify all")
     assert not at.exception
-
-
-# --- CCv2 copy button (#4) ---------------------------------------------------
-def test_single_note_copy_button_mounts_without_error(monkeypatch):
-    # AppTest is headless and cannot run the component's JS; this only asserts the
-    # mount raises nothing and does not break sibling rendering. The clipboard
-    # behavior itself is out of scope for this suite (no browser).
-    _use_engine(monkeypatch, _StubEngine())
-    at = AppTest.from_file(APP).run(timeout=30)
-    _set_area(at, "Clinical note", "Patient John Doe.")
-    _click(at, "De-identify")
-
-    assert not at.exception
-    assert "[[STUB-DEID-OUTPUT]]" in _html(at)
 
 
 # --- theme-agnostic highlighting (#2) ----------------------------------------

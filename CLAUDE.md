@@ -87,9 +87,8 @@ tint plus `color: inherit` — and `build_base_opts` payload logic).
 model, no network; sentinel values a real model would never produce (`[[STUB-DEID-OUTPUT]]`,
 `STUB/sentinel-model`) prove the rendered data came from the stub. It also covers the
 `Single`→`Re-identify` session-state handoff across the `@st.fragment` boundary, that the rendered
-marks are theme-agnostic (`color: inherit` + an `rgba` tint), a widget-key
-collision guard across all tabs, and that the CCv2 copy button mounts without breaking the headless
-render (AppTest can't execute the component's JS — only the Python-side mount is asserted). It opens
+marks are theme-agnostic (`color: inherit` + an `rgba` tint), and a widget-key
+collision guard across all tabs. It opens
 with `pytest.importorskip("streamlit")`, but streamlit is a **core** dependency, so the default suite
 runs both UI test files and `ty check` sees `streamlit_app.py` — no extra needed.
 
@@ -164,13 +163,9 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   `ui_helpers.py` (Streamlit-free `render_highlighted`/`render_legend` — both **theme-agnostic**: a
   translucent per-label tint from `PALETTE`/`color_for` plus `color: inherit`, so the marks read on
   light or dark with no runtime theme detection — `render_plain`/`build_base_opts`/
-  `build_batch_table`, kept separate so they unit-test without a browser). `copy_button.py` is a
-  self-contained **Custom Component v2** (`st.components.v2.component`) copy-to-clipboard button used
-  on the de-identified output: theme-aware via the injected `--st-*` CSS variables, rendered in a
-  shadow root, and **pure client-side** (no state/trigger, so the text never round-trips to Python —
-  a deliberate PHI posture). It is declared inside its wrapper (not once at import) because a CCv2
-  component must register into the *current* runtime, which is recreated per run (notably under
-  AppTest); re-declaring the identical definition is idempotent. The UI
+  `build_batch_table`, kept separate so they unit-test without a browser). The de-identified output
+  offers a `Download` button (no copy-to-clipboard button — the in-process tool deliberately avoids
+  sending PHI to a browser-side clipboard component). The UI
   consumes the plain dicts `service` produces (`result["entities"]`, `result["deidentified_text"]`,
   `result.get("mapping")`). `streamlit>=1.58` (1.58 horizontal/`height="stretch"` flex layout) is a
   core dependency. The confidence slider defaults to `0.5` (the de-identify default is `0.7`). App
