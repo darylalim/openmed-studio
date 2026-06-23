@@ -170,7 +170,16 @@ class PIIEngine:
 
     @staticmethod
     def reidentify(deidentified_text: str, mapping: dict[str, str]) -> str:
-        """Restore originals from a kept mapping (see README for the prefix caveat)."""
+        """Restore originals from a kept mapping.
+
+        openmed.reidentify applies one ``str.replace`` per entry in mapping order, so a
+        key that is a substring/prefix of another (``ALIAS_1`` vs ``ALIAS_10``, or
+        unbracketed ``hash``/``replace`` surrogates) would corrupt the longer one. We
+        reorder the mapping longest-key-first before delegating — openmed preserves dict
+        insertion order — so each longer key is restored before its prefix. (openmed's
+        raw function keeps the limitation, pinned by the xfail in ``tests/test_pii_pure.py``.)
+        """
         from openmed import reidentify
 
-        return reidentify(deidentified_text, mapping)
+        ordered = dict(sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True))
+        return reidentify(deidentified_text, ordered)

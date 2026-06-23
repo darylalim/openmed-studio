@@ -218,9 +218,13 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
   (`openmed/core/pii.py:_is_date_entity` normalizes the model's `"date"`), so `shift_dates` now
   shifts dates on the default model. `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates`
   asserts this (it was a `strict` xfail before the upgrade).
-- **`reidentify()` mis-restores overlapping mapping keys.** It applies `str.replace`
-  per entry, so a key that is a prefix of another (e.g. `ALIAS_1` vs `ALIAS_10`)
-  corrupts the longer one. `tests/test_pii_pure.py` captures this as a `strict` xfail.
+- **openmed's `reidentify()` mis-restores overlapping mapping keys; the app works around it.**
+  openmed applies `str.replace` per entry, so a key that is a prefix/substring of another
+  (e.g. `ALIAS_1` vs `ALIAS_10`, or unbracketed `hash`/`replace` surrogates) corrupts the
+  longer one. `PIIEngine.reidentify` reorders the mapping longest-key-first before delegating
+  (openmed preserves dict insertion order), so the app path restores correctly;
+  `tests/test_engine.py::test_reidentify_orders_overlapping_keys_longest_first` pins this. The
+  raw-openmed limitation is still captured as a `strict` xfail in `tests/test_pii_pure.py`.
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
   literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.

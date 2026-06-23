@@ -27,7 +27,7 @@ import streamlit as st
 
 from openmed_studio import DEFAULT_PII_MODEL, __version__, service
 from openmed_studio.engine import DeidMethod, PIIEngine
-from openmed_studio.validation import Lang
+from openmed_studio.validation import MAX_BATCH_ITEMS, Lang
 from ui_helpers import (
     build_base_opts,
     build_batch_table,
@@ -156,7 +156,8 @@ def _render_single(base_opts: dict[str, Any]) -> None:
 @st.fragment
 def _render_batch(base_opts: dict[str, Any]) -> None:
     st.caption(
-        "Edit the table (one note per row, up to 100), then de-identify all at once."
+        f"Edit the table (one note per row, up to {MAX_BATCH_ITEMS}), then "
+        "de-identify all at once."
     )
     rows = st.data_editor(
         [{"note": EXAMPLE_NOTE}, {"note": ""}],
@@ -180,8 +181,8 @@ def _render_batch(base_opts: dict[str, Any]) -> None:
     if not notes:
         st.warning("Add at least one note.")
         return
-    if len(notes) > 100:
-        st.warning(f"Max 100 notes per batch (got {len(notes)}).")
+    if len(notes) > MAX_BATCH_ITEMS:
+        st.warning(f"Max {MAX_BATCH_ITEMS} notes per batch (got {len(notes)}).")
         return
 
     result = _call(
@@ -250,10 +251,6 @@ def _render_reidentify() -> None:
                 )
         elif mapping is not None:
             st.warning("Provide a non-empty mapping object.")
-    st.caption(
-        ":material/warning: Overlapping keys (e.g. ALIAS_1 vs ALIAS_10) can mis-restore — "
-        "a known openmed limitation."
-    )
 
 
 @st.fragment

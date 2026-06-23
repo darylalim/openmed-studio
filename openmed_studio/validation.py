@@ -48,7 +48,9 @@ MAX_MAPPING_ENTRIES = 5_000
 Lang = Literal["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt", "ar", "ja", "tr"]
 
 # Strip surrounding whitespace, then require 1..MAX_TEXT_CHARS chars — this also
-# rejects whitespace-only input (it strips to empty and fails min_length).
+# rejects whitespace-only input (it strips to empty and fails min_length). Note the
+# de-identified/re-identified output is therefore stripped at the edges too; internal
+# whitespace and newlines are preserved.
 ClinicalText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TEXT_CHARS),

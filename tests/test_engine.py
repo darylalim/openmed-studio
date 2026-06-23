@@ -121,6 +121,17 @@ def test_deidentify_delegates_every_method_to_openmed(monkeypatch) -> None:
     assert "audit" not in captured
 
 
+def test_reidentify_orders_overlapping_keys_longest_first() -> None:
+    # The engine reorders the mapping longest-key-first before delegating, so a key that
+    # is a substring of another (ALIAS_1 vs ALIAS_10) restores correctly despite openmed's
+    # per-entry str.replace. (The raw-openmed limitation stays pinned in test_pii_pure.py.)
+    restored = PIIEngine.reidentify(
+        "ALIAS_1 and ALIAS_10",
+        {"ALIAS_1": "Ann", "ALIAS_10": "Bob"},
+    )
+    assert restored == "Ann and Bob"
+
+
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
 
 
