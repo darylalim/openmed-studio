@@ -92,7 +92,7 @@ def test_batch_rejects_empty_items() -> None:
 
 def test_batch_rejects_too_many_items() -> None:
     with pytest.raises(ServiceError):
-        service.deidentify_batch(ENGINE, ["x"] * 101)
+        service.deidentify_batch(ENGINE, ["x"] * (validation.MAX_BATCH_ITEMS + 1))
 
 
 def test_reidentify_rejects_oversize_mapping() -> None:
@@ -108,6 +108,13 @@ def test_accepts_lang_and_model_name() -> None:
     assert service.extract(ENGINE, "x", lang="fr", model_name="OpenMed/Some-Model") == {
         "entities": []
     }
+
+
+@pytest.mark.parametrize("lang", ["ar", "ja", "tr"])
+def test_accepts_newly_added_languages(lang) -> None:
+    # ar/ja/tr were added to Lang to match openmed 1.6.0's SUPPORTED_LANGUAGES; they
+    # must now validate (they were rejected before, even though openmed ships models).
+    assert service.extract(ENGINE, "x", lang=lang) == {"entities": []}
 
 
 def test_accepts_date_controls() -> None:

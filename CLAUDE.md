@@ -62,8 +62,9 @@ download).
 Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`, `test_service.py`,
 `test_validation.py`, `test_engine.py`, `test_ui_helpers.py`, and `test_ui_app.py`.
 `test_service.py` covers the in-process seam (`PIIEngine`-stub) — `resolve_backend`/`build_engine`
-backend wiring, the dict adapters (`_entity_dict`, the deidentify shaping), the success paths, and
-the `ValueError`→message / `RuntimeError`+`OSError`→"unavailable" error taxonomy (`ServiceError`).
+backend wiring, the dict adapters (`_entity_dict`, the deidentify shaping), the success paths, that
+the `use_safety_sweep` flag is forwarded to the engine (default on, overridable), and the
+`ValueError`→message / `RuntimeError`+`OSError`→"unavailable" error taxonomy (`ServiceError`).
 `test_validation.py` pins the input guarantees enforced before the engine is reached: the text
 (50k) / batch (≤100) / mapping (≤5,000) caps, the `Lang`/`DeidMethod` enums, the confidence range,
 `model_name` format, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed and
@@ -71,8 +72,10 @@ the `ValueError`→message / `RuntimeError`+`OSError`→"unavailable" error taxo
 input (PHI). `test_engine.py` covers
 `PIIEngine`'s lazy-loading contract, backend selection (bare `ModelLoader` vs
 `OpenMedConfig(backend=...)`), and that `deidentify` forwards every method — including `shift_dates`
-with its `date_shift_days`/`keep_year` controls — straight to openmed (monkeypatching
-`openmed.deidentify` so no model loads). Model tests are in `test_pii_model.py` plus the
+with its `date_shift_days`/`keep_year` controls and `use_safety_sweep` (while never forwarding
+`audit`) — straight to openmed (monkeypatching `openmed.deidentify` so no model loads). It also pins
+that `PIIEngine.reidentify` reorders overlapping mapping keys longest-first (no model). Model tests
+are in `test_pii_model.py` plus the
 `@pytest.mark.model` tests in `test_engine.py` (which drive the real engine via the shared `loader`
 fixture), all **skipped by default**. The `--run-model` opt-in is wired via `pytest_addoption` +
 `pytest_collection_modifyitems` in `conftest.py`, which also provides the session-scoped `loader`

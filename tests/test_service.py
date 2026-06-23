@@ -145,6 +145,27 @@ def test_deidentify_includes_mapping_when_requested() -> None:
     assert result["mapping"] == {"[first_name]": "John"}
 
 
+def test_deidentify_forwards_use_safety_sweep_to_engine() -> None:
+    # The 1.6.0 structured-identifier safety sweep is wired through the service layer:
+    # on by default, and overridable per request (the engine->openmed hop is covered
+    # in test_engine.py; this pins the service->engine hop).
+    captured: dict[str, object] = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="ok", pii_entities=[], mapping=None
+            )
+
+    engine = cast("PIIEngine", _Capturing())
+    service.deidentify(engine, "x", method="mask")
+    assert captured["use_safety_sweep"] is True
+    captured.clear()
+    service.deidentify(engine, "x", method="mask", use_safety_sweep=False)
+    assert captured["use_safety_sweep"] is False
+
+
 def test_deidentify_batch_returns_per_item_results() -> None:
     result = service.deidentify_batch(
         _stub(), ["Patient John.", "Patient Jane."], method="mask"
