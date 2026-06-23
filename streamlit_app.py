@@ -25,6 +25,7 @@ from typing import Any, get_args
 
 import streamlit as st
 
+from copy_button import copy_button
 from openmed_studio import DEFAULT_PII_MODEL, __version__, service
 from openmed_studio.engine import DeidMethod, PIIEngine
 from openmed_studio.validation import Lang
@@ -89,6 +90,18 @@ def _call(
             return None
 
 
+def _render_highlight(text: str, entities: list[dict[str, Any]]) -> None:
+    """Render highlighted ``text`` plus its color legend (shared by Detect/Single).
+
+    The marks are theme-agnostic (translucent tint + ``color: inherit``), so this
+    needs no theme detection.
+    """
+    st.html(render_highlighted(text, entities))
+    legend = render_legend(entities)
+    if legend:
+        st.html(legend)
+
+
 def _render_single(base_opts: dict[str, Any]) -> None:
     with st.form("single"):
         text = st.text_area("Clinical note", value=EXAMPLE_NOTE, height=200)
@@ -119,10 +132,7 @@ def _render_single(base_opts: dict[str, Any]) -> None:
     left, right = st.columns(2)
     with left.container(border=True, height="stretch"):
         st.caption("Original — detected PII highlighted")
-        st.html(render_highlighted(text, entities))
-        legend = render_legend(entities)
-        if legend:
-            st.html(legend)
+        _render_highlight(text, entities)
     with right.container(border=True, height="stretch"):
         st.caption("De-identified")
         st.html(render_plain(result["deidentified_text"]))
@@ -133,6 +143,7 @@ def _render_single(base_opts: dict[str, Any]) -> None:
             icon=":material/download:",
             key="dl_single",
         )
+        copy_button(result["deidentified_text"], key="copy_single")
 
     with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
         st.dataframe(entities, hide_index=True, column_config=_entity_columns())
@@ -144,6 +155,7 @@ def _render_single(base_opts: dict[str, Any]) -> None:
             st.json(result["mapping"])
 
 
+@st.fragment
 def _render_batch(base_opts: dict[str, Any]) -> None:
     st.caption(
         "Edit the table (one note per row, up to 100), then de-identify all at once."
@@ -202,6 +214,7 @@ def _render_batch(base_opts: dict[str, Any]) -> None:
     )
 
 
+@st.fragment
 def _render_reidentify() -> None:
     st.caption(
         "Restore original text from a kept mapping (turn on 'Keep mapping' before de-identifying)."
@@ -245,6 +258,7 @@ def _render_reidentify() -> None:
     )
 
 
+@st.fragment
 def _render_detect(base_opts: dict[str, Any]) -> None:
     st.caption(
         "Detect PII entities without redacting — audit what the model finds (and misses) "
@@ -281,10 +295,7 @@ def _render_detect(base_opts: dict[str, Any]) -> None:
     st.metric("Entities found", len(entities))
     with st.container(border=True):
         st.caption("Detected PII")
-        st.html(render_highlighted(text, entities))
-        legend = render_legend(entities)
-        if legend:
-            st.html(legend)
+        _render_highlight(text, entities)
     st.dataframe(entities, hide_index=True, column_config=_entity_columns())
 
 

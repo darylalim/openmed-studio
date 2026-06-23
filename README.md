@@ -31,7 +31,8 @@ It opens with four tabs:
 - **Detect** — detect PII entities and highlight them (with a color legend) plus an entity table,
   without redacting — for auditing what the model finds before choosing a method.
 - **Single note** — de-identify one note; shows the original with detected PII highlighted
-  side-by-side with the redacted text, plus an entity table and (optionally) the mapping.
+  side-by-side with the redacted text (with a one-click **copy** button), plus an entity table and
+  (optionally) the mapping.
 - **Batch** — edit a table of notes (up to 100) and de-identify them in one go.
 - **Re-identify** — restore originals from a kept mapping (auto-filled from the last single-note run).
 
@@ -55,6 +56,11 @@ the rest.
   `OPENMED_STUDIO_BACKEND=hf|mlx` (an explicit `mlx` pin *raises* on a non-MLX host).
 - **Model reuse.** Streamlit caches the engine (`st.cache_resource`), so the model loads at most
   once per process and is reused across every tab and request.
+- **Theme-aware.** The entity highlights and legend adapt to light or dark mode automatically — they
+  use a translucent tint plus `color: inherit`, so they read correctly on either with no runtime
+  theme detection (both modes are defined in `.streamlit/config.toml`).
+- **Isolated reruns.** The Detect/Batch/Re-identify tabs are `st.fragment`s, so an interaction in one
+  doesn't rerun the others; Single note stays a full rerun so it can hand its result to Re-identify.
 
 ### What we dropped vs the old service
 
@@ -106,7 +112,8 @@ knob, the `DeidMethod`↔openmed sync, and PHI-non-echo), `test_engine.py` check
 lazy-loading contract and that `deidentify` forwards every method (including `shift_dates`) to
 OpenMed, `test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
 the pure rendering/payload helpers. `test_ui_app.py` drives `streamlit_app.py` via Streamlit's
-`AppTest` with the engine stubbed in-process. The `--run-model` tests — `test_pii_model.py` plus the
+`AppTest` with the engine stubbed in-process (covering the theme-aware highlighting, the fragmented
+tabs, and the copy-button mount). The `--run-model` tests — `test_pii_model.py` plus the
 `@pytest.mark.model` tests in `test_engine.py` — load the real model to verify detection, masking,
 deterministic replacement, and round-trips.
 

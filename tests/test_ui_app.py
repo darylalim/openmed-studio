@@ -275,3 +275,69 @@ def test_reidentify_empty_mapping_warns_without_call(monkeypatch):
 
     assert not at.exception
     assert any("non-empty mapping" in w.value for w in at.warning)
+
+
+# --- fragments / cross-tab handoff (#3) --------------------------------------
+def test_single_to_reidentify_handoff_across_fragments(monkeypatch):
+    # The Re-identify tab is an @st.fragment; the Single tab is not, so its form
+    # submit triggers a full rerun that re-runs the Re-identify fragment, which
+    # re-reads last_deidentified/last_mapping (shared via session_state, not widget
+    # keys) and prefills its inputs.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+
+    assert not at.exception
+    assert at.session_state["last_deidentified"] == "[[STUB-DEID-OUTPUT]]"
+    reid = next(t for t in at.text_area if t.label == "De-identified text")
+    assert reid.value == "[[STUB-DEID-OUTPUT]]"
+    mapping_area = next(t for t in at.text_area if t.label == "Mapping (JSON)")
+    assert "PERSON_1" in (mapping_area.value or "")  # mapping handed off as JSON
+
+
+def test_no_duplicate_widget_keys_across_tabs(monkeypatch):
+    # Fragmenting the tabs (#3) and adding the copy button (#4) make a duplicate
+    # key=... the most likely regression; Streamlit raises StreamlitDuplicateElementKey,
+    # surfaced here as at.exception. Exercise each tab so every keyed widget mounts.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    assert not at.exception
+    _set_area(at, "Clinical note to scan", "Patient John Doe.")
+    _click(at, "Detect")
+    assert not at.exception
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+    assert not at.exception
+    _click(at, "De-identify all")
+    assert not at.exception
+
+
+# --- CCv2 copy button (#4) ---------------------------------------------------
+def test_single_note_copy_button_mounts_without_error(monkeypatch):
+    # AppTest is headless and cannot run the component's JS; this only asserts the
+    # mount raises nothing and does not break sibling rendering. The clipboard
+    # behavior itself is out of scope for this suite (no browser).
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+
+    assert not at.exception
+    assert "[[STUB-DEID-OUTPUT]]" in _html(at)
+
+
+# --- theme-agnostic highlighting (#2) ----------------------------------------
+def test_highlight_marks_are_theme_agnostic(monkeypatch):
+    # Marks use a translucent tint + color:inherit, so they render correctly on any
+    # theme with no runtime theme detection (no _is_dark / st.context.theme read).
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to scan", "Patient John Doe.")
+    _click(at, "Detect")
+
+    assert not at.exception
+    body = _html(at)
+    assert "<mark" in body
+    assert "color:inherit" in body
+    assert "rgba(" in body

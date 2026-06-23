@@ -10,23 +10,30 @@ from __future__ import annotations
 import html
 from typing import Any
 
-# Pastel backgrounds; the dark text below stays readable on light or dark themes.
-PALETTE = [
-    "#fde68a",
-    "#bfdbfe",
-    "#bbf7d0",
-    "#fecaca",
-    "#ddd6fe",
-    "#fbcfe8",
-    "#a7f3d0",
-    "#fed7aa",
-    "#c7d2fe",
-    "#99f6e4",
+# Translucent per-label tints. Each reads as a highlight over either a light or a
+# dark page, and marks pair the tint with ``color: inherit`` so the text always
+# takes the active theme's color — so the highlight is correct on any theme with no
+# runtime theme detection (the alpha is tuned to stay visible on white and on dark).
+PALETTE: list[str] = [
+    "rgba(253,230,138,.40)",
+    "rgba(147,197,253,.42)",
+    "rgba(134,239,172,.40)",
+    "rgba(252,165,165,.42)",
+    "rgba(196,181,253,.45)",
+    "rgba(244,164,212,.42)",
+    "rgba(110,231,183,.40)",
+    "rgba(253,186,116,.42)",
+    "rgba(165,180,252,.45)",
+    "rgba(94,234,212,.40)",
 ]
 
 
 def color_for(label: str) -> str:
-    """Stable background color for an entity label (same label → same color)."""
+    """Stable highlight tint for an entity label (same label → same tint).
+
+    The tint is translucent so it reads over either a light or dark page; marks
+    pair it with ``color: inherit`` so the text takes the active theme's color.
+    """
     return PALETTE[sum(ord(c) for c in label) % len(PALETTE)]
 
 
@@ -41,7 +48,9 @@ def _block(body: str) -> str:
 def render_highlighted(text: str, entities: list[dict[str, Any]]) -> str:
     """HTML for ``text`` with non-overlapping entity spans highlighted by label.
 
-    All text is HTML-escaped (the clinical note is untrusted input). Entities are
+    Marks use a translucent per-label tint plus ``color: inherit``, so they read
+    correctly on either a light or dark theme with no runtime theme detection. All
+    text is HTML-escaped (the clinical note is untrusted input). Entities are
     applied left-to-right; any span that overlaps an already-applied one or falls
     outside ``text`` is skipped, and entities without a ``start`` are ignored.
     """
@@ -62,7 +71,7 @@ def render_highlighted(text: str, entities: list[dict[str, Any]]) -> str:
         out.append(html.escape(text[cursor:start]))
         label = str(entity.get("label", ""))
         out.append(
-            f'<mark style="background-color:{color_for(label)};color:#111;'
+            f'<mark style="background-color:{color_for(label)};color:inherit;'
             'padding:0 .15em;border-radius:.2em" '
             f'title="{html.escape(label)}">{html.escape(text[start:end])}'
             '<span style="font-size:.7em;font-weight:600;opacity:.7;'
@@ -81,8 +90,9 @@ def render_plain(text: str) -> str:
 def render_legend(entities: list[dict[str, Any]]) -> str:
     """HTML legend: one pill per distinct label, colored to match the marks.
 
-    Returns an empty string when there are no labelled entities. Labels keep
-    first-seen order so the legend is stable across renders.
+    Pills use the same translucent tint + ``color: inherit`` as the marks, so they
+    read on either theme. Returns an empty string when there are no labelled
+    entities. Labels keep first-seen order so the legend is stable across renders.
     """
     labels: list[str] = []
     for entity in entities:
@@ -91,13 +101,14 @@ def render_legend(entities: list[dict[str, Any]]) -> str:
             labels.append(label)
     if not labels:
         return ""
-    pills = "".join(
-        f'<span style="background-color:{color_for(label)};color:#111;'
-        "padding:.05em .45em;border-radius:.7em;font-size:.72rem;"
-        f'margin:0 .3em .3em 0;display:inline-block">{html.escape(label)}</span>'
-        for label in labels
-    )
-    return f'<div style="margin:.3rem 0 .1rem">{pills}</div>'
+    pills: list[str] = []
+    for label in labels:
+        pills.append(
+            f'<span style="background-color:{color_for(label)};color:inherit;'
+            "padding:.05em .45em;border-radius:.7em;font-size:.72rem;"
+            f'margin:0 .3em .3em 0;display:inline-block">{html.escape(label)}</span>'
+        )
+    return f'<div style="margin:.3rem 0 .1rem">{"".join(pills)}</div>'
 
 
 def build_base_opts(

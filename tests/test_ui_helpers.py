@@ -35,6 +35,11 @@ def test_color_for_handles_empty_label():
     assert color_for("") == PALETTE[0]
 
 
+def test_color_for_returns_translucent_tint():
+    # Tints are translucent (rgba) so the marks read on light and dark themes alike.
+    assert color_for("ssn").startswith("rgba(")
+
+
 # --- render_plain -------------------------------------------------------------
 def test_render_plain_escapes_html_special_chars():
     out = render_plain('a < b & "c" > d')
@@ -53,7 +58,8 @@ def test_render_highlighted_wraps_entity_with_label_and_color():
     assert out.count("<mark") == 1
     assert "123-45-6789" in out
     assert "ssn" in out  # label is shown
-    assert color_for("ssn") in out  # background color applied
+    assert color_for("ssn") in out  # background tint applied
+    assert "color:inherit" in out  # text uses the active theme color
     assert "end" in out  # trailing text preserved
 
 

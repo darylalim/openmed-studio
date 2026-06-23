@@ -80,13 +80,18 @@ gotchas) is captured as a `strict=True` `xfail` in `test_pii_model.py` — if it
 suite fails, signalling a model swap made the canonical `"DATE"` labels shift for real.
 
 UI tests: `test_ui_helpers.py` unit-tests the pure helpers in `ui_helpers.py`
-(`render_highlighted` escaping/overlap handling, `build_base_opts` payload logic). `test_ui_app.py`
-drives `streamlit_app.py` via `streamlit.testing.v1.AppTest`, stubbing the engine **in-process** by
-patching `service.build_engine` (the shared module the running app imports) — no model, no network;
-sentinel values a real model would never produce (`[[STUB-DEID-OUTPUT]]`, `STUB/sentinel-model`)
-prove the rendered data came from the stub. It opens with `pytest.importorskip("streamlit")`, but
-streamlit is a **core** dependency, so the default suite runs both UI test files and `ty check`
-sees `streamlit_app.py` — no extra needed.
+(`render_highlighted` escaping/overlap handling, the theme-agnostic marks — a translucent `color_for`
+tint plus `color: inherit` — and `build_base_opts` payload logic).
+`test_ui_app.py` drives `streamlit_app.py` via `streamlit.testing.v1.AppTest`, stubbing the engine
+**in-process** by patching `service.build_engine` (the shared module the running app imports) — no
+model, no network; sentinel values a real model would never produce (`[[STUB-DEID-OUTPUT]]`,
+`STUB/sentinel-model`) prove the rendered data came from the stub. It also covers the
+`Single`→`Re-identify` session-state handoff across the `@st.fragment` boundary, that the rendered
+marks are theme-agnostic (`color: inherit` + an `rgba` tint), a widget-key
+collision guard across all tabs, and that the CCv2 copy button mounts without breaking the headless
+render (AppTest can't execute the component's JS — only the Python-side mount is asserted). It opens
+with `pytest.importorskip("streamlit")`, but streamlit is a **core** dependency, so the default suite
+runs both UI test files and `ty check` sees `streamlit_app.py` — no extra needed.
 
 Note: `ty` is configured to target Python 3.10 (the minimum supported). openmed ships inline
 type hints — e.g. `deidentify(method=...)` expects the `Literal` of the five method names — so
@@ -150,13 +155,28 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   function in a spinner and renders any `ServiceError`; the sidebar reads engine
   state (model/backend/`is_loaded`) directly, and the four tabs (`Detect` → `service.extract`,
   `Single note`/`Batch` → `service.deidentify[_batch]`, `Re-identify` → `service.reidentify`) live in
-  `main()`, guarded by `if __name__ == "__main__"` so importing for tests has no side effects) and
-  `ui_helpers.py` (pure, Streamlit-free `render_highlighted`/`render_legend`/`render_plain`/
-  `build_base_opts`/`build_batch_table`, kept separate so they unit-test without a browser). The UI
+  `main()`, guarded by `if __name__ == "__main__"` so importing for tests has no side effects). The
+  `Detect`/`Batch`/`Re-identify` tab renderers are `@st.fragment` so an in-tab interaction reruns
+  only that tab; `Single note` is **intentionally not** a fragment, because its form submit must
+  trigger a full rerun to hand `last_deidentified`/`last_mapping` (via `st.session_state`, not widget
+  keys) to the `Re-identify` tab. `_render_highlight(text, entities)` (shared by Detect and Single)
+  renders the highlighted text plus its legend. The pure helpers live in
+  `ui_helpers.py` (Streamlit-free `render_highlighted`/`render_legend` — both **theme-agnostic**: a
+  translucent per-label tint from `PALETTE`/`color_for` plus `color: inherit`, so the marks read on
+  light or dark with no runtime theme detection — `render_plain`/`build_base_opts`/
+  `build_batch_table`, kept separate so they unit-test without a browser). `copy_button.py` is a
+  self-contained **Custom Component v2** (`st.components.v2.component`) copy-to-clipboard button used
+  on the de-identified output: theme-aware via the injected `--st-*` CSS variables, rendered in a
+  shadow root, and **pure client-side** (no state/trigger, so the text never round-trips to Python —
+  a deliberate PHI posture). It is declared inside its wrapper (not once at import) because a CCv2
+  component must register into the *current* runtime, which is recreated per run (notably under
+  AppTest); re-declaring the identical definition is idempotent. The UI
   consumes the plain dicts `service` produces (`result["entities"]`, `result["deidentified_text"]`,
   `result.get("mapping")`). `streamlit>=1.58` (1.58 horizontal/`height="stretch"` flex layout) is a
   core dependency. The confidence slider defaults to `0.5` (the de-identify default is `0.7`). App
-  config lives in `.streamlit/config.toml` (light theme; `gatherUsageStats = false` — a
+  config lives in `.streamlit/config.toml` (both `[theme.light]` and `[theme.dark]` are defined so
+  the app honors the user's mode; the theme-agnostic marks read correctly in either;
+  `gatherUsageStats = false` — a
   clinical-text tool shouldn't phone home); any local secrets go in the gitignored
   `.streamlit/secrets.toml`.
 - **What was dropped (vs the old FastAPI service):** the HTTP boundary and everything that only

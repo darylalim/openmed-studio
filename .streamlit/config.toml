@@ -10,6 +10,19 @@ gatherUsageStats = false
 # browser (they can contain note text). Full detail still goes to the server console.
 showErrorDetails = "none"
 
+# Both [theme.light] and [theme.dark] are defined so the app honors the user's
+# light/dark preference (a single [theme] would lock it to one mode). The
+# entity-highlight colors in ui_helpers.py adapt to whichever is active.
 [theme]
-base = "light"
 primaryColor = "#2563eb"
+
+[theme.light]
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f6f8fa"
+textColor = "#1f2328"
+
+[theme.dark]
+primaryColor = "#60a5fa"
+backgroundColor = "#0d1117"
+secondaryBackgroundColor = "#161b22"
+textColor = "#e6edf3"
