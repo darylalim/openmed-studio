@@ -114,6 +114,11 @@ def test_deidentify_delegates_every_method_to_openmed(monkeypatch) -> None:
     assert captured["date_shift_days"] == 180
     assert captured["keep_year"] is False
     assert captured["loader"] is engine.loader  # the shared loader is threaded through
+    # The 1.6.0 safety sweep is wired through explicitly (on by default), and `audit` is
+    # never forwarded — passing audit=True flips deidentify's return to AuditReport, which
+    # service._deidentify_dict (reads .deidentified_text/.pii_entities) cannot consume.
+    assert captured["use_safety_sweep"] is True
+    assert "audit" not in captured
 
 
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------

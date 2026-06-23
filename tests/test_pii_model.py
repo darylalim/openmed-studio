@@ -110,10 +110,17 @@ def test_round_trip_reidentify_restores_original(loader, note) -> None:
 def test_shift_dates_actually_shifts_dates(loader, note) -> None:
     # openmed >=1.6.0 recognizes the default model's lowercase "date" label (via
     # canonical-label normalization, openmed/core/pii.py:_is_date_entity), so
-    # shift_dates shifts dates instead of masking them — the shifted output therefore
-    # differs from plain masking. This was a strict xfail until the 1.6.0 upgrade.
+    # shift_dates rewrites dates to shifted dates instead of masking them. This was a
+    # strict xfail until the 1.6.0 upgrade.
     masked = _deidentify(note, method="mask", loader=loader).deidentified_text
     shifted = _deidentify(
         note, method="shift_dates", date_shift_days=180, loader=loader
     ).deidentified_text
+    # mask replaces dates with a "[date]" placeholder; shift_dates must NOT — it rewrites
+    # them to shifted date strings. A silent revert to masking would put "[date]" back here.
+    assert "[date]" in masked
+    assert "[date]" not in shifted
+    # The note fixture's literal dates (01/15/1970, 03/22/2024) are shifted away.
+    assert "01/15/1970" not in shifted
+    assert "03/22/2024" not in shifted
     assert shifted != masked

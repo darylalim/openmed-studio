@@ -259,8 +259,9 @@ def _render_reidentify() -> None:
 @st.fragment
 def _render_detect(base_opts: dict[str, Any]) -> None:
     st.caption(
-        "Detect PII entities without redacting — audit what the model finds (and misses) "
-        "before choosing a redaction method."
+        "Detect PII entities without redacting — audit what the model finds. Note: "
+        "de-identification additionally runs a deterministic structured-identifier safety "
+        "sweep, so it may redact a few identifiers (e.g. SSNs, phone numbers) not shown here."
     )
     with st.form("detect"):
         text = st.text_area("Clinical note to scan", value=EXAMPLE_NOTE, height=200)

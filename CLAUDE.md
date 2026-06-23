@@ -66,8 +66,9 @@ backend wiring, the dict adapters (`_entity_dict`, the deidentify shaping), the 
 the `ValueError`→message / `RuntimeError`+`OSError`→"unavailable" error taxonomy (`ServiceError`).
 `test_validation.py` pins the input guarantees enforced before the engine is reached: the text
 (50k) / batch (≤100) / mapping (≤5,000) caps, the `Lang`/`DeidMethod` enums, the confidence range,
-`model_name` format, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed sync, and
-that a rejection message never echoes the offending input (PHI). `test_engine.py` covers
+`model_name` format, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed and
+`Lang`⊆openmed (`SUPPORTED_LANGUAGES`) sync, and that a rejection message never echoes the offending
+input (PHI). `test_engine.py` covers
 `PIIEngine`'s lazy-loading contract, backend selection (bare `ModelLoader` vs
 `OpenMedConfig(backend=...)`), and that `deidentify` forwards every method — including `shift_dates`
 with its `date_shift_days`/`keep_year` controls — straight to openmed (monkeypatching
@@ -126,9 +127,13 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   - `engine.py` — the `PIIEngine`: one shared `ModelLoader` (built with an optional `backend` →
     `OpenMedConfig(backend=...)`, else bare so openmed auto-detects), lazy model load, thin
     wrappers over `extract_pii`/`deidentify`/`reidentify` with per-call
-    `lang`/`model_name`/`date_shift_days`/`keep_year`; every method — including
-    `method="shift_dates"` — is delegated straight to openmed (openmed >=1.6.0 shifts dates
-    correctly on the default model). Defines the `DeidMethod` and
+    `lang`/`model_name`/`date_shift_days`/`keep_year`/`use_safety_sweep`; every method —
+    including `method="shift_dates"` — is delegated straight to openmed (openmed >=1.6.0
+    shifts dates correctly on the default model). `deidentify` pins `use_safety_sweep=True`
+    (openmed's default) — a deterministic structured-identifier sweep run after model
+    detection — passed explicitly rather than silently inherited; it means de-identification
+    can redact identifiers the `Detect` tab's `extract_pii` (which has no sweep) does not, so
+    the `Detect` caption flags this. Defines the `DeidMethod` and
     `Backend` `Literal`s and `DEFAULT_PII_MODEL`.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `DeidentifyRequest`,
     `DeidentifyBatchRequest`, `ReidentifyRequest`, `extra="forbid"`) and the bound primitives
@@ -194,11 +199,13 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
 - `extract_pii(text, model_name=<default>, confidence_threshold=0.5, use_smart_merging=True, lang="en", *, loader=None)`
   returns PII entities, each with `.label`, `.text`, `.start`, `.end`, `.confidence`.
   Labels are **lowercase** (`first_name`, `last_name`, `date`, `ssn`, `phone_number`, …).
-- `deidentify(text, method="mask", ..., keep_mapping=False, *, consistent=False, seed=None, locale=None, audit=False, loader=None)`
+- `deidentify(text, method="mask", ..., keep_mapping=False, *, consistent=False, seed=None, locale=None, use_safety_sweep=True, audit=False, loader=None)`
   returns a `DeidentificationResult` with `.deidentified_text`, `.pii_entities`, `.mapping`
   (or an `AuditReport` when `audit=True` — 1.6.0 types the return as
-  `DeidentificationResult | AuditReport`; the app's engine returns it as `Any`, and
-  `tests/test_pii_model.py` casts it back to `DeidentificationResult` since it never sets `audit`).
+  `DeidentificationResult | AuditReport`; the app's engine returns it as `Any`, never sets
+  `audit`, and `tests/test_pii_model.py` casts it back to `DeidentificationResult`).
+  `use_safety_sweep=True` (the app pins it on) runs a deterministic structured-identifier
+  sweep after detection; `extract_pii` has no such parameter.
   Methods: `mask`, `remove`, `replace` (Faker surrogates — use `consistent=True, seed=N` for
   determinism), `hash`, `shift_dates`.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).

@@ -132,6 +132,7 @@ class PIIEngine:
         model_name: str | None = None,
         date_shift_days: int | None = None,
         keep_year: bool = True,
+        use_safety_sweep: bool = True,
     ) -> Any:
         """Rewrite ``text`` with PII redacted via ``method``.
 
@@ -139,6 +140,12 @@ class PIIEngine:
         ``.pii_entities``, and ``.mapping`` when ``keep_mapping=True``). Every
         method — including ``"shift_dates"`` — is delegated straight to openmed;
         ``date_shift_days``/``keep_year`` apply only to ``shift_dates``.
+
+        ``use_safety_sweep`` (default on, openmed 1.6.0's default) runs a
+        deterministic structured-identifier sweep after model detection — it can
+        redact identifiers the model misses, so de-identification may catch a few
+        entities the ``Detect`` tab's ``extract_pii`` (which has no sweep) does not.
+        It is passed explicitly rather than inherited so the behavior is controlled.
 
         openmed >=1.6.0 shifts dates correctly on the default model: it matches
         date entities by canonical label (normalizing the model's lowercase
@@ -157,6 +164,7 @@ class PIIEngine:
             seed=seed,
             date_shift_days=date_shift_days,
             keep_year=keep_year,
+            use_safety_sweep=use_safety_sweep,
             **self._model_kwargs(lang=lang, model_name=model_name),
         )
 

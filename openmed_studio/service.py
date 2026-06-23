@@ -144,6 +144,7 @@ def _deidentify_call(engine: PIIEngine, text: str, req: Any) -> Any:
         model_name=req.model_name,
         date_shift_days=req.date_shift_days,
         keep_year=req.keep_year,
+        use_safety_sweep=req.use_safety_sweep,
     )
 
 

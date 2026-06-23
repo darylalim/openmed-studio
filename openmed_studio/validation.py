@@ -42,9 +42,10 @@ MAX_TEXT_CHARS = _max_text_chars()
 MAX_BATCH_ITEMS = 100
 MAX_MAPPING_ENTRIES = 5_000
 
-# Languages OpenMed ships PII models for. A non-"en" value makes openmed
-# auto-select a larger language-specific model.
-Lang = Literal["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt"]
+# Languages OpenMed ships PII models for (openmed.core.pii_i18n.SUPPORTED_LANGUAGES).
+# A non-"en" value makes openmed auto-select a larger language-specific model.
+# test_validation_lang_subset_of_openmed keeps this from drifting past what openmed supports.
+Lang = Literal["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt", "ar", "ja", "tr"]
 
 # Strip surrounding whitespace, then require 1..MAX_TEXT_CHARS chars — this also
 # rejects whitespace-only input (it strips to empty and fails min_length).
@@ -97,6 +98,10 @@ class _DeidentifyOptions(_Strict):
         default=None, description="Only used with method='shift_dates'."
     )
     keep_year: bool = True
+    # openmed 1.6.0 runs a deterministic structured-identifier sweep after model
+    # detection (default on); pinned here so the behavior is explicit, not silently
+    # inherited from openmed's default.
+    use_safety_sweep: bool = True
 
 
 class DeidentifyRequest(_DeidentifyOptions):

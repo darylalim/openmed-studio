@@ -37,7 +37,7 @@ It opens with four tabs:
 - **Re-identify** — restore originals from a kept mapping (auto-filled from the last single-note run).
 
 The sidebar reports the engine's model/backend/load state and holds the shared de-identification
-options: method (`mask` / `remove` / `replace` / `hash` / `shift_dates`), language (9 supported),
+options: method (`mask` / `remove` / `replace` / `hash` / `shift_dates`), language (12 supported),
 confidence, `keep_mapping`, and the deterministic-`replace` / `shift_dates` controls. The
 confidence slider defaults to **0.5** for higher PHI recall — note the de-identify default is
 `0.7`. The model loads on the first request, so the first call shows a spinner and is slower than

@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     # Clinical NLP framework + the Hugging Face / PyTorch backend used for inference.
     # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
-    "openmed[hf]>=1.5.5",
+    "openmed[hf]>=1.6.0",
     # The Streamlit app (`streamlit_app.py`) — the project's only delivery surface.
     # Needs streamlit>=1.58 for the `height="stretch"` flex-layout containers the UI uses.
     "streamlit>=1.58",
@@ -24,7 +24,7 @@ dependencies = [
 # pre-converted `...-mlx` repo is an optional local-dir shortcut. See README "Native
 # Apple Silicon (MLX)".
 mlx = [
-    "openmed[mlx]>=1.5.5",
+    "openmed[mlx]>=1.6.0",
 ]
 
 # This project runs as an application (a Streamlit app), not an importable package,

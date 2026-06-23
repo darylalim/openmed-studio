@@ -148,3 +148,13 @@ def test_validation_deidmethod_matches_openmed() -> None:
     assert set(typing.get_args(validation.DeidMethod)) == set(
         typing.get_args(DeidentificationMethod)
     )
+
+
+def test_validation_lang_subset_of_openmed() -> None:
+    # Every language the app offers must be one openmed actually supports, so the app
+    # never rejects a language openmed ships a model for. Subset (not equality) lets the
+    # app deliberately offer fewer than openmed's full set while still catching drift if
+    # openmed ever drops one the app still lists.
+    from openmed.core.pii_i18n import SUPPORTED_LANGUAGES
+
+    assert set(typing.get_args(validation.Lang)) <= set(SUPPORTED_LANGUAGES)
