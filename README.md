@@ -34,8 +34,9 @@ It opens with five tabs:
 - **Clinical NER** — detect clinical entities (diseases, drugs, anatomy, genes, …) with OpenMed's
   token-classification models. Pick an entity **domain** (one curated model per domain — Disease,
   Pharmaceutical, Chemical, Anatomy, Genomics, Protein, Oncology, Species, Pathology, Hematology,
-  Medical); each loads its specialized model on first use. Highlights and tables the entities like
-  Detect.
+  Medical); a preview shows the model's name, size, and what it detects before you commit to a
+  download, the confidence slider defaults to that model's recommended threshold, and each domain
+  loads its specialized model on first use. Highlights and tables the entities like Detect.
 - **Single note** — de-identify one note; shows the original with detected PII highlighted
   side-by-side with the redacted text (with a **download** button), plus an entity table and
   (optionally) the mapping.

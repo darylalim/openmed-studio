@@ -215,19 +215,31 @@ def test_validation_lang_subset_of_openmed() -> None:
 
 
 def test_validation_ner_models_resolve_in_openmed() -> None:
-    # Every curated NER alias must still resolve in openmed's registry, in its declared
-    # category, and every domain key must be a real openmed category — so a renamed alias
-    # or a dropped category fails CI (the catalog analogue of the DeidMethod/Lang sync
-    # guards). Registry metadata only — no model download.
+    # Pin the curated NER catalog against openmed's live registry: every domain key is a
+    # real category, every alias resolves in that category, and the metadata baked into
+    # NerModel for the UI (recommended_confidence, entity_types) still matches the
+    # registry — so a renamed alias, dropped category, or drifted metadata fails CI rather
+    # than leaving the NER tab stale. Registry metadata only — no model download.
     import openmed
 
     from openmed_studio.engine import NER_MODELS
 
     catalog = openmed.get_all_models()  # dict[alias -> ModelInfo]
     categories = set(openmed.list_model_categories())
-    for domain, alias in NER_MODELS.items():
+    for domain, model in NER_MODELS.items():
         assert domain in categories, f"{domain!r} is not an openmed category"
-        assert alias in catalog, f"NER alias {alias!r} is not in openmed's registry"
-        assert catalog[alias].category == domain, (
-            f"{alias!r} is category {catalog[alias].category!r}, expected {domain!r}"
+        info = catalog.get(model.alias)
+        assert info is not None, (
+            f"NER alias {model.alias!r} is not in openmed's registry"
+        )
+        assert info.category == domain, (
+            f"{model.alias!r} is category {info.category!r}, expected {domain!r}"
+        )
+        assert info.recommended_confidence == model.recommended_confidence, (
+            f"{model.alias!r} recommended_confidence drifted: registry "
+            f"{info.recommended_confidence} != baked {model.recommended_confidence}"
+        )
+        assert set(info.entity_types) == set(model.entity_types), (
+            f"{model.alias!r} entity_types drifted: registry {sorted(info.entity_types)} "
+            f"!= baked {sorted(model.entity_types)}"
         )

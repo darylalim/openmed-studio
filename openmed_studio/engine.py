@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 import warnings
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 # pysbd (a transitive openmed dependency) raises harmless SyntaxWarnings from its
 # regex literals on Python >=3.12. Silence them before openmed imports pysbd.
@@ -26,30 +26,124 @@ if TYPE_CHECKING:
 
 DEFAULT_PII_MODEL = "OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1"
 
-# Clinical NER (token-classification) is one model PER domain, not one universal
-# model, so the app curates one representative ~141M "superclinical" model per clinical
-# category (Medical uses the broader ClinicalNER model — its only non-MLX option). Keys
-# are openmed's own category names (openmed.list_model_categories() minus the "Privacy"
-# PII bucket); values are registry aliases passed to analyze_text(model_name=...).
-# tests/test_validation.py::test_validation_ner_models_resolve_in_openmed pins every
-# alias/category against the installed registry so a renamed alias fails loudly.
-NER_MODELS: dict[str, str] = {
-    "Disease": "disease_detection_superclinical_141m",
-    "Pharmaceutical": "pharma_detection_superclinical_141m",
-    "Chemical": "chemical_detection_superclinical_141m",
-    "Anatomy": "anatomy_detection_superclinical_141m",
-    "Genomics": "dna_detection_superclinical_141m",
-    "Protein": "protein_detection_superclinical_141m",
-    "Oncology": "oncology_detection_superclinical_141m",
-    "Species": "species_detection_superclinical_141m",
-    "Pathology": "pathology_detection_superclinical_141m",
-    "Hematology": "bloodcancer_detection_superclinical_141m",
-    "Medical": "clinicalner_superclinical_large_434m",
+
+class NerModel(NamedTuple):
+    """A curated clinical-NER domain model plus its openmed registry metadata.
+
+    The metadata fields are baked in at authoring time so the UI can show them with **no
+    runtime openmed import** (every openmed import here is deferred to first model use).
+    The drift guard ``tests/test_validation.py::test_validation_ner_models_resolve_in_openmed``
+    pins ``alias``/``recommended_confidence``/``entity_types`` against the live registry,
+    so a registry change fails CI rather than silently leaving this table stale.
+    """
+
+    # registry alias passed to analyze_text(model_name=...)
+    alias: str
+    # friendly name for the UI (vs the raw alias)
+    display_name: str
+    # the model's own suggested threshold (the UI slider default)
+    recommended_confidence: float
+    # labels it emits (an empty tuple = "not declared", e.g. Medical)
+    entity_types: tuple[str, ...]
+    # human model size, e.g. "141M"
+    params: str
+
+
+# Clinical NER (token-classification) is one model PER domain, not one universal model, so
+# the app curates one representative ~141M "superclinical" model per clinical category
+# (Medical uses the broader 434M ClinicalNER model — its only non-MLX option). Keys are
+# openmed's own category names (openmed.list_model_categories() minus the "Privacy" PII bucket).
+NER_MODELS: dict[str, NerModel] = {
+    "Disease": NerModel(
+        "disease_detection_superclinical_141m",
+        "DiseaseDetect SuperClinical 141M",
+        0.6,
+        ("DISEASE", "CONDITION", "PATHOLOGY"),
+        "141M",
+    ),
+    "Pharmaceutical": NerModel(
+        "pharma_detection_superclinical_141m",
+        "PharmaDetect SuperClinical 141M",
+        0.65,
+        ("SIMPLE_CHEMICAL", "CHEM", "DRUG", "MEDICATION"),
+        "141M",
+    ),
+    "Chemical": NerModel(
+        "chemical_detection_superclinical_141m",
+        "ChemicalDetect SuperClinical 141M",
+        0.6,
+        ("SIMPLE_CHEMICAL", "CHEM", "DRUG", "MEDICATION"),
+        "141M",
+    ),
+    "Anatomy": NerModel(
+        "anatomy_detection_superclinical_141m",
+        "AnatomyDetect SuperClinical 141M",
+        0.6,
+        ("ORGAN", "TISSUE", "ANATOMY"),
+        "141M",
+    ),
+    "Genomics": NerModel(
+        "dna_detection_superclinical_141m",
+        "DNADetect SuperClinical 141M",
+        0.65,
+        ("GENE_OR_GENE_PRODUCT", "DNA", "RNA", "GENE", "PROTEIN"),
+        "141M",
+    ),
+    "Protein": NerModel(
+        "protein_detection_superclinical_141m",
+        "ProteinDetect SuperClinical 141M",
+        0.6,
+        ("GENE_OR_GENE_PRODUCT", "PROTEIN"),
+        "141M",
+    ),
+    "Oncology": NerModel(
+        "oncology_detection_superclinical_141m",
+        "OncologyDetect SuperClinical 141M",
+        0.65,
+        (
+            "SIMPLE_CHEMICAL",
+            "CHEM",
+            "CANCER",
+            "CELL",
+            "GENE_OR_GENE_PRODUCT",
+            "ORGANISM",
+            "SPECIES",
+        ),
+        "141M",
+    ),
+    "Species": NerModel(
+        "species_detection_superclinical_141m",
+        "SpeciesDetect SuperClinical 141M",
+        0.6,
+        ("ORGANISM", "SPECIES"),
+        "141M",
+    ),
+    "Pathology": NerModel(
+        "pathology_detection_superclinical_141m",
+        "PathologyDetect SuperClinical 141M",
+        0.6,
+        ("DISEASE", "CONDITION", "PATHOLOGY"),
+        "141M",
+    ),
+    "Hematology": NerModel(
+        "bloodcancer_detection_superclinical_141m",
+        "BloodCancerDetect SuperClinical 141M",
+        0.65,
+        ("CANCER", "DISEASE"),
+        "141M",
+    ),
+    "Medical": NerModel(
+        "clinicalner_superclinical_large_434m",
+        "ClinicalNER SuperClinical Large 434M",
+        0.6,
+        (),
+        "434M",
+    ),
 }
 
-# The default NER model: the Disease detector (smallest superclinical family, known
+# The default NER model: the Disease detector's alias (smallest superclinical family, known
 # entity types), mirroring openmed.analyze_text's own disease-domain default.
-DEFAULT_NER_MODEL = NER_MODELS["Disease"]
+DEFAULT_NER_MODEL = NER_MODELS["Disease"].alias
 
 # Inference backends openmed exposes. ``None`` (the engine default) lets openmed
 # auto-detect — it prefers MLX on Apple Silicon when the `mlx` extra is installed,

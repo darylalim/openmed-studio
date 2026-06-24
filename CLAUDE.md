@@ -74,7 +74,8 @@ engine (the first two default on and overridable; `locale` flows only when set),
 `model_name` and `locale` format, the `NerRequest` rules (required `model_name`,
 `aggregation_strategy` enum), the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed,
 `Lang`⊆openmed (`SUPPORTED_LANGUAGES`), and `NER_MODELS`↔openmed-registry (`test_validation_ner_models_resolve_in_openmed`,
-asserting every curated alias resolves in its declared category) sync, and that a rejection message
+asserting every curated alias resolves in its declared category **and** its baked
+`recommended_confidence`/`entity_types` still match the registry) sync, and that a rejection message
 never echoes the offending input (PHI). `test_engine.py` covers
 `PIIEngine`'s lazy-loading contract, backend selection (bare `ModelLoader` vs
 `OpenMedConfig(backend=...)`), and that `deidentify` forwards every method — including `shift_dates`
@@ -114,8 +115,11 @@ stub. It also covers the
 marks are theme-agnostic (`color: inherit` + an `rgba` tint), a widget-key
 collision guard across all five tabs, that the sidebar `Replace locale` input flows through to the
 engine (driving the `Method` `segmented_control` to `replace`) — a `replace`-only knob, omitted
-otherwise — and the `Clinical NER` tab (the `Entity domain` picker lists the curated `NER_MODELS`
-domains with `Disease` default; `Analyze` renders highlighted UPPERCASE-labelled entities). It opens
+otherwise — and the `Clinical NER` tab: the `Entity domain` picker lists the curated `NER_MODELS`
+domains (`Disease` default) and forwards the picked domain's `.alias`; `Analyze` renders highlighted
+UPPERCASE-labelled entities; the confidence slider seeds from the model's `recommended_confidence`;
+the preview shows the `display_name`/`entity_types` (and the `Medical` broad-coverage flag); and the
+per-domain download tracking lands in `ner_analyzed_domains`. It opens
 with `pytest.importorskip("streamlit")`, but streamlit is a **core** dependency, so the default suite
 runs both UI test files and `ty check` sees `streamlit_app.py` — no extra needed.
 
@@ -170,9 +174,12 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
     (its `output_format="dict"` is a misnomer), so `_entities` unwraps it via `.entities`
     rather than iterating it; `lang` is **not** threaded (analyze_text has no `lang`).
     Defines the `DeidMethod`/`Backend` `Literal`s, `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`,
-    and `NER_MODELS` — a curated `dict[domain → registry alias]` of one representative
-    ~141M "superclinical" model per clinical category (`Medical` uses the broader
-    `clinicalner` model).
+    the `NerModel` `NamedTuple`, and `NER_MODELS` — a curated `dict[domain → NerModel]`
+    of one representative ~141M "superclinical" model per clinical category (`Medical` uses
+    the broader 434M `clinicalner` model). Each `NerModel` bakes in registry metadata
+    (`alias`, `display_name`, `recommended_confidence`, `entity_types`, `params`) so the UI
+    shows it with **no runtime openmed import**; the drift guard pins that metadata to the
+    live registry.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`,
     `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, `extra="forbid"`) and
     the bound primitives
@@ -215,9 +222,15 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   interaction reruns
   only that tab; `Single note` is **intentionally not** a fragment, because its form submit must
   trigger a full rerun to hand `last_deidentified`/`last_mapping` (via `st.session_state`, not widget
-  keys) to the `Re-identify` tab. The `Clinical NER` tab (`_render_ner`) has its own domain picker
-  (`st.selectbox` over `NER_MODELS`, default `Disease`) and confidence slider, independent of the
-  de-identification sidebar; `model_name` is resolved from the picked domain via `NER_MODELS`.
+  keys) to the `Re-identify` tab. The `Clinical NER` tab (`_render_ner`) has its own controls,
+  independent of the de-identification sidebar: a domain picker (`st.selectbox` over `NER_MODELS`,
+  default `Disease`) **outside** the form so selecting a domain reruns the fragment and refreshes a
+  reactive preview (the model's `display_name`, size, and `entity_types` — flagging `Medical` as the
+  broad 434M model) and the confidence slider's default (seeded from the model's
+  `recommended_confidence`, per-domain keyed). `model_name` is resolved from the picked domain via
+  `NER_MODELS[domain].alias`. Because `engine.is_loaded` only tracks whether *a* model has loaded,
+  the per-domain download wait-hint is driven by a `st.session_state` set of analyzed domains
+  (passed to `_call(..., needs_load=...)`), so switching to a not-yet-downloaded domain still warns.
   `_render_highlight(text, entities)` (shared by Detect, Single, and Clinical NER)
   renders the highlighted text plus its legend (label-agnostic, so it handles NER's UPPERCASE
   labels unchanged). The pure helpers live in

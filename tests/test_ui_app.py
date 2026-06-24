@@ -270,10 +270,10 @@ def test_ner_renders_entities(monkeypatch):
     _click(at, "Analyze")
 
     assert not at.exception
+    # metric==1 proves the stub ran (the entity-type preview also renders "DISEASE", so the
+    # label is no longer a stub-only sentinel); the <mark> proves the entity was highlighted.
     assert any(m.label == "Entities found" and str(m.value) == "1" for m in at.metric)
-    body = _html(at)
-    assert "<mark" in body  # entity highlighted
-    assert "DISEASE" in body  # UPPERCASE NER label rendered (proves the stub ran)
+    assert "<mark" in _html(at)
 
 
 def test_ner_model_picker_lists_curated_domains(monkeypatch):
@@ -289,8 +289,8 @@ def test_ner_model_picker_lists_curated_domains(monkeypatch):
 
 def test_ner_tab_forwards_selected_domain_model(monkeypatch):
     # Picking a (non-default) domain must resolve to that domain's curated alias and
-    # forward it to the engine — guards the `model_name = NER_MODELS[domain]` resolution
-    # (a "silently always Disease" bug would otherwise slip past test_ner_renders_entities).
+    # forward it to the engine — guards the `model_name = NER_MODELS[domain].alias`
+    # resolution (a "silently always Disease" bug would slip past test_ner_renders_entities).
     from openmed_studio import NER_MODELS
 
     captured: dict = {}
@@ -302,13 +302,64 @@ def test_ner_tab_forwards_selected_domain_model(monkeypatch):
 
     _use_engine(monkeypatch, _Capturing())
     at = AppTest.from_file(APP).run(timeout=30)
-    next(s for s in at.selectbox if s.label == "Entity domain").set_value("Anatomy")
+    # The domain picker lives outside the form, so set it (and rerun) before submitting.
+    next(s for s in at.selectbox if s.label == "Entity domain").set_value(
+        "Anatomy"
+    ).run(timeout=30)
     _set_area(at, "Clinical note to analyze", "Liver and lung findings.")
     _click(at, "Analyze")
 
     assert not at.exception
-    assert captured["model_name"] == NER_MODELS["Anatomy"]
-    assert NER_MODELS["Anatomy"] != NER_MODELS["Disease"]  # genuinely the picked domain
+    assert captured["model_name"] == NER_MODELS["Anatomy"].alias
+    assert (
+        NER_MODELS["Anatomy"].alias != NER_MODELS["Disease"].alias
+    )  # the picked domain
+
+
+def test_ner_confidence_defaults_to_model_recommendation(monkeypatch):
+    # The NER slider seeds from the selected model's recommended_confidence (#3), not a
+    # flat 0.5 — so the first result a user sees uses the model's own threshold.
+    from openmed_studio import NER_MODELS
+
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    slider = next(s for s in at.slider if str(s.key).startswith("ner_conf"))
+    assert slider.value == NER_MODELS["Disease"].recommended_confidence  # 0.6, not 0.5
+
+
+def test_ner_preview_shows_name_and_entity_types(monkeypatch):
+    # The reactive preview surfaces the friendly model name + what it detects (#4), so the
+    # user sees coverage before paying a 141-434MB download.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    captions = " ".join(c.value for c in at.caption)
+    assert "DiseaseDetect" in captions  # friendly display_name
+    assert "DISEASE" in captions and "CONDITION" in captions  # entity-type preview
+
+
+def test_ner_medical_flags_broad_coverage(monkeypatch):
+    # Medical is the 434M broad model with no declared entity types — the preview flags
+    # both rather than presenting it as a peer of the 141M domains (#7).
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(s for s in at.selectbox if s.label == "Entity domain").set_value(
+        "Medical"
+    ).run(timeout=30)
+    captions = " ".join(c.value for c in at.caption)
+    assert "broad-coverage" in captions
+    assert "not declared" in captions and "434M" in captions
+
+
+def test_ner_tracks_analyzed_domains_for_load_hint(monkeypatch):
+    # The per-domain download warning (#8) keys off a session-state set of analyzed
+    # domains (since is_loaded can't tell which specific model is resident).
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to analyze", "Patient has diabetes.")
+    _click(at, "Analyze")
+
+    assert not at.exception
+    assert at.session_state["ner_analyzed_domains"] == {"Disease"}
 
 
 # --- batch -------------------------------------------------------------------

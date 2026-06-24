@@ -68,19 +68,19 @@ def _call(
     fn: Callable[..., dict[str, Any]],
     *args: Any,
     action: str,
+    needs_load: bool | None = None,
     **kwargs: Any,
 ) -> dict[str, Any] | None:
     """Run a ``service`` call in a spinner; render ``ServiceError`` and return None.
 
-    The first call loads the model, so warn about the wait until it's resident
-    (read from the shared engine this call already holds).
+    The first call loads the model, so warn about the wait until it's resident. By default
+    that's gauged from the shared engine's ``is_loaded``; callers that load several models
+    (the NER tab, one per domain) pass ``needs_load`` explicitly, since ``is_loaded`` only
+    tracks whether *a* model has loaded, not which one.
     """
     engine = get_engine()
-    hint = (
-        ""
-        if engine.is_loaded
-        else " — the first request loads the model (up to a minute)"
-    )
+    pending = (not engine.is_loaded) if needs_load is None else needs_load
+    hint = " — the first request loads the model (up to a minute)" if pending else ""
     with st.spinner(f"{action}…{hint}"):
         try:
             return fn(engine, *args, **kwargs)
@@ -303,19 +303,34 @@ def _render_ner() -> None:
         "NER model — distinct from the PII models the other tabs use. Each domain loads a "
         "specialized model on first use; switching domains loads another."
     )
+    # The domain picker and its preview live OUTSIDE the form, so choosing a domain reruns
+    # the fragment and refreshes the entity preview and the slider's recommended default.
+    domain = st.selectbox("Entity domain", list(NER_MODELS), key="ner_domain")
+    model = NER_MODELS[domain]
+    detects = ", ".join(model.entity_types) if model.entity_types else "not declared"
+    st.caption(
+        f"**{model.display_name}** · {model.params} · detects: {detects}"
+        + (
+            "  ·  broad-coverage model (~3× the others)"
+            if not model.entity_types
+            else ""
+        )
+    )
     with st.form("ner"):
         text = st.text_area(
             "Clinical note to analyze", value=EXAMPLE_NOTE, height=200, key="ner_text"
         )
-        domain = st.selectbox("Entity domain", list(NER_MODELS), key="ner_domain")
         confidence = st.slider(
             "Confidence threshold",
             0.0,
             1.0,
-            0.5,
+            model.recommended_confidence,
             0.05,
-            key="ner_conf",
-            help="Minimum model confidence to keep an entity.",
+            # Per-domain key so each domain's slider defaults to its own recommendation
+            # and remembers a manual override independently.
+            key=f"ner_conf_{domain}",
+            help="Minimum model confidence to keep an entity "
+            "(default = this model's recommended threshold).",
         )
         submitted = st.form_submit_button(
             "Analyze", type="primary", icon=":material/biotech:"
@@ -326,20 +341,25 @@ def _render_ner() -> None:
     if not submitted:
         return
 
-    model_name = NER_MODELS[domain]
+    # is_loaded flips True after the FIRST model loads, so it can't tell whether THIS
+    # domain's model is resident. Track analyzed domains so the wait hint fires on a fresh
+    # domain (a 141–434MB download) rather than only the very first NER call.
+    analyzed: set[str] = st.session_state.setdefault("ner_analyzed_domains", set())
     result = _call(
         service.analyze,
         text,
         action="Analyzing",
-        model_name=model_name,
+        needs_load=domain not in analyzed,
+        model_name=model.alias,
         confidence_threshold=confidence,
     )
     if result is None:
         return
+    analyzed.add(domain)
 
     entities = result["entities"]
     st.metric("Entities found", len(entities))
-    st.caption(f"Model: `{model_name}`")
+    st.caption(f"Model: {model.display_name} (`{model.alias}`)")
     with st.container(border=True):
         st.caption(f"Detected {domain.lower()} entities")
         _render_highlight(text, entities)
