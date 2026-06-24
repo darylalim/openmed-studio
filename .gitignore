@@ -22,8 +22,8 @@ venv/
 # Note: uv.lock is intentionally committed — this is an application-style
 # project, so the lockfile is tracked for reproducible `uv sync`.
 
-# Local model / data caches (OpenMed defaults to ~/.cache/openmed, but ignore
-# any project-local copies too)
+# Local model / data caches — OpenMed caches the PII model plus each per-domain
+# NER model under ~/.cache/openmed; also ignore any project-local copies
 .cache/
 models/
 *.safetensors
