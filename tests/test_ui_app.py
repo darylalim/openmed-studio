@@ -114,7 +114,8 @@ def test_app_renders(monkeypatch):
     at = AppTest.from_file(APP).run(timeout=30)
     assert not at.exception
     assert at.title[0].value == "PII / PHI de-identification"
-    assert len(at.tabs) == 5  # Detect, Clinical NER, Single note, Batch, Re-identify
+    # Detect, Clinical NER, Single note, Batch, Anonymize, Re-identify
+    assert len(at.tabs) == 6
     # The sentinel model name can only appear if the stub (not a live model) was used.
     assert any("STUB/sentinel-model" in c.value for c in at.sidebar.caption)
     assert any("model loaded" in c.value for c in at.sidebar.caption)
@@ -376,6 +377,76 @@ def test_batch_renders(monkeypatch):
     )
 
 
+# --- anonymize ---------------------------------------------------------------
+def test_anonymize_renders_synthetic_output(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    metrics = {m.label: str(m.value) for m in at.metric}
+    assert metrics.get("Entities replaced") == "2"  # stub returns 2 pii_entities
+    assert metrics.get("Method") == "replace"
+    body = _html(at)
+    assert "[[STUB-DEID-OUTPUT]]" in body  # synthetic surrogate text rendered
+    assert "<mark" in body  # original highlighted
+
+
+def test_anonymize_forwards_replace_method_locale_and_keep_mapping(monkeypatch):
+    # The tab pins method=replace and forwards the in-tab locale + keep_mapping=True, so the
+    # call is a reversible surrogate replacement (the in-tab "Locale" is distinct from the
+    # sidebar's "Replace locale", which the Single tab uses).
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(t for t in at.text_input if t.label == "Locale").set_value("pt_BR")
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    assert captured.get("method") == "replace"
+    assert captured.get("locale") == "pt_BR"
+    assert captured.get("keep_mapping") is True
+
+
+def test_anonymize_feeds_reidentify_handoff(monkeypatch):
+    # Anonymize is intentionally NOT a fragment, so its submit triggers a full rerun that
+    # re-runs the Re-identify fragment, prefilling it from session_state (replace +
+    # keep_mapping is the reversible round trip the Anonymize tab centers on).
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    assert at.session_state["last_deidentified"] == "[[STUB-DEID-OUTPUT]]"
+    assert at.session_state["last_mapping"] == {"PERSON_1": "John"}
+    reid = next(t for t in at.text_area if t.label == "De-identified text")
+    assert (
+        reid.value == "[[STUB-DEID-OUTPUT]]"
+    )  # handed off across the fragment boundary
+
+
+def test_empty_anonymize_warns_and_skips(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize", "   ")  # whitespace only
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    assert any("Enter some text" in w.value for w in at.warning)
+    assert not at.metric  # no result rendered
+
+
 # --- re-identify -------------------------------------------------------------
 def test_reidentify_renders_text(monkeypatch):
     _use_engine(monkeypatch, _StubEngine())
@@ -444,6 +515,9 @@ def test_no_duplicate_widget_keys_across_tabs(monkeypatch):
     _click(at, "De-identify")
     assert not at.exception
     _click(at, "De-identify all")
+    assert not at.exception
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
     assert not at.exception
 
 

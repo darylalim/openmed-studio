@@ -213,6 +213,120 @@ def _render_batch(base_opts: dict[str, Any]) -> None:
     )
 
 
+def _render_anonymize() -> None:
+    """Replace PII/PHI with realistic fake surrogates — a safe-to-share synthetic note.
+
+    A focused, surrogate-first view over ``service.deidentify(method="replace")``: the
+    capability already exists (it's the sidebar's ``replace`` method), this just surfaces it
+    as its own workflow with the determinism/locale knobs in-tab. Like ``_render_single`` it
+    is intentionally **not** an ``@st.fragment`` — its form submit must trigger a full rerun
+    so the Re-identify fragment re-reads the ``last_deidentified``/``last_mapping`` handed off
+    here (``replace`` + ``keep_mapping`` is the canonical reversible-pseudonymization round trip).
+    """
+    st.caption(
+        "Replace PII/PHI with realistic *fake* surrogates — a safe-to-share synthetic note "
+        "rather than redaction. Repeated mentions stay one identity with 'Deterministic'; the "
+        "mapping round-trips through the Re-identify tab."
+    )
+    with st.form("anonymize"):
+        text = st.text_area(
+            "Clinical note to anonymize",
+            value=EXAMPLE_NOTE,
+            height=200,
+            key="anon_text",
+        )
+        c1, c2 = st.columns(2)
+        lang = c1.selectbox("Language", LANGS, index=0, key="anon_lang")
+        confidence = c2.slider(
+            "Confidence threshold",
+            0.0,
+            1.0,
+            0.5,
+            0.05,
+            key="anon_conf",
+            help="Lower keeps more entities (higher PHI recall = more replaced).",
+        )
+        consistent = c1.toggle(
+            "Deterministic",
+            value=True,
+            key="anon_consistent",
+            help="Same input → same surrogate, so repeated mentions resolve to one identity.",
+        )
+        seed = c2.number_input(
+            "Seed",
+            value=42,
+            step=1,
+            key="anon_seed",
+            help="Reproducible surrogates across runs (used when Deterministic is on).",
+        )
+        locale = st.text_input(
+            "Locale",
+            value="",
+            placeholder="e.g. en_US, pt_BR",
+            key="anon_locale",
+            help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the language.",
+        )
+        submitted = st.form_submit_button(
+            "Anonymize", type="primary", icon=":material/masks:"
+        )
+    if submitted and not text.strip():
+        st.warning("Enter some text to anonymize.")
+        return
+    if not submitted:
+        return
+
+    # Pin method=replace; only add seed when deterministic and locale when set (mirrors
+    # build_base_opts, so openmed gets its per-call random surrogates / lang-derived locale
+    # rather than a zero seed or empty locale).
+    opts: dict[str, Any] = {
+        "method": "replace",
+        "confidence_threshold": confidence,
+        "lang": lang,
+        "consistent": consistent,
+        "keep_mapping": True,
+    }
+    if consistent:
+        opts["seed"] = int(seed)
+    if locale.strip():
+        opts["locale"] = locale.strip()
+
+    result = _call(service.deidentify, text, action="Anonymizing", **opts)
+    if result is None:
+        return
+
+    # Hand the synthetic text + mapping to the Re-identify tab, set together so an earlier
+    # run's mapping never lingers against this run's text (mirrors _render_single).
+    st.session_state.last_deidentified = result["deidentified_text"]
+    st.session_state.last_mapping = result.get("mapping") or None
+
+    entities = result["entities"]
+    m1, m2 = st.columns(2)
+    m1.metric("Entities replaced", len(entities))
+    m2.metric("Method", result["method"])
+
+    left, right = st.columns(2)
+    with left.container(border=True, height="stretch"):
+        st.caption("Original — detected PII highlighted")
+        _render_highlight(text, entities)
+    with right.container(border=True, height="stretch"):
+        st.caption("Anonymized — synthetic surrogates")
+        st.html(render_plain(result["deidentified_text"]))
+        st.download_button(
+            "Download",
+            result["deidentified_text"],
+            file_name="anonymized.txt",
+            icon=":material/download:",
+            key="dl_anon",
+        )
+
+    if result.get("mapping"):
+        with st.expander("Mapping — re-identification key", icon=":material/key:"):
+            st.caption(
+                "As sensitive as raw PHI. Held in this session for the Re-identify tab."
+            )
+            st.json(result["mapping"])
+
+
 @st.fragment
 def _render_reidentify() -> None:
     st.caption(
@@ -462,12 +576,13 @@ def main() -> None:
         "the de-identification method lives in the sidebar."
     )
 
-    tab_detect, tab_ner, tab_single, tab_batch, tab_reid = st.tabs(
+    tab_detect, tab_ner, tab_single, tab_batch, tab_anon, tab_reid = st.tabs(
         [
             ":material/search: Detect",
             ":material/biotech: Clinical NER",
             ":material/description: Single note",
             ":material/stacks: Batch",
+            ":material/masks: Anonymize",
             ":material/lock_open: Re-identify",
         ]
     )
@@ -479,6 +594,8 @@ def main() -> None:
         _render_single(base_opts)
     with tab_batch:
         _render_batch(base_opts)
+    with tab_anon:
+        _render_anonymize()
     with tab_reid:
         _render_reidentify()
 
