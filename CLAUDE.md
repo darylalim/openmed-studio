@@ -74,8 +74,8 @@ input (PHI). `test_engine.py` covers
 `OpenMedConfig(backend=...)`), and that `deidentify` forwards every method — including `shift_dates`
 with its `date_shift_days`/`keep_year` controls and `use_safety_sweep` (while never forwarding
 `audit`) — straight to openmed (monkeypatching `openmed.deidentify` so no model loads). It also pins
-that `PIIEngine.reidentify` reorders overlapping mapping keys longest-first (no model). Model tests
-are in `test_pii_model.py` plus the
+that `PIIEngine.reidentify` restores a kept mapping in one regex pass so overlapping/substring
+keys can't corrupt each other (no model). Model tests are in `test_pii_model.py` plus the
 `@pytest.mark.model` tests in `test_engine.py` (which drive the real engine via the shared `loader`
 fixture), all **skipped by default**. The `--run-model` opt-in is wired via `pytest_addoption` +
 `pytest_collection_modifyitems` in `conftest.py`, which also provides the session-scoped `loader`
@@ -132,11 +132,11 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
     wrappers over `extract_pii`/`deidentify`/`reidentify` with per-call
     `lang`/`model_name`/`date_shift_days`/`keep_year`/`use_safety_sweep`; every method —
     including `method="shift_dates"` — is delegated straight to openmed (openmed >=1.6.0
-    shifts dates correctly on the default model). `deidentify` pins `use_safety_sweep=True`
+    shifts dates correctly on the default model). `use_safety_sweep` defaults to `True`
     (openmed's default) — a deterministic structured-identifier sweep run after model
-    detection — passed explicitly rather than silently inherited; it means de-identification
-    can redact identifiers the `Detect` tab's `extract_pii` (which has no sweep) does not, so
-    the `Detect` caption flags this. Defines the `DeidMethod` and
+    detection, exposed as a sidebar toggle — so de-identification can redact identifiers the
+    `Detect` tab's `extract_pii` (which has no sweep) does not; the `Detect` caption flags
+    this. Defines the `DeidMethod` and
     `Backend` `Literal`s and `DEFAULT_PII_MODEL`.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `DeidentifyRequest`,
     `DeidentifyBatchRequest`, `ReidentifyRequest`, `extra="forbid"`) and the bound primitives
@@ -207,8 +207,8 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
   (or an `AuditReport` when `audit=True` — 1.6.0 types the return as
   `DeidentificationResult | AuditReport`; the app's engine returns it as `Any`, never sets
   `audit`, and `tests/test_pii_model.py` casts it back to `DeidentificationResult`).
-  `use_safety_sweep=True` (the app pins it on) runs a deterministic structured-identifier
-  sweep after detection; `extract_pii` has no such parameter.
+  `use_safety_sweep=True` (the app's default, exposed as a sidebar toggle) runs a deterministic
+  structured-identifier sweep after detection; `extract_pii` has no such parameter.
   Methods: `mask`, `remove`, `replace` (Faker surrogates — use `consistent=True, seed=N` for
   determinism), `hash`, `shift_dates`.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
@@ -221,13 +221,14 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
   (`openmed/core/pii.py:_is_date_entity` normalizes the model's `"date"`), so `shift_dates` now
   shifts dates on the default model. `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates`
   asserts this (it was a `strict` xfail before the upgrade).
-- **openmed's `reidentify()` mis-restores overlapping mapping keys; the app works around it.**
+- **openmed's `reidentify()` mis-restores overlapping mapping keys; the app fixes it.**
   openmed applies `str.replace` per entry, so a key that is a prefix/substring of another
   (e.g. `ALIAS_1` vs `ALIAS_10`, or unbracketed `hash`/`replace` surrogates) corrupts the
-  longer one. `PIIEngine.reidentify` reorders the mapping longest-key-first before delegating
-  (openmed preserves dict insertion order), so the app path restores correctly;
-  `tests/test_engine.py::test_reidentify_orders_overlapping_keys_longest_first` pins this. The
-  raw-openmed limitation is still captured as a `strict` xfail in `tests/test_pii_pure.py`.
+  longer one, and a replacement value that contains another key gets re-substituted.
+  `PIIEngine.reidentify` instead restores in a single regex pass (longest key first), so no
+  replacement is re-scanned and both failure modes are eliminated; `tests/test_engine.py` pins
+  the prefix and value-contains-key cases. The raw-openmed limitation is still captured as a
+  `strict` xfail in `tests/test_pii_pure.py`.
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
   literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.

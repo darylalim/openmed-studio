@@ -121,12 +121,15 @@ def build_base_opts(
     seed: int,
     date_shift_days: int,
     keep_year: bool,
+    use_safety_sweep: bool,
 ) -> dict[str, Any]:
-    """Build the shared ``/pii/deidentify`` request body from the sidebar options.
+    """Build the shared de-identify request body from the sidebar options.
 
     ``seed`` is included only for deterministic ``replace``; ``date_shift_days``
     and ``keep_year`` only for ``shift_dates`` — so the payload carries just the
-    fields the chosen method actually consumes.
+    fields the chosen method actually consumes. A ``date_shift_days`` of 0 (the
+    sidebar default) is omitted so openmed applies its per-note random shift rather
+    than shifting by zero — shifting by zero would leave dates in the output verbatim.
     """
     opts: dict[str, Any] = {
         "method": method,
@@ -134,11 +137,15 @@ def build_base_opts(
         "lang": lang,
         "keep_mapping": keep_mapping,
         "consistent": consistent,
+        "use_safety_sweep": use_safety_sweep,
     }
     if consistent:
         opts["seed"] = int(seed)
     if method == "shift_dates":
-        opts["date_shift_days"] = int(date_shift_days)
+        # 0 (the number_input default) means "unset": omit it so openmed applies its
+        # per-note random shift rather than shifting by zero (which leaves dates verbatim).
+        if date_shift_days:
+            opts["date_shift_days"] = int(date_shift_days)
         opts["keep_year"] = keep_year
     return opts
 

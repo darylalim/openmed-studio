@@ -256,9 +256,10 @@ def _render_reidentify() -> None:
 @st.fragment
 def _render_detect(base_opts: dict[str, Any]) -> None:
     st.caption(
-        "Detect PII entities without redacting — audit what the model finds. Note: "
-        "de-identification additionally runs a deterministic structured-identifier safety "
-        "sweep, so it may redact a few identifiers (e.g. SSNs, phone numbers) not shown here."
+        "Detect PII entities without redacting — audit what the model finds. De-identification "
+        "may redact more than is shown here: it keeps smart merging on and runs a deterministic "
+        "structured-identifier safety sweep (toggleable in the sidebar) that catches IDs the "
+        "model misses."
     )
     with st.form("detect"):
         text = st.text_area("Clinical note to scan", value=EXAMPLE_NOTE, height=200)
@@ -300,7 +301,10 @@ def _render_sidebar() -> dict[str, Any]:
     with st.sidebar:
         st.subheader("Engine")
         engine = get_engine()
-        st.caption(f"Model: {engine.model_name or DEFAULT_PII_MODEL}")
+        st.caption(
+            f"Model: {engine.model_name or DEFAULT_PII_MODEL} (English) — non-English "
+            "languages auto-load a language-specific model on first use."
+        )
         st.caption(
             f"Backend: {engine.backend or 'auto'} · v{__version__} · "
             + ("model loaded" if engine.is_loaded else "loads on first request")
@@ -335,10 +339,17 @@ def _render_sidebar() -> dict[str, Any]:
                 "Date shift days",
                 value=0,
                 step=1,
-                help="Only used by method=shift_dates.",
+                help="Only used by method=shift_dates. 0 = random per-note shift.",
             )
             keep_year = st.toggle(
                 "Keep year", value=True, help="Used by method=shift_dates."
+            )
+            use_safety_sweep = st.toggle(
+                "Safety sweep",
+                value=True,
+                help="Run a deterministic structured-identifier sweep after model "
+                "detection. Recommended on — it catches IDs (SSNs, phones) the model "
+                "misses; turning it off lowers PHI recall.",
             )
 
     base_opts = build_base_opts(
@@ -350,6 +361,7 @@ def _render_sidebar() -> dict[str, Any]:
         seed=int(seed),
         date_shift_days=int(date_shift_days),
         keep_year=keep_year,
+        use_safety_sweep=use_safety_sweep,
     )
     return base_opts
 

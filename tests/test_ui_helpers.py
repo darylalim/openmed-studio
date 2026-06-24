@@ -183,6 +183,7 @@ def test_build_base_opts_mask_omits_seed_and_date_fields():
         seed=7,
         date_shift_days=30,
         keep_year=True,
+        use_safety_sweep=True,
     )
     assert opts == {
         "method": "mask",
@@ -190,6 +191,7 @@ def test_build_base_opts_mask_omits_seed_and_date_fields():
         "lang": "en",
         "keep_mapping": True,
         "consistent": False,
+        "use_safety_sweep": True,
     }
 
 
@@ -203,6 +205,7 @@ def test_build_base_opts_consistent_replace_includes_seed():
         seed=42,
         date_shift_days=0,
         keep_year=True,
+        use_safety_sweep=True,
     )
     assert opts["consistent"] is True
     assert opts["seed"] == 42
@@ -220,6 +223,7 @@ def test_build_base_opts_seed_tracks_consistent_not_method():
         seed=5,
         date_shift_days=0,
         keep_year=True,
+        use_safety_sweep=True,
     )
     assert with_seed["seed"] == 5  # non-replace method still gets seed when consistent
     without_seed = build_base_opts(
@@ -231,6 +235,7 @@ def test_build_base_opts_seed_tracks_consistent_not_method():
         seed=5,
         date_shift_days=0,
         keep_year=True,
+        use_safety_sweep=True,
     )
     assert "seed" not in without_seed  # replace without consistent omits seed
 
@@ -266,7 +271,45 @@ def test_build_base_opts_shift_dates_includes_date_fields():
         seed=0,
         date_shift_days=180,
         keep_year=False,
+        use_safety_sweep=True,
     )
     assert opts["date_shift_days"] == 180
     assert opts["keep_year"] is False
     assert "seed" not in opts
+
+
+def test_build_base_opts_shift_dates_omits_zero_days():
+    # date_shift_days=0 (the sidebar default) must be omitted so the request falls to
+    # openmed's per-note random shift instead of shifting by zero — which, once shift_dates
+    # actually runs under openmed 1.6.0, would emit every date verbatim (a PHI leak).
+    opts = build_base_opts(
+        method="shift_dates",
+        confidence_threshold=0.5,
+        lang="en",
+        keep_mapping=True,
+        consistent=False,
+        seed=0,
+        date_shift_days=0,
+        keep_year=True,
+        use_safety_sweep=True,
+    )
+    assert "date_shift_days" not in opts
+    assert opts["keep_year"] is True
+
+
+def test_build_base_opts_carries_use_safety_sweep():
+    def _opts(*, use_safety_sweep: bool) -> dict:
+        return build_base_opts(
+            method="mask",
+            confidence_threshold=0.5,
+            lang="en",
+            keep_mapping=False,
+            consistent=False,
+            seed=0,
+            date_shift_days=0,
+            keep_year=True,
+            use_safety_sweep=use_safety_sweep,
+        )
+
+    assert _opts(use_safety_sweep=True)["use_safety_sweep"] is True
+    assert _opts(use_safety_sweep=False)["use_safety_sweep"] is False

@@ -134,8 +134,8 @@ request, across Python 3.10 and 3.13.
 - Smart entity merging is on by default (`use_smart_merging=True`) and recombines
   token-fragmented PII like dates and SSNs into whole spans.
 - De-identification runs a deterministic structured-identifier **safety sweep** after model
-  detection (`use_safety_sweep=True`), so it may redact a few identifiers the **Detect** tab
-  (which doesn't run the sweep) doesn't surface.
+  detection (`use_safety_sweep=True`, toggleable in the sidebar), so it may redact a few
+  identifiers the **Detect** tab (which doesn't run the sweep) doesn't surface.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).

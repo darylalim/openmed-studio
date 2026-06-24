@@ -11,6 +11,7 @@ model.
 
 from __future__ import annotations
 
+import re
 import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -170,16 +171,20 @@ class PIIEngine:
 
     @staticmethod
     def reidentify(deidentified_text: str, mapping: dict[str, str]) -> str:
-        """Restore originals from a kept mapping.
+        """Restore originals from a kept mapping, in a single correct pass.
 
-        openmed.reidentify applies one ``str.replace`` per entry in mapping order, so a
-        key that is a substring/prefix of another (``ALIAS_1`` vs ``ALIAS_10``, or
-        unbracketed ``hash``/``replace`` surrogates) would corrupt the longer one. We
-        reorder the mapping longest-key-first before delegating — openmed preserves dict
-        insertion order — so each longer key is restored before its prefix. (openmed's
-        raw function keeps the limitation, pinned by the xfail in ``tests/test_pii_pure.py``.)
+        openmed.reidentify applies one ``str.replace`` per entry, which corrupts output
+        two ways: a key that is a substring of another (``ALIAS_1`` vs ``ALIAS_10``, or
+        unbracketed ``hash``/``replace`` surrogates) clobbers the longer one, and a
+        replacement value that contains another key gets re-substituted. We instead match
+        every key in one regex pass (longest key first, so the longest match wins at each
+        position) and substitute via the mapping, so a replacement is never re-scanned —
+        eliminating both failure modes. (openmed's raw function keeps the limitation,
+        pinned by the xfail in ``tests/test_pii_pure.py``.)
         """
-        from openmed import reidentify
-
-        ordered = dict(sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True))
-        return reidentify(deidentified_text, ordered)
+        if not mapping:
+            return deidentified_text
+        pattern = re.compile(
+            "|".join(re.escape(key) for key in sorted(mapping, key=len, reverse=True))
+        )
+        return pattern.sub(lambda m: mapping[m.group(0)], deidentified_text)

@@ -132,6 +132,17 @@ def test_reidentify_orders_overlapping_keys_longest_first() -> None:
     assert restored == "Ann and Bob"
 
 
+def test_reidentify_does_not_re_substitute_a_value_containing_another_key() -> None:
+    # Single-pass restoration: a replacement value that contains another key is not
+    # re-scanned, so it can't be clobbered. (Sequential str.replace would corrupt the
+    # "X2" inside the restored "see X2" into "Bob".)
+    restored = PIIEngine.reidentify(
+        "X1 and X2",
+        {"X1": "see X2", "X2": "Bob"},
+    )
+    assert restored == "see X2 and Bob"
+
+
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
 
 
