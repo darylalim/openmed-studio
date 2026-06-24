@@ -447,6 +447,63 @@ def test_empty_anonymize_warns_and_skips(monkeypatch):
     assert not at.metric  # no result rendered
 
 
+def test_anonymize_error_renders_message(monkeypatch):
+    _use_engine(monkeypatch, _RaisingEngine(ValueError("anon boom")))
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    assert any("anon boom" in e.value for e in at.error)
+    assert not at.metric
+
+
+def test_anonymize_forwards_consistent_and_seed(monkeypatch):
+    # "Deterministic" is on by default; the in-tab seed forwards only then, so repeated
+    # mentions resolve to one stable surrogate, reproducibly across runs.
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(n for n in at.number_input if n.key == "anon_seed").set_value(7)
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    assert captured.get("consistent") is True
+    assert captured.get("seed") == 7
+
+
+def test_anonymize_omits_seed_when_not_deterministic(monkeypatch):
+    # With "Deterministic" off, seed is omitted so openmed uses fresh per-call surrogates
+    # (guards the `if consistent: opts["seed"] = ...` branch in _render_anonymize).
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(t for t in at.toggle if t.key == "anon_consistent").set_value(False)
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    assert captured.get("consistent") is False
+    assert captured.get("seed") is None
+
+
 # --- re-identify -------------------------------------------------------------
 def test_reidentify_renders_text(monkeypatch):
     _use_engine(monkeypatch, _StubEngine())

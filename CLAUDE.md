@@ -9,8 +9,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 *not* the library itself — the library source lives at `github.com/maziyarpanahi/openmed`.
 The aim is an app that surfaces OpenMed's full capability set (clinical NER, PII/PHI
 de-identification, anonymization, zero-shot extraction). **Today it implements PII/PHI
-de-identification plus clinical NER (token-classification entity detection)**; anonymization
-and zero-shot extraction remain the roadmap. The project is a
+de-identification — including surrogate anonymization (the `Anonymize` tab, a surrogate-first
+view over `deidentify(method="replace")`) — plus clinical NER (token-classification entity
+detection)**; deeper anonymization (OpenMed's `Anonymizer`/provider/`policy` machinery) and
+zero-shot extraction remain the roadmap. The project is a
 [Streamlit](https://streamlit.io/) app (`streamlit_app.py`) that runs the model **in-process**
 through a reusable, framework-free `PIIEngine` and a thin in-process service seam
 (`openmed_studio/service.py`). There is no separate web service — the app *is* the delivery surface
@@ -113,13 +115,17 @@ model, no network; sentinel values a real model would never produce (`[[STUB-DEI
 stub. It also covers the
 `Single`→`Re-identify` session-state handoff across the `@st.fragment` boundary, that the rendered
 marks are theme-agnostic (`color: inherit` + an `rgba` tint), a widget-key
-collision guard across all five tabs, that the sidebar `Replace locale` input flows through to the
+collision guard across all six tabs, that the sidebar `Replace locale` input flows through to the
 engine (driving the `Method` `segmented_control` to `replace`) — a `replace`-only knob, omitted
 otherwise — and the `Clinical NER` tab: the `Entity domain` picker lists the curated `NER_MODELS`
 domains (`Disease` default) and forwards the picked domain's `.alias`; `Analyze` renders highlighted
 UPPERCASE-labelled entities; the confidence slider seeds from the model's `recommended_confidence`;
 the preview shows the `display_name`/`entity_types` (and the `Medical` broad-coverage flag); and the
-per-domain download tracking lands in `ner_analyzed_domains`. It opens
+per-domain download tracking lands in `ner_analyzed_domains`; and the `Anonymize` tab
+(`_render_anonymize`, **not** a fragment — like `Single note` — so its submit hands off to
+`Re-identify`): `method=replace` surrogate output, the in-tab determinism (`consistent`/`seed`,
+seed omitted unless deterministic) and `locale` knobs forwarded, the `last_deidentified`/
+`last_mapping` handoff, and a `ServiceError` path. It opens
 with `pytest.importorskip("streamlit")`, but streamlit is a **core** dependency, so the default suite
 runs both UI test files and `ty check` sees `streamlit_app.py` — no extra needed.
 
@@ -214,15 +220,15 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
 - **UI structure:** the Streamlit app lives at the repo root: `streamlit_app.py` (the app —
   `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call` runs a `service.*`
   function in a spinner and renders any `ServiceError`; the sidebar reads engine
-  state (model/backend/`is_loaded`) directly, and the five tabs (`Detect` → `service.extract`,
+  state (model/backend/`is_loaded`) directly, and the six tabs (`Detect` → `service.extract`,
   `Clinical NER` → `service.analyze`, `Single note`/`Batch` → `service.deidentify[_batch]`,
-  `Re-identify` → `service.reidentify`) live in
+  `Anonymize` → `service.deidentify` (`method=replace`), `Re-identify` → `service.reidentify`) live in
   `main()`, guarded by `if __name__ == "__main__"` so importing for tests has no side effects). The
   `Detect`/`Clinical NER`/`Batch`/`Re-identify` tab renderers are `@st.fragment` so an in-tab
   interaction reruns
-  only that tab; `Single note` is **intentionally not** a fragment, because its form submit must
-  trigger a full rerun to hand `last_deidentified`/`last_mapping` (via `st.session_state`, not widget
-  keys) to the `Re-identify` tab. The `Clinical NER` tab (`_render_ner`) has its own controls,
+  only that tab; `Single note` and `Anonymize` are **intentionally not** fragments, because their form
+  submit must trigger a full rerun to hand `last_deidentified`/`last_mapping` (via `st.session_state`,
+  not widget keys) to the `Re-identify` tab. The `Clinical NER` tab (`_render_ner`) has its own controls,
   independent of the de-identification sidebar: a domain picker (`st.selectbox` over `NER_MODELS`,
   default `Disease`) **outside** the form so selecting a domain reruns the fragment and refreshes a
   reactive preview (the model's `display_name`, size, and `entity_types` — flagging `Medical` as the
