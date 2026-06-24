@@ -31,3 +31,7 @@ models/
 
 # Streamlit local secrets — never commit (.streamlit/config.toml is tracked; secrets are not)
 .streamlit/secrets.toml
+
+# Claude Code local + runtime files (a shared .claude/settings.json may still be committed)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock

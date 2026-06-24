@@ -31,7 +31,7 @@ It opens with four tabs:
 - **Detect** — detect PII entities and highlight them (with a color legend) plus an entity table,
   without redacting — for auditing what the model finds before choosing a method.
 - **Single note** — de-identify one note; shows the original with detected PII highlighted
-  side-by-side with the redacted text (with a one-click **copy** button), plus an entity table and
+  side-by-side with the redacted text (with a **download** button), plus an entity table and
   (optionally) the mapping.
 - **Batch** — edit a table of notes (up to 100) and de-identify them in one go.
 - **Re-identify** — restore originals from a kept mapping (auto-filled from the last single-note run).
@@ -108,7 +108,7 @@ uv run pytest --run-model    # also run tests that load the OpenMed PII model
 Tests live in [`tests/`](tests/). The fast tests need no model: `test_service.py` covers the
 in-process seam (backend resolution, the dict adapters, the error taxonomy) with a stub engine,
 `test_validation.py` pins the surviving input guarantees (caps, enums, format checks, the text-cap
-knob, the `DeidMethod`↔openmed sync, and PHI-non-echo), `test_engine.py` checks `PIIEngine`'s
+knob, the `DeidMethod`/`Lang`↔openmed sync, and PHI-non-echo), `test_engine.py` checks `PIIEngine`'s
 lazy-loading contract and that `deidentify` forwards every method (including `shift_dates`) to
 OpenMed, `test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
 the pure rendering/payload helpers. `test_ui_app.py` drives `streamlit_app.py` via Streamlit's
@@ -133,6 +133,9 @@ request, across Python 3.10 and 3.13.
 - All identifiers in the app's sample note are fabricated.
 - Smart entity merging is on by default (`use_smart_merging=True`) and recombines
   token-fragmented PII like dates and SSNs into whole spans.
+- De-identification runs a deterministic structured-identifier **safety sweep** after model
+  detection (`use_safety_sweep=True`), so it may redact a few identifiers the **Detect** tab
+  (which doesn't run the sweep) doesn't surface.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).
