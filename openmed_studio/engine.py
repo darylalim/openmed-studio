@@ -1,12 +1,14 @@
-"""Reusable PII/PHI de-identification engine: one shared model, thin wrappers.
+"""Reusable engine for OpenMed clinical NLP: one shared model loader, thin wrappers.
 
-This is the core of the app, independent of any web framework. It holds a single
-:class:`openmed.ModelLoader` and reuses it across every call (the documented best
-practice) so the ~44M-parameter PII model loads at most once per process.
+This is the core of the app, independent of any web framework. :class:`PIIEngine`
+holds a single :class:`openmed.ModelLoader` and reuses it across every call (the
+documented best practice). It wraps both PII/PHI **de-identification**
+(``extract``/``deidentify``/``reidentify`` over the ~44M-parameter PII model) and
+clinical **NER** (``analyze`` over a per-domain token-classification model — see
+:data:`NER_MODELS`); the one shared loader serves every model, keyed by name.
 
-The OpenMed import is deferred to first use, so importing this module — and the
-service's ``/health`` endpoint — never pulls in Torch/Transformers or downloads a
-model.
+The OpenMed import is deferred to first use, so importing this module never pulls in
+Torch/Transformers or downloads a model.
 """
 
 from __future__ import annotations
@@ -69,11 +71,13 @@ def _entities(result: Any) -> list[Any]:
 
 
 class PIIEngine:
-    """Detect and de-identify PII/PHI in clinical text.
+    """Detect and de-identify PII/PHI, and detect clinical entities (NER), in text.
 
-    The OpenMed model is loaded lazily on first use and then reused, so
-    constructing the engine is cheap and the model downloads only when the first
-    detection/redaction call is made.
+    Despite the name, this engine spans both capabilities: ``extract``/``deidentify``/
+    ``reidentify`` for PII/PHI and ``analyze`` for clinical NER (a rename to a more
+    general name is deferred). Models load lazily on first use and are then reused, so
+    constructing the engine is cheap; each model downloads only on the first call that
+    needs it.
     """
 
     def __init__(

@@ -84,6 +84,28 @@ def _raising(exc: Exception) -> PIIEngine:
     return cast("PIIEngine", _RaisingEngine(exc))
 
 
+def _capturing(method: str = "deidentify") -> tuple[PIIEngine, dict[str, object]]:
+    """A stub engine whose ``method`` records its kwargs; returns ``(engine, captured)``.
+
+    Lets the forwarding tests assert what reaches the engine without each re-declaring an
+    identical capturing stub. ``deidentify`` returns the canned ``DeidentificationResult``
+    shape the dict adapter consumes; ``analyze`` returns an empty entity list.
+    """
+    captured: dict[str, object] = {}
+    canned = (
+        []
+        if method == "analyze"
+        else SimpleNamespace(deidentified_text="ok", pii_entities=[], mapping=None)
+    )
+
+    def _record(self, _text, **kwargs):
+        captured.update(kwargs)
+        return canned
+
+    capturing = type("_Capturing", (_StubEngine,), {method: _record})
+    return cast("PIIEngine", capturing()), captured
+
+
 # --- backend resolution (no model) ------------------------------------------
 
 
@@ -159,16 +181,7 @@ def test_deidentify_forwards_use_safety_sweep_to_engine() -> None:
     # The 1.6.0 structured-identifier safety sweep is wired through the service layer:
     # on by default, and overridable per request (the engine->openmed hop is covered
     # in test_engine.py; this pins the service->engine hop).
-    captured: dict[str, object] = {}
-
-    class _Capturing(_StubEngine):
-        def deidentify(self, _text, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                deidentified_text="ok", pii_entities=[], mapping=None
-            )
-
-    engine = cast("PIIEngine", _Capturing())
+    engine, captured = _capturing()
     service.deidentify(engine, "x", method="mask")
     assert captured["use_safety_sweep"] is True
     captured.clear()
@@ -180,16 +193,7 @@ def test_deidentify_forwards_locale_to_engine() -> None:
     # A valid `replace` locale passes validation and reaches the engine unchanged
     # (default None when unset). Pins the validation->service->engine hop; the
     # engine->openmed hop is covered in test_engine.py.
-    captured: dict[str, object] = {}
-
-    class _Capturing(_StubEngine):
-        def deidentify(self, _text, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                deidentified_text="ok", pii_entities=[], mapping=None
-            )
-
-    engine = cast("PIIEngine", _Capturing())
+    engine, captured = _capturing()
     service.deidentify(engine, "x", method="mask")
     assert captured["locale"] is None
     captured.clear()
@@ -201,16 +205,7 @@ def test_deidentify_forwards_use_smart_merging_to_engine() -> None:
     # deidentify forwards use_smart_merging like extract does: on by default, and
     # overridable per request. Pins the service->engine hop (engine->openmed is in
     # test_engine.py).
-    captured: dict[str, object] = {}
-
-    class _Capturing(_StubEngine):
-        def deidentify(self, _text, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                deidentified_text="ok", pii_entities=[], mapping=None
-            )
-
-    engine = cast("PIIEngine", _Capturing())
+    engine, captured = _capturing()
     service.deidentify(engine, "x", method="mask")
     assert captured["use_smart_merging"] is True
     captured.clear()
@@ -251,14 +246,7 @@ def test_analyze_returns_entity_dicts() -> None:
 def test_analyze_forwards_options_to_engine() -> None:
     # The validated model_name/confidence/aggregation/group_entities reach engine.analyze
     # (the engine->openmed hop is covered in test_engine.py).
-    captured: dict[str, object] = {}
-
-    class _Capturing(_StubEngine):
-        def analyze(self, _text, **kwargs):
-            captured.update(kwargs)
-            return []
-
-    engine = cast("PIIEngine", _Capturing())
+    engine, captured = _capturing("analyze")
     service.analyze(
         engine,
         "x",
@@ -276,14 +264,7 @@ def test_analyze_forwards_options_to_engine() -> None:
 def test_analyze_uses_ner_defaults_when_omitted() -> None:
     # NerRequest's defaults reach the engine: confidence_threshold is 0.0 (openmed's NER
     # default — deliberately NOT the de-identify 0.5/0.7), aggregation 'simple', no grouping.
-    captured: dict[str, object] = {}
-
-    class _Capturing(_StubEngine):
-        def analyze(self, _text, **kwargs):
-            captured.update(kwargs)
-            return []
-
-    engine = cast("PIIEngine", _Capturing())
+    engine, captured = _capturing("analyze")
     service.analyze(engine, "x", model_name="disease_detection_superclinical_141m")
     assert captured["confidence_threshold"] == 0.0
     assert captured["aggregation_strategy"] == "simple"

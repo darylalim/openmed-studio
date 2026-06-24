@@ -121,6 +121,11 @@ def test_deidentify_delegates_every_method_to_openmed(monkeypatch) -> None:
     # Smart merging is forwarded by deidentify too (default on), matching extract().
     assert captured["use_smart_merging"] is True
     assert "audit" not in captured
+    # model_name is unset here, so _model_kwargs OMITS it (openmed's default is a literal
+    # model string, not None) — forwarding model_name=None would make openmed load a model
+    # literally named None. Pin the omission so a refactor to unconditional forwarding fails
+    # in the fast suite (this shared _model_kwargs path also backs extract).
+    assert "model_name" not in captured
 
 
 def test_deidentify_forwards_locale_to_openmed(monkeypatch) -> None:
@@ -274,6 +279,74 @@ def test_analyze_delegates_to_openmed(monkeypatch) -> None:
     assert captured["loader"] is engine.loader  # shared loader threaded through
     assert "lang" not in captured  # analyze_text has no lang param
     assert [e.label for e in entities] == ["DISEASE"]  # PredictionResult unwrapped
+
+
+def test_analyze_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -> None:
+    """Drift guard: every named ``openmed.analyze_text`` parameter is either forwarded by
+    ``PIIEngine.analyze`` or on an explicit exclusion list — the NER analogue of
+    ``test_deidentify_forwards_every_openmed_param_or_allowlists_it``.
+
+    This matters more than the deidentify case: ``analyze_text`` declares
+    ``**pipeline_kwargs``, so a renamed/removed forwarded param — notably
+    ``output_format="dict"``, which the ``_entities`` unwrap depends on — would NOT raise.
+    It would be silently swallowed into ``pipeline_kwargs``, openmed would use its default,
+    and analyze would return wrong/empty results that only a ``--run-model`` test (skipped
+    in CI) could catch. Pinning the forwarded set to the real signature closes that gap.
+    """
+    import inspect
+
+    import openmed
+
+    # Read the real signature BEFORE the monkeypatch swaps in the stub. Exclude
+    # **pipeline_kwargs (VAR_KEYWORD) — it absorbs anything, so it can't be "uncovered".
+    sig = inspect.signature(openmed.analyze_text)
+    openmed_params = {
+        name
+        for name, p in sig.parameters.items()
+        if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)
+    }
+
+    # analyze_text params the engine intentionally does not forward (the alternate
+    # construction path, sentence/tokenizer tuning, formatter/metadata plumbing). Forwarding
+    # one later — or openmed dropping one — must update this set; the assertions enforce that.
+    intentionally_not_forwarded = {
+        "model_id",  # alias for model_name; the engine passes model_name
+        "config",  # alternate construction path; the engine owns loading via loader=
+        "include_confidence",
+        "formatter_kwargs",
+        "metadata",
+        "use_fast_tokenizer",
+        "sentence_detection",
+        "sentence_language",
+        "sentence_clean",
+        "sentence_segmenter",
+    }
+
+    captured: dict[str, object] = {}
+
+    def fake_analyze_text(text, **kwargs):
+        captured.update(kwargs)
+        captured["text"] = text
+        return SimpleNamespace(entities=[])
+
+    monkeypatch.setattr(openmed, "analyze_text", fake_analyze_text)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    engine.analyze("x", model_name="disease_detection_superclinical_141m")
+    forwarded = set(captured)  # includes "text", captured positionally
+
+    uncovered = openmed_params - forwarded - intentionally_not_forwarded
+    assert not uncovered, (
+        "openmed.analyze_text params neither forwarded nor allowlisted "
+        f"(forward them in PIIEngine.analyze or justify them): {sorted(uncovered)}"
+    )
+    assert intentionally_not_forwarded <= openmed_params, (
+        "stale exclusion(s) no longer in openmed.analyze_text: "
+        f"{sorted(intentionally_not_forwarded - openmed_params)}"
+    )
+    assert not (forwarded & intentionally_not_forwarded), (
+        "param is both forwarded and allowlisted — drop it from the exclusion set: "
+        f"{sorted(forwarded & intentionally_not_forwarded)}"
+    )
 
 
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
