@@ -3,9 +3,9 @@
 **A clinical-NLP application built on [OpenMed](https://openmed.life/docs/).**
 
 The goal is an app over OpenMed's full toolkit — clinical NER, PII/PHI de-identification,
-anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification and
-clinical NER** (anonymization and zero-shot extraction are on the roadmap), shipped as a
-[Streamlit](https://streamlit.io/) app.
+anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification —
+including surrogate anonymization — and clinical NER** (deeper anonymization and zero-shot
+extraction are on the roadmap), shipped as a [Streamlit](https://streamlit.io/) app.
 
 ## Quickstart
 
@@ -27,7 +27,7 @@ framework-free [`PIIEngine`](openmed_studio/engine.py) (one shared `ModelLoader`
 in-process seam in [`openmed_studio/service.py`](openmed_studio/service.py), which validates each
 request and adapts OpenMed's results for the UI. There is no separate service to start.
 
-It opens with five tabs:
+It opens with six tabs:
 
 - **Detect** — detect PII entities and highlight them (with a color legend) plus an entity table,
   without redacting — for auditing what the model finds before choosing a method.
@@ -41,7 +41,11 @@ It opens with five tabs:
   side-by-side with the redacted text (with a **download** button), plus an entity table and
   (optionally) the mapping.
 - **Batch** — edit a table of notes (up to 100) and de-identify them in one go.
-- **Re-identify** — restore originals from a kept mapping (auto-filled from the last single-note run).
+- **Anonymize** — replace PII/PHI with realistic *fake* surrogates (a safe-to-share synthetic note)
+  rather than masking; shows the original (highlighted) beside the anonymized text with a **download**
+  button, and keeps the mapping so the result round-trips through Re-identify.
+- **Re-identify** — restore originals from a kept mapping (auto-filled from the last Single note or
+  Anonymize run).
 
 The sidebar reports the engine's model/backend/load state and holds the shared de-identification
 options: method (`mask` / `remove` / `replace` / `hash` / `shift_dates`), language (12 supported),
@@ -70,8 +74,8 @@ the rest.
   use a translucent tint plus `color: inherit`, so they read correctly on either with no runtime
   theme detection (both modes are defined in `.streamlit/config.toml`).
 - **Isolated reruns.** The Detect/Clinical NER/Batch/Re-identify tabs are `st.fragment`s, so an
-  interaction in one doesn't rerun the others; Single note stays a full rerun so it can hand its
-  result to Re-identify.
+  interaction in one doesn't rerun the others; Single note and Anonymize stay full reruns so they can
+  hand their result to Re-identify.
 
 ### What we dropped vs the old service
 
@@ -126,7 +130,7 @@ knob, the `DeidMethod`/`Lang`↔openmed and curated-`NER_MODELS`↔openmed-regis
 `test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
 the pure rendering/payload helpers. `test_ui_app.py` drives `streamlit_app.py` via Streamlit's
 `AppTest` with the engine stubbed in-process (covering the theme-aware highlighting, the fragmented
-tabs, and the Clinical NER tab + domain picker). The `--run-model` tests — `test_pii_model.py` plus the
+tabs, the Clinical NER tab + domain picker, and the Anonymize tab). The `--run-model` tests — `test_pii_model.py` plus the
 `@pytest.mark.model` tests in `test_engine.py` — load real models to verify PII detection, masking,
 deterministic replacement, round-trips, and clinical-NER detection.
 

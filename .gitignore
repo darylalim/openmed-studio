@@ -29,6 +29,13 @@ models/
 *.safetensors
 *.npz
 
+# App download outputs — de-identified / anonymized / re-identified text may carry PHI or
+# its surrogates; never commit one if a browser saves it into the repo
+/deidentified.txt
+/deidentified_batch.json
+/anonymized.txt
+/reidentified.txt
+
 # Streamlit local secrets — never commit (.streamlit/config.toml is tracked; secrets are not)
 .streamlit/secrets.toml
 

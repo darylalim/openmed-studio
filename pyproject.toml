@@ -1,7 +1,7 @@
 [project]
 name = "openmed-studio"
 version = "0.1.0"
-description = "Clinical-NLP app over the OpenMed library: PII/PHI de-identification and clinical NER today, with anonymization and zero-shot extraction planned."
+description = "Clinical-NLP app over the OpenMed library: PII/PHI de-identification (including surrogate anonymization) and clinical NER today, with deeper anonymization and zero-shot extraction planned."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

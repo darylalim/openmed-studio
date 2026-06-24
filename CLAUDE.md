@@ -253,7 +253,9 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   the app honors the user's mode; the theme-agnostic marks read correctly in either;
   `gatherUsageStats = false` — a
   clinical-text tool shouldn't phone home); any local secrets go in the gitignored
-  `.streamlit/secrets.toml`.
+  `.streamlit/secrets.toml`. The app's download outputs (`deidentified.txt`/`anonymized.txt`/
+  `reidentified.txt`/`deidentified_batch.json`) are gitignored too, since they can carry PHI or
+  its surrogates.
 - **What was dropped (vs the old FastAPI service):** the HTTP boundary and everything that only
   existed because of it — API-key auth (`OPENMED_STUDIO_API_KEY` / `X-API-Key`), the `{"error":
   {...}}` JSON envelope, the `/compat` OpenMed-REST surface (`OPENMED_STUDIO_COMPAT`), the startup
