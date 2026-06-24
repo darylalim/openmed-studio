@@ -72,6 +72,23 @@ def _check_model_name(value: str | None) -> str | None:
 ModelName = Annotated[str | None, AfterValidator(_check_model_name)]
 
 
+_LOCALE_RE = re.compile(r"[A-Za-z]{2,3}(?:_[A-Za-z0-9]{2,8})?")
+
+
+def _check_locale(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not _LOCALE_RE.fullmatch(value):
+        raise ValueError("locale must look like 'en_US' or 'pt_BR'")
+    return value
+
+
+# An optional Faker locale for `replace` surrogates, format-validated. openmed/Faker
+# validate that the locale actually exists at call time; this only guards the shape.
+LocaleName = Annotated[str | None, AfterValidator(_check_locale)]
+
+
 class _Strict(BaseModel):
     """Reject unknown fields so request typos fail loudly with a validation error."""
 
@@ -91,11 +108,17 @@ class _DeidentifyOptions(_Strict):
 
     method: DeidMethod = "mask"
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    # Recombine token-fragmented PII (dates, SSNs) into whole spans — matches the
+    # Detect tab / extract_pii, which exposes this too. Defaults on, as openmed does.
+    use_smart_merging: bool = True
     lang: Lang = "en"
     model_name: ModelName = None
     keep_mapping: bool = False
     consistent: bool = False
     seed: int | None = None
+    # Faker locale for `replace` surrogates (e.g. 'pt_BR' for Brazilian CPF/CNPJ),
+    # overriding the default openmed derives from `lang`. Only used by method='replace'.
+    locale: LocaleName = None
     date_shift_days: int | None = Field(
         default=None, description="Only used with method='shift_dates'."
     )

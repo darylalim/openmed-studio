@@ -63,17 +63,24 @@ Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`, `test_s
 `test_validation.py`, `test_engine.py`, `test_ui_helpers.py`, and `test_ui_app.py`.
 `test_service.py` covers the in-process seam (`PIIEngine`-stub) — `resolve_backend`/`build_engine`
 backend wiring, the dict adapters (`_entity_dict`, the deidentify shaping), the success paths, that
-the `use_safety_sweep` flag is forwarded to the engine (default on, overridable), and the
+the `use_safety_sweep`, `use_smart_merging`, and `replace` `locale` options are forwarded to the
+engine (the first two default on and overridable; `locale` flows only when set), and the
 `ValueError`→message / `RuntimeError`+`OSError`→"unavailable" error taxonomy (`ServiceError`).
 `test_validation.py` pins the input guarantees enforced before the engine is reached: the text
 (50k) / batch (≤100) / mapping (≤5,000) caps, the `Lang`/`DeidMethod` enums, the confidence range,
-`model_name` format, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed and
+`model_name` and `locale` format, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed and
 `Lang`⊆openmed (`SUPPORTED_LANGUAGES`) sync, and that a rejection message never echoes the offending
 input (PHI). `test_engine.py` covers
 `PIIEngine`'s lazy-loading contract, backend selection (bare `ModelLoader` vs
 `OpenMedConfig(backend=...)`), and that `deidentify` forwards every method — including `shift_dates`
-with its `date_shift_days`/`keep_year` controls and `use_safety_sweep` (while never forwarding
-`audit`) — straight to openmed (monkeypatching `openmed.deidentify` so no model loads). It also pins
+with its `date_shift_days`/`keep_year` controls, `use_safety_sweep`, `use_smart_merging`, and the
+`replace` `locale` (while never forwarding `audit`) — straight to openmed (monkeypatching
+`openmed.deidentify` so no model loads). A **drift guard**
+(`test_deidentify_forwards_every_openmed_param_or_allowlists_it`) introspects the real
+`inspect.signature(openmed.deidentify)` and asserts every parameter is either forwarded or on an
+explicit, documented exclusion list (`audit`/`config`/`policy`/`calibration_thresholds_path`/
+`normalize_accents`/`shift_dates`) — the parameter-set analogue of the `DeidMethod`/`Lang` sync
+tests, so a param openmed adds (or the engine silently drops) fails CI. It also pins
 that `PIIEngine.reidentify` restores a kept mapping in one regex pass so overlapping/substring
 keys can't corrupt each other (no model). Model tests are in `test_pii_model.py` plus the
 `@pytest.mark.model` tests in `test_engine.py` (which drive the real engine via the shared `loader`
@@ -94,8 +101,9 @@ tint plus `color: inherit` — and `build_base_opts` payload logic).
 model, no network; sentinel values a real model would never produce (`[[STUB-DEID-OUTPUT]]`,
 `STUB/sentinel-model`) prove the rendered data came from the stub. It also covers the
 `Single`→`Re-identify` session-state handoff across the `@st.fragment` boundary, that the rendered
-marks are theme-agnostic (`color: inherit` + an `rgba` tint), and a widget-key
-collision guard across all tabs. It opens
+marks are theme-agnostic (`color: inherit` + an `rgba` tint), a widget-key
+collision guard across all tabs, and that the sidebar `Replace locale` input flows through to the
+engine (driving the `Method` `segmented_control` to `replace`) — a `replace`-only knob, omitted otherwise. It opens
 with `pytest.importorskip("streamlit")`, but streamlit is a **core** dependency, so the default suite
 runs both UI test files and `ty check` sees `streamlit_app.py` — no extra needed.
 
@@ -129,19 +137,25 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
 - **App structure:** `openmed_studio/` is the framework-free core (no Streamlit, no HTTP):
   - `engine.py` — the `PIIEngine`: one shared `ModelLoader` (built with an optional `backend` →
     `OpenMedConfig(backend=...)`, else bare so openmed auto-detects), lazy model load, thin
-    wrappers over `extract_pii`/`deidentify`/`reidentify` with per-call
-    `lang`/`model_name`/`date_shift_days`/`keep_year`/`use_safety_sweep`; every method —
+    wrappers over `extract_pii`/`deidentify`/`reidentify` with per-call detection/redaction
+    options (`lang`, `model_name`, `confidence_threshold`, `use_smart_merging`, `consistent`/
+    `seed`, `locale`, `date_shift_days`/`keep_year`, `use_safety_sweep`); every method —
     including `method="shift_dates"` — is delegated straight to openmed (openmed >=1.6.0
     shifts dates correctly on the default model). `use_safety_sweep` defaults to `True`
     (openmed's default) — a deterministic structured-identifier sweep run after model
     detection, exposed as a sidebar toggle — so de-identification can redact identifiers the
     `Detect` tab's `extract_pii` (which has no sweep) does not; the `Detect` caption flags
-    this. Defines the `DeidMethod` and
+    this. `use_smart_merging` (default on) is forwarded too, matching the `Detect` tab; `locale`
+    picks the `replace` surrogate locale (e.g. `pt_BR`) instead of the default openmed derives
+    from `lang`, and is the third `replace` determinism knob alongside `consistent`/`seed`.
+    Defines the `DeidMethod` and
     `Backend` `Literal`s and `DEFAULT_PII_MODEL`.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `DeidentifyRequest`,
     `DeidentifyBatchRequest`, `ReidentifyRequest`, `extra="forbid"`) and the bound primitives
     (`ClinicalText`/`MAX_TEXT_CHARS` via `OPENMED_STUDIO_MAX_TEXT_LENGTH`, read at import by
-    `_max_text_chars`; `MAX_BATCH_ITEMS`, `MAX_MAPPING_ENTRIES`, `Lang`, `_check_model_name`).
+    `_max_text_chars`; `MAX_BATCH_ITEMS`, `MAX_MAPPING_ENTRIES`, `Lang`, `_check_model_name`, and
+    `_check_locale` — a format guard on the optional `replace` `locale`, shape-checked like
+    `model_name`).
     These import only `pydantic`/`os`/`re` — no web framework — so they are reused as the
     in-process validation layer. Re-exports `DeidMethod`.
   - `service.py` — the single in-process chokepoint (framework-free): `resolve_backend()` (reads
@@ -202,15 +216,28 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
 - `extract_pii(text, model_name=<default>, confidence_threshold=0.5, use_smart_merging=True, lang="en", *, loader=None)`
   returns PII entities, each with `.label`, `.text`, `.start`, `.end`, `.confidence`.
   Labels are **lowercase** (`first_name`, `last_name`, `date`, `ssn`, `phone_number`, …).
-- `deidentify(text, method="mask", ..., keep_mapping=False, *, consistent=False, seed=None, locale=None, use_safety_sweep=True, audit=False, loader=None)`
-  returns a `DeidentificationResult` with `.deidentified_text`, `.pii_entities`, `.mapping`
-  (or an `AuditReport` when `audit=True` — 1.6.0 types the return as
-  `DeidentificationResult | AuditReport`; the app's engine returns it as `Any`, never sets
-  `audit`, and `tests/test_pii_model.py` casts it back to `DeidentificationResult`).
+- `deidentify(text, method="mask", model_name=<default>, confidence_threshold=0.7,
+  use_smart_merging=True, keep_mapping=False, consistent=False, seed=None, locale=None,
+  date_shift_days=None, keep_year=True, lang="en", use_safety_sweep=True, audit=False,
+  loader=None, …)` — the installed v1.6.0 signature **also** accepts `shift_dates` (a bool,
+  distinct from `method="shift_dates"`), `normalize_accents`, `config`, `policy`, and
+  `calibration_thresholds_path`. It returns a `DeidentificationResult` with
+  `.deidentified_text`, `.pii_entities`, `.mapping` (or an `AuditReport` when `audit=True` —
+  1.6.0 types the return as `DeidentificationResult | AuditReport`; the app's engine returns it
+  as `Any`, never sets `audit`, and `tests/test_pii_model.py` casts it back to
+  `DeidentificationResult`).
+  The app's engine forwards `method`/`confidence_threshold`/`use_smart_merging`/`keep_mapping`/
+  `consistent`/`seed`/`locale`/`date_shift_days`/`keep_year`/`use_safety_sweep` plus
+  `lang`/`model_name`/`loader`; it deliberately does **not** forward `audit` (would flip the
+  return type), `config` (the engine owns loading via `loader=`), or the advanced
+  `shift_dates`/`normalize_accents`/`policy`/`calibration_thresholds_path` knobs.
+  `tests/test_engine.py::test_deidentify_forwards_every_openmed_param_or_allowlists_it`
+  introspects this real signature and pins the forwarded-vs-excluded split so it can't drift.
   `use_safety_sweep=True` (the app's default, exposed as a sidebar toggle) runs a deterministic
   structured-identifier sweep after detection; `extract_pii` has no such parameter.
-  Methods: `mask`, `remove`, `replace` (Faker surrogates — use `consistent=True, seed=N` for
-  determinism), `hash`, `shift_dates`.
+  Methods: `mask`, `remove`, `replace` (Faker surrogates — `consistent=True, seed=N` for
+  determinism, `locale="pt_BR"` etc. for a specific surrogate locale, exposed as a sidebar
+  input), `hash`, `shift_dates`.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
 
 ## Known gotchas

@@ -297,6 +297,57 @@ def test_build_base_opts_shift_dates_omits_zero_days():
     assert opts["keep_year"] is True
 
 
+def test_build_base_opts_replace_includes_nonblank_locale():
+    opts = build_base_opts(
+        method="replace",
+        confidence_threshold=0.5,
+        lang="pt",
+        keep_mapping=False,
+        consistent=False,
+        seed=0,
+        locale="  pt_BR  ",  # stripped before sending
+        date_shift_days=0,
+        keep_year=True,
+        use_safety_sweep=True,
+    )
+    assert opts["locale"] == "pt_BR"
+
+
+def test_build_base_opts_replace_omits_blank_locale():
+    # Blank means "use openmed's default for the language" — omit it from the payload.
+    for blank in ("", "   ", None):
+        opts = build_base_opts(
+            method="replace",
+            confidence_threshold=0.5,
+            lang="en",
+            keep_mapping=False,
+            consistent=False,
+            seed=0,
+            locale=blank,
+            date_shift_days=0,
+            keep_year=True,
+            use_safety_sweep=True,
+        )
+        assert "locale" not in opts
+
+
+def test_build_base_opts_non_replace_omits_locale():
+    # locale is a replace-only knob; other methods must not carry it even if supplied.
+    opts = build_base_opts(
+        method="mask",
+        confidence_threshold=0.5,
+        lang="en",
+        keep_mapping=False,
+        consistent=False,
+        seed=0,
+        locale="pt_BR",
+        date_shift_days=0,
+        keep_year=True,
+        use_safety_sweep=True,
+    )
+    assert "locale" not in opts
+
+
 def test_build_base_opts_carries_use_safety_sweep():
     def _opts(*, use_safety_sweep: bool) -> dict:
         return build_base_opts(

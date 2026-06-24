@@ -335,6 +335,13 @@ def _render_sidebar() -> dict[str, Any]:
             seed = st.number_input(
                 "Seed", value=0, step=1, help="Used with deterministic replace."
             )
+            locale = st.text_input(
+                "Replace locale",
+                value="",
+                placeholder="e.g. en_US, pt_BR",
+                help="Faker locale for method=replace surrogates (e.g. pt_BR for "
+                "Brazilian-format IDs). Blank uses the default for the selected language.",
+            )
             date_shift_days = st.number_input(
                 "Date shift days",
                 value=0,
@@ -359,6 +366,7 @@ def _render_sidebar() -> dict[str, Any]:
         keep_mapping=keep_mapping,
         consistent=consistent,
         seed=int(seed),
+        locale=locale,
         date_shift_days=int(date_shift_days),
         keep_year=keep_year,
         use_safety_sweep=use_safety_sweep,

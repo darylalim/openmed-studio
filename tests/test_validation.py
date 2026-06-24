@@ -85,6 +85,14 @@ def test_rejects_invalid_model_name() -> None:
         service.extract(ENGINE, "x", model_name="../etc/passwd")
 
 
+def test_rejects_malformed_locale() -> None:
+    # locale flows into Faker; reject obviously-malformed values up front with a
+    # PHI-safe message rather than letting Faker raise mid-call. (A well-formed but
+    # unknown locale is openmed/Faker's to reject at call time, not validation's.)
+    with pytest.raises(ServiceError):
+        service.deidentify(ENGINE, "x", method="replace", locale="not a locale!")
+
+
 def test_batch_rejects_empty_items() -> None:
     with pytest.raises(ServiceError):
         service.deidentify_batch(ENGINE, [])

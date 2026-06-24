@@ -126,9 +126,11 @@ class PIIEngine:
         *,
         method: DeidMethod = "mask",
         confidence_threshold: float = 0.7,
+        use_smart_merging: bool = True,
         keep_mapping: bool = False,
         consistent: bool = False,
         seed: int | None = None,
+        locale: str | None = None,
         lang: str | None = None,
         model_name: str | None = None,
         date_shift_days: int | None = None,
@@ -140,7 +142,9 @@ class PIIEngine:
         Returns OpenMed's ``DeidentificationResult`` (``.deidentified_text``,
         ``.pii_entities``, and ``.mapping`` when ``keep_mapping=True``). Every
         method — including ``"shift_dates"`` — is delegated straight to openmed;
-        ``date_shift_days``/``keep_year`` apply only to ``shift_dates``.
+        ``date_shift_days``/``keep_year`` apply only to ``shift_dates``, and
+        ``locale`` (a Faker locale, e.g. ``"pt_BR"``) only to ``"replace"``, where it
+        picks the surrogate locale instead of the default openmed derives from ``lang``.
 
         ``use_safety_sweep`` (default on, openmed 1.6.0's default) runs a
         deterministic structured-identifier sweep after model detection — it can
@@ -160,9 +164,11 @@ class PIIEngine:
             text,
             method=method,
             confidence_threshold=confidence_threshold,
+            use_smart_merging=use_smart_merging,
             keep_mapping=keep_mapping,
             consistent=consistent,
             seed=seed,
+            locale=locale,
             date_shift_days=date_shift_days,
             keep_year=keep_year,
             use_safety_sweep=use_safety_sweep,

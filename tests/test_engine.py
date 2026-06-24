@@ -118,7 +118,98 @@ def test_deidentify_delegates_every_method_to_openmed(monkeypatch) -> None:
     # never forwarded — passing audit=True flips deidentify's return to AuditReport, which
     # service._deidentify_dict (reads .deidentified_text/.pii_entities) cannot consume.
     assert captured["use_safety_sweep"] is True
+    # Smart merging is forwarded by deidentify too (default on), matching extract().
+    assert captured["use_smart_merging"] is True
     assert "audit" not in captured
+
+
+def test_deidentify_forwards_locale_to_openmed(monkeypatch) -> None:
+    # The `replace` surrogate locale must reach openmed.deidentify unchanged (the
+    # validation->engine hop is pinned in test_service.py; this pins engine->openmed).
+    import openmed
+
+    captured: dict[str, object] = {}
+
+    def fake_deidentify(_text, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(deidentified_text="ok", pii_entities=[], mapping=None)
+
+    monkeypatch.setattr(openmed, "deidentify", fake_deidentify)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    engine.deidentify("x", method="replace", locale="pt_BR")
+    assert captured["locale"] == "pt_BR"
+
+
+def test_deidentify_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -> None:
+    """Drift guard: every ``openmed.deidentify`` parameter is either forwarded by the
+    engine or on an explicit, documented exclusion list.
+
+    ``PIIEngine.deidentify`` hand-lists the kwargs it threads into
+    ``openmed.deidentify`` (and ``validation._DeidentifyOptions`` /
+    ``service._deidentify_call`` mirror that list). Nothing pins that hand-list to
+    openmed's real signature, so a parameter openmed *adds* — or one the engine
+    silently stops forwarding — would drift unnoticed. This captures the kwargs the
+    engine actually passes and asserts they cover openmed's signature, minus the
+    parameters we deliberately don't forward (each justified below). It is the
+    parameter-set analogue of ``test_validation_deidmethod_matches_openmed``.
+    """
+    import inspect
+
+    import openmed
+
+    # The real signature must be read *before* the monkeypatch below replaces
+    # openmed.deidentify with the capturing stub (whose signature is just (text, **kw)).
+    openmed_params = set(inspect.signature(openmed.deidentify).parameters)
+
+    # openmed.deidentify params the engine intentionally does not forward. Each must
+    # stay justified: starting to forward one (or openmed dropping one) must update
+    # this set, which the assertions below enforce.
+    intentionally_not_forwarded = {
+        # Permanent exclusions — forwarding these would break the engine's contract:
+        "audit",  # flips the return to AuditReport, which service._deidentify_dict
+        # (reads .deidentified_text/.pii_entities) cannot consume.
+        "config",  # the engine owns model loading via a shared ModelLoader threaded
+        # as loader=; config is openmed's alternative construction path and bypasses it.
+        # Not yet wired into the app's request models — listed so the guard stays green
+        # until each is consciously exposed (then move it out of this set):
+        "shift_dates",  # legacy bool toggle, distinct from method="shift_dates"
+        "normalize_accents",
+        "policy",
+        "calibration_thresholds_path",
+    }
+
+    captured: dict[str, object] = {}
+
+    def fake_deidentify(text, **kwargs):
+        captured.update(kwargs)
+        captured["text"] = text
+        return SimpleNamespace(deidentified_text="ok", pii_entities=[], mapping=None)
+
+    monkeypatch.setattr(openmed, "deidentify", fake_deidentify)
+    # A non-None loader short-circuits the lazy loader, so no model is built.
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    # Pass model_name so the optional model_name kwarg is actually threaded through
+    # (_model_kwargs only adds it when set); every other forwarded kwarg is unconditional.
+    engine.deidentify("x", model_name="OpenMed/Some-Model")
+    forwarded = set(captured)  # includes "text", which is captured positionally
+
+    # The guard: nothing openmed accepts is left unaccounted for.
+    uncovered = openmed_params - forwarded - intentionally_not_forwarded
+    assert not uncovered, (
+        "openmed.deidentify params neither forwarded nor allowlisted "
+        f"(forward them in PIIEngine.deidentify or justify them in the exclusion "
+        f"set): {sorted(uncovered)}"
+    )
+    # The exclusion list can't go stale: every entry must still be a real openmed
+    # param, and none may also be forwarded (a contradiction once one gets wired).
+    assert intentionally_not_forwarded <= openmed_params, (
+        "stale exclusion(s) no longer in openmed.deidentify: "
+        f"{sorted(intentionally_not_forwarded - openmed_params)}"
+    )
+    assert not (forwarded & intentionally_not_forwarded), (
+        "param is both forwarded and allowlisted — drop it from the exclusion set: "
+        f"{sorted(forwarded & intentionally_not_forwarded)}"
+    )
 
 
 def test_reidentify_orders_overlapping_keys_longest_first() -> None:

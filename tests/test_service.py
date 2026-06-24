@@ -166,6 +166,48 @@ def test_deidentify_forwards_use_safety_sweep_to_engine() -> None:
     assert captured["use_safety_sweep"] is False
 
 
+def test_deidentify_forwards_locale_to_engine() -> None:
+    # A valid `replace` locale passes validation and reaches the engine unchanged
+    # (default None when unset). Pins the validation->service->engine hop; the
+    # engine->openmed hop is covered in test_engine.py.
+    captured: dict[str, object] = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="ok", pii_entities=[], mapping=None
+            )
+
+    engine = cast("PIIEngine", _Capturing())
+    service.deidentify(engine, "x", method="mask")
+    assert captured["locale"] is None
+    captured.clear()
+    service.deidentify(engine, "x", method="replace", locale="pt_BR")
+    assert captured["locale"] == "pt_BR"
+
+
+def test_deidentify_forwards_use_smart_merging_to_engine() -> None:
+    # deidentify forwards use_smart_merging like extract does: on by default, and
+    # overridable per request. Pins the service->engine hop (engine->openmed is in
+    # test_engine.py).
+    captured: dict[str, object] = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="ok", pii_entities=[], mapping=None
+            )
+
+    engine = cast("PIIEngine", _Capturing())
+    service.deidentify(engine, "x", method="mask")
+    assert captured["use_smart_merging"] is True
+    captured.clear()
+    service.deidentify(engine, "x", method="mask", use_smart_merging=False)
+    assert captured["use_smart_merging"] is False
+
+
 def test_deidentify_batch_returns_per_item_results() -> None:
     result = service.deidentify_batch(
         _stub(), ["Patient John.", "Patient Jane."], method="mask"

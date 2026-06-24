@@ -137,6 +137,29 @@ def test_single_note_renders_metrics_and_output(monkeypatch):
     assert "<mark" in body  # original highlighted
 
 
+def test_single_note_forwards_replace_locale_to_engine(monkeypatch):
+    # The sidebar "Replace locale" input flows through build_base_opts -> service ->
+    # engine when method=replace (it's a replace-only knob, omitted otherwise).
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(s for s in at.segmented_control if s.label == "Method").set_value("replace")
+    next(t for t in at.text_input if t.label == "Replace locale").set_value("pt_BR")
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+
+    assert not at.exception
+    assert captured.get("locale") == "pt_BR"
+
+
 def test_single_note_persists_mapping_to_session_state(monkeypatch):
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
