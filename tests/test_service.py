@@ -273,6 +273,23 @@ def test_analyze_forwards_options_to_engine() -> None:
     assert captured["group_entities"] is True
 
 
+def test_analyze_uses_ner_defaults_when_omitted() -> None:
+    # NerRequest's defaults reach the engine: confidence_threshold is 0.0 (openmed's NER
+    # default — deliberately NOT the de-identify 0.5/0.7), aggregation 'simple', no grouping.
+    captured: dict[str, object] = {}
+
+    class _Capturing(_StubEngine):
+        def analyze(self, _text, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    engine = cast("PIIEngine", _Capturing())
+    service.analyze(engine, "x", model_name="disease_detection_superclinical_141m")
+    assert captured["confidence_threshold"] == 0.0
+    assert captured["aggregation_strategy"] == "simple"
+    assert captured["group_entities"] is False
+
+
 def test_analyze_value_error_maps_to_service_error() -> None:
     with pytest.raises(ServiceError, match="bad option"):
         service.analyze(

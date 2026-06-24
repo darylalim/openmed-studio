@@ -287,6 +287,30 @@ def test_ner_model_picker_lists_curated_domains(monkeypatch):
     assert picker.value == "Disease"  # default = first (DEFAULT_NER_MODEL's domain)
 
 
+def test_ner_tab_forwards_selected_domain_model(monkeypatch):
+    # Picking a (non-default) domain must resolve to that domain's curated alias and
+    # forward it to the engine — guards the `model_name = NER_MODELS[domain]` resolution
+    # (a "silently always Disease" bug would otherwise slip past test_ner_renders_entities).
+    from openmed_studio import NER_MODELS
+
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def analyze(self, _text, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(s for s in at.selectbox if s.label == "Entity domain").set_value("Anatomy")
+    _set_area(at, "Clinical note to analyze", "Liver and lung findings.")
+    _click(at, "Analyze")
+
+    assert not at.exception
+    assert captured["model_name"] == NER_MODELS["Anatomy"]
+    assert NER_MODELS["Anatomy"] != NER_MODELS["Disease"]  # genuinely the picked domain
+
+
 # --- batch -------------------------------------------------------------------
 def test_batch_renders(monkeypatch):
     # The data_editor seeds one non-empty note, so clicking without editing exercises
