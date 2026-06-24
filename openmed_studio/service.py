@@ -91,16 +91,16 @@ def _run(call: Callable[[], Any]) -> Any:
     except ValueError as exc:  # invalid options, e.g. date_shift_days w/o shift_dates
         raise ServiceError(str(exc)) from exc
     except (RuntimeError, OSError) as exc:  # model download/load failure on first call
-        logger.exception("de-identification backend failure")
+        logger.exception("model backend failure")
         raise ServiceError(
-            "De-identification backend unavailable (model failed to load)."
+            "Model backend unavailable (the model failed to load)."
         ) from exc
     except Exception as exc:  # any other engine/pipeline error — never surface raw
         # A raw exception would escape to Streamlit, whose default showErrorDetails
         # renders the message in the browser (possible PHI). Normalize to a generic
         # ServiceError; the detail goes to the server log, not the UI.
-        logger.exception("unexpected de-identification failure")
-        raise ServiceError("De-identification failed unexpectedly.") from exc
+        logger.exception("unexpected model failure")
+        raise ServiceError("The request failed unexpectedly.") from exc
 
 
 def _entity_dict(entity: Any) -> dict[str, Any]:
@@ -160,6 +160,27 @@ def extract(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
             use_smart_merging=req.use_smart_merging,
             lang=req.lang,
             model_name=req.model_name,
+        )
+    )
+    return {"entities": [_entity_dict(e) for e in entities]}
+
+
+def analyze(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
+    """Detect clinical entities with an NER model; returns ``{"entities": [...]}``.
+
+    Mirrors :func:`extract` but validates against ``NerRequest`` and calls
+    ``engine.analyze`` (openmed ``analyze_text``). Reuses ``_entity_dict`` unchanged —
+    NER entities expose the same ``.label``/``.text``/``.start``/``.end``/``.confidence``
+    (labels just come back UPPERCASE).
+    """
+    req = _validate(validation.NerRequest, {"text": text, **opts})
+    entities = _run(
+        lambda: engine.analyze(
+            req.text,
+            model_name=req.model_name,
+            confidence_threshold=req.confidence_threshold,
+            aggregation_strategy=req.aggregation_strategy,
+            group_entities=req.group_entities,
         )
     )
     return {"entities": [_entity_dict(e) for e in entities]}

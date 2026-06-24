@@ -234,6 +234,48 @@ def test_reidentify_does_not_re_substitute_a_value_containing_another_key() -> N
     assert restored == "see X2 and Bob"
 
 
+# --- analyze (clinical NER) delegation (no model) ---------------------------
+
+
+def test_analyze_delegates_to_openmed(monkeypatch) -> None:
+    # engine.analyze wraps openmed.analyze_text the way extract wraps extract_pii:
+    # forward model_name/confidence/aggregation/group_entities/output_format='dict'/loader,
+    # and unwrap analyze_text's PredictionResult (an OBJECT with .entities, NOT a bare list
+    # — _entities reads .entities rather than iterating the object).
+    import openmed
+
+    captured: dict[str, object] = {}
+
+    def fake_analyze_text(text, **kwargs):
+        captured.update(kwargs)
+        captured["text"] = text
+        return SimpleNamespace(
+            entities=[
+                SimpleNamespace(
+                    label="DISEASE", text="diabetes", start=0, end=8, confidence=0.97
+                )
+            ]
+        )
+
+    monkeypatch.setattr(openmed, "analyze_text", fake_analyze_text)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    entities = engine.analyze(
+        "diabetes today",
+        model_name="disease_detection_superclinical_141m",
+        confidence_threshold=0.6,
+    )
+
+    assert captured["text"] == "diabetes today"
+    assert captured["model_name"] == "disease_detection_superclinical_141m"
+    assert captured["confidence_threshold"] == 0.6
+    assert captured["aggregation_strategy"] == "simple"
+    assert captured["group_entities"] is False
+    assert captured["output_format"] == "dict"  # the object-not-dict path
+    assert captured["loader"] is engine.loader  # shared loader threaded through
+    assert "lang" not in captured  # analyze_text has no lang param
+    assert [e.label for e in entities] == ["DISEASE"]  # PredictionResult unwrapped
+
+
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
 
 
@@ -264,3 +306,20 @@ def test_engine_round_trips_with_kept_mapping(loader, note) -> None:
     assert result.deidentified_text != note  # PII was actually replaced
     assert result.mapping  # non-empty mapping
     assert PIIEngine.reidentify(result.deidentified_text, result.mapping) == note
+
+
+@pytest.mark.model
+def test_engine_analyze_detects_clinical_entities(loader) -> None:
+    # Real clinical NER: the default (Disease) model finds the disease mention. Uses a
+    # different model than the PII fixture, loaded into the same shared loader by model_name.
+    from openmed_studio.engine import DEFAULT_NER_MODEL
+
+    engine = PIIEngine(loader=loader)
+    entities = engine.analyze(
+        "The patient was diagnosed with diabetes mellitus.",
+        model_name=DEFAULT_NER_MODEL,
+        confidence_threshold=0.5,
+    )
+    assert entities  # at least one entity detected
+    assert any("diabetes" in e.text.lower() for e in entities)
+    assert all(e.label.isupper() for e in entities)  # NER labels are UPPERCASE

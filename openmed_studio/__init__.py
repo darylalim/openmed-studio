@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from .engine import DEFAULT_PII_MODEL, PIIEngine
+from .engine import DEFAULT_NER_MODEL, DEFAULT_PII_MODEL, NER_MODELS, PIIEngine
 
 __version__ = "0.1.0"
 
-__all__ = ["DEFAULT_PII_MODEL", "PIIEngine", "__version__"]
+__all__ = [
+    "DEFAULT_NER_MODEL",
+    "DEFAULT_PII_MODEL",
+    "NER_MODELS",
+    "PIIEngine",
+    "__version__",
+]

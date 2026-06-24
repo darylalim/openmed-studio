@@ -43,6 +43,13 @@ class _StubEngine:
             mapping=mapping,
         )
 
+    def analyze(self, _text, **_):
+        return [
+            SimpleNamespace(
+                label="DISEASE", text="diabetes", start=0, end=8, confidence=0.97
+            )
+        ]
+
     def reidentify(self, deidentified_text, mapping):
         for key, value in mapping.items():
             deidentified_text = deidentified_text.replace(key, value)
@@ -59,6 +66,9 @@ class _RaisingEngine(_StubEngine):
         raise self._exc
 
     def deidentify(self, _text, **_):
+        raise self._exc
+
+    def analyze(self, _text, **_):
         raise self._exc
 
     def reidentify(self, deidentified_text, mapping):
@@ -220,6 +230,68 @@ def test_deidentify_batch_returns_per_item_results() -> None:
 def test_reidentify_restores() -> None:
     result = service.reidentify(_stub(), "Hi [first_name].", {"[first_name]": "John"})
     assert result["text"] == "Hi John."
+
+
+def test_analyze_returns_entity_dicts() -> None:
+    # NER flows through the same _entity_dict adapter; UPPERCASE labels are preserved.
+    result = service.analyze(
+        _stub(), "Has diabetes.", model_name="disease_detection_superclinical_141m"
+    )
+    assert result["entities"] == [
+        {
+            "label": "DISEASE",
+            "text": "diabetes",
+            "start": 0,
+            "end": 8,
+            "confidence": 0.97,
+        }
+    ]
+
+
+def test_analyze_forwards_options_to_engine() -> None:
+    # The validated model_name/confidence/aggregation/group_entities reach engine.analyze
+    # (the engine->openmed hop is covered in test_engine.py).
+    captured: dict[str, object] = {}
+
+    class _Capturing(_StubEngine):
+        def analyze(self, _text, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    engine = cast("PIIEngine", _Capturing())
+    service.analyze(
+        engine,
+        "x",
+        model_name="anatomy_detection_superclinical_141m",
+        confidence_threshold=0.4,
+        aggregation_strategy="first",
+        group_entities=True,
+    )
+    assert captured["model_name"] == "anatomy_detection_superclinical_141m"
+    assert captured["confidence_threshold"] == 0.4
+    assert captured["aggregation_strategy"] == "first"
+    assert captured["group_entities"] is True
+
+
+def test_analyze_value_error_maps_to_service_error() -> None:
+    with pytest.raises(ServiceError, match="bad option"):
+        service.analyze(
+            _raising(ValueError("bad option")),
+            "x",
+            model_name="disease_detection_superclinical_141m",
+        )
+
+
+def test_analyze_backend_failure_does_not_leak() -> None:
+    with pytest.raises(ServiceError) as excinfo:
+        service.analyze(
+            _raising(RuntimeError("ner model exploded")),
+            "x",
+            model_name="disease_detection_superclinical_141m",
+        )
+    message = str(excinfo.value)
+    assert "exploded" not in message
+    assert "unavailable" in message.lower()
 
 
 def test_entity_dict_maps_deidentify_entity_shape() -> None:

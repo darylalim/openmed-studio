@@ -3,8 +3,9 @@
 **A clinical-NLP application built on [OpenMed](https://openmed.life/docs/).**
 
 The goal is an app over OpenMed's full toolkit — clinical NER, PII/PHI de-identification,
-anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification**
-(the rest is on the roadmap), shipped as a [Streamlit](https://streamlit.io/) app.
+anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification and
+clinical NER** (anonymization and zero-shot extraction are on the roadmap), shipped as a
+[Streamlit](https://streamlit.io/) app.
 
 ## Quickstart
 
@@ -26,10 +27,15 @@ framework-free [`PIIEngine`](openmed_studio/engine.py) (one shared `ModelLoader`
 in-process seam in [`openmed_studio/service.py`](openmed_studio/service.py), which validates each
 request and adapts OpenMed's results for the UI. There is no separate service to start.
 
-It opens with four tabs:
+It opens with five tabs:
 
 - **Detect** — detect PII entities and highlight them (with a color legend) plus an entity table,
   without redacting — for auditing what the model finds before choosing a method.
+- **Clinical NER** — detect clinical entities (diseases, drugs, anatomy, genes, …) with OpenMed's
+  token-classification models. Pick an entity **domain** (one curated model per domain — Disease,
+  Pharmaceutical, Chemical, Anatomy, Genomics, Protein, Oncology, Species, Pathology, Hematology,
+  Medical); each loads its specialized model on first use. Highlights and tables the entities like
+  Detect.
 - **Single note** — de-identify one note; shows the original with detected PII highlighted
   side-by-side with the redacted text (with a **download** button), plus an entity table and
   (optionally) the mapping.
@@ -54,13 +60,16 @@ the rest.
 - **Backend.** Inference is auto-detected: MLX on Apple Silicon when the `mlx` extra is installed,
   else Hugging Face/PyTorch (runs everywhere — CPU, CUDA, Apple MPS). Pin it with
   `OPENMED_STUDIO_BACKEND=hf|mlx` (an explicit `mlx` pin *raises* on a non-MLX host).
-- **Model reuse.** Streamlit caches the engine (`st.cache_resource`), so the model loads at most
-  once per process and is reused across every tab and request.
+- **Model reuse.** Streamlit caches the engine (`st.cache_resource`), so the PII model loads at most
+  once per process and is reused across every tab and request. The shared loader dispatches by model
+  name, so the **Clinical NER** tab loads a per-domain NER model into the same loader on first use of
+  that domain (switching domains loads another).
 - **Theme-aware.** The entity highlights and legend adapt to light or dark mode automatically — they
   use a translucent tint plus `color: inherit`, so they read correctly on either with no runtime
   theme detection (both modes are defined in `.streamlit/config.toml`).
-- **Isolated reruns.** The Detect/Batch/Re-identify tabs are `st.fragment`s, so an interaction in one
-  doesn't rerun the others; Single note stays a full rerun so it can hand its result to Re-identify.
+- **Isolated reruns.** The Detect/Clinical NER/Batch/Re-identify tabs are `st.fragment`s, so an
+  interaction in one doesn't rerun the others; Single note stays a full rerun so it can hand its
+  result to Re-identify.
 
 ### What we dropped vs the old service
 
@@ -106,16 +115,18 @@ uv run pytest --run-model    # also run tests that load the OpenMed PII model
 ```
 
 Tests live in [`tests/`](tests/). The fast tests need no model: `test_service.py` covers the
-in-process seam (backend resolution, the dict adapters, the error taxonomy) with a stub engine,
+in-process seam (backend resolution, the dict adapters, the error taxonomy, the PII and clinical-NER
+paths) with a stub engine,
 `test_validation.py` pins the surviving input guarantees (caps, enums, format checks, the text-cap
-knob, the `DeidMethod`/`Lang`↔openmed sync, and PHI-non-echo), `test_engine.py` checks `PIIEngine`'s
-lazy-loading contract and that `deidentify` forwards every method (including `shift_dates`) to
-OpenMed, `test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
+knob, the `DeidMethod`/`Lang`↔openmed and curated-`NER_MODELS`↔openmed-registry sync, and PHI-non-echo),
+`test_engine.py` checks `PIIEngine`'s lazy-loading contract, that `deidentify` forwards every method
+(including `shift_dates`) to OpenMed, and that `analyze` delegates to `analyze_text`,
+`test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
 the pure rendering/payload helpers. `test_ui_app.py` drives `streamlit_app.py` via Streamlit's
-`AppTest` with the engine stubbed in-process (covering the theme-aware highlighting and the fragmented
-tabs). The `--run-model` tests — `test_pii_model.py` plus the
-`@pytest.mark.model` tests in `test_engine.py` — load the real model to verify detection, masking,
-deterministic replacement, and round-trips.
+`AppTest` with the engine stubbed in-process (covering the theme-aware highlighting, the fragmented
+tabs, and the Clinical NER tab + domain picker). The `--run-model` tests — `test_pii_model.py` plus the
+`@pytest.mark.model` tests in `test_engine.py` — load real models to verify PII detection, masking,
+deterministic replacement, round-trips, and clinical-NER detection.
 
 Lint, format, and type-check with the project-pinned tools:
 

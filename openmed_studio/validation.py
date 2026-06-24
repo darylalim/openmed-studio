@@ -71,6 +71,11 @@ def _check_model_name(value: str | None) -> str | None:
 # An optional HF/registry model id, format-validated (no path traversal / spaces).
 ModelName = Annotated[str | None, AfterValidator(_check_model_name)]
 
+# A *required* model id (same format check, but not optional): clinical NER is one model
+# per domain, so an absent model_name would silently fall back to openmed's disease-only
+# default — make callers pick one explicitly.
+RequiredModelName = Annotated[str, AfterValidator(_check_model_name)]
+
 
 _LOCALE_RE = re.compile(r"[A-Za-z]{2,3}(?:_[A-Za-z0-9]{2,8})?")
 
@@ -101,6 +106,22 @@ class ExtractRequest(_Strict):
     use_smart_merging: bool = True
     lang: Lang = "en"
     model_name: ModelName = None
+
+
+class NerRequest(_Strict):
+    """Clinical NER (token-classification) detection request.
+
+    Reuses ``ClinicalText`` and the ``model_name`` format guard, but its field set
+    differs from de-identification: ``model_name`` is required (NER is one model per
+    domain), the confidence default is ``0.0`` (openmed's NER default keeps all), and
+    there is no ``lang``/``use_smart_merging`` (``analyze_text`` has neither).
+    """
+
+    text: ClinicalText
+    model_name: RequiredModelName
+    confidence_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    aggregation_strategy: Literal["simple", "first", "average", "max"] = "simple"
+    group_entities: bool = False
 
 
 class _DeidentifyOptions(_Strict):
@@ -148,5 +169,6 @@ __all__ = [
     "DeidentifyRequest",
     "ExtractRequest",
     "Lang",
+    "NerRequest",
     "ReidentifyRequest",
 ]

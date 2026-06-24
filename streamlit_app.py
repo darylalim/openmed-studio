@@ -25,7 +25,7 @@ from typing import Any, get_args
 
 import streamlit as st
 
-from openmed_studio import DEFAULT_PII_MODEL, __version__, service
+from openmed_studio import DEFAULT_PII_MODEL, NER_MODELS, __version__, service
 from openmed_studio.engine import DeidMethod, PIIEngine
 from openmed_studio.validation import MAX_BATCH_ITEMS, Lang
 from ui_helpers import (
@@ -296,6 +296,56 @@ def _render_detect(base_opts: dict[str, Any]) -> None:
     st.dataframe(entities, hide_index=True, column_config=_entity_columns())
 
 
+@st.fragment
+def _render_ner() -> None:
+    st.caption(
+        "Detect clinical entities (diseases, drugs, anatomy, genes, …) with an OpenMed "
+        "NER model — distinct from the PII models the other tabs use. Each domain loads a "
+        "specialized model on first use; switching domains loads another."
+    )
+    with st.form("ner"):
+        text = st.text_area(
+            "Clinical note to analyze", value=EXAMPLE_NOTE, height=200, key="ner_text"
+        )
+        domain = st.selectbox("Entity domain", list(NER_MODELS), key="ner_domain")
+        confidence = st.slider(
+            "Confidence threshold",
+            0.0,
+            1.0,
+            0.5,
+            0.05,
+            key="ner_conf",
+            help="Minimum model confidence to keep an entity.",
+        )
+        submitted = st.form_submit_button(
+            "Analyze", type="primary", icon=":material/biotech:"
+        )
+    if submitted and not text.strip():
+        st.warning("Enter some text to analyze.")
+        return
+    if not submitted:
+        return
+
+    model_name = NER_MODELS[domain]
+    result = _call(
+        service.analyze,
+        text,
+        action="Analyzing",
+        model_name=model_name,
+        confidence_threshold=confidence,
+    )
+    if result is None:
+        return
+
+    entities = result["entities"]
+    st.metric("Entities found", len(entities))
+    st.caption(f"Model: `{model_name}`")
+    with st.container(border=True):
+        st.caption(f"Detected {domain.lower()} entities")
+        _render_highlight(text, entities)
+    st.dataframe(entities, hide_index=True, column_config=_entity_columns())
+
+
 def _render_sidebar() -> dict[str, Any]:
     """Draw the sidebar and return the de-identification request options."""
     with st.sidebar:
@@ -387,14 +437,15 @@ def main() -> None:
 
     st.title("PII / PHI de-identification")
     st.caption(
-        "Detect or de-identify clinical text with OpenMed, review the entities, and "
-        "round-trip with re-identification. The model runs in-process; pick the method "
-        "in the sidebar."
+        "Detect PII, run clinical NER, or de-identify clinical text with OpenMed, review "
+        "the entities, and round-trip with re-identification. The model runs in-process; "
+        "the de-identification method lives in the sidebar."
     )
 
-    tab_detect, tab_single, tab_batch, tab_reid = st.tabs(
+    tab_detect, tab_ner, tab_single, tab_batch, tab_reid = st.tabs(
         [
             ":material/search: Detect",
+            ":material/biotech: Clinical NER",
             ":material/description: Single note",
             ":material/stacks: Batch",
             ":material/lock_open: Re-identify",
@@ -402,6 +453,8 @@ def main() -> None:
     )
     with tab_detect:
         _render_detect(base_opts)
+    with tab_ner:
+        _render_ner()
     with tab_single:
         _render_single(base_opts)
     with tab_batch:

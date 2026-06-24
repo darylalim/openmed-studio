@@ -9,7 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 *not* the library itself — the library source lives at `github.com/maziyarpanahi/openmed`.
 The aim is an app that surfaces OpenMed's full capability set (clinical NER, PII/PHI
 de-identification, anonymization, zero-shot extraction). **Today it implements PII/PHI
-de-identification only**; the other capabilities are the roadmap. The project is a
+de-identification plus clinical NER (token-classification entity detection)**; anonymization
+and zero-shot extraction remain the roadmap. The project is a
 [Streamlit](https://streamlit.io/) app (`streamlit_app.py`) that runs the model **in-process**
 through a reusable, framework-free `PIIEngine` and a thin in-process service seam
 (`openmed_studio/service.py`). There is no separate web service — the app *is* the delivery surface
@@ -64,13 +65,17 @@ Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`, `test_s
 `test_service.py` covers the in-process seam (`PIIEngine`-stub) — `resolve_backend`/`build_engine`
 backend wiring, the dict adapters (`_entity_dict`, the deidentify shaping), the success paths, that
 the `use_safety_sweep`, `use_smart_merging`, and `replace` `locale` options are forwarded to the
-engine (the first two default on and overridable; `locale` flows only when set), and the
+engine (the first two default on and overridable; `locale` flows only when set), the clinical-NER
+`analyze` path (`service.analyze` → `_entity_dict` preserving UPPERCASE labels, `model_name`/
+`aggregation_strategy`/`group_entities` forwarded), and the
 `ValueError`→message / `RuntimeError`+`OSError`→"unavailable" error taxonomy (`ServiceError`).
 `test_validation.py` pins the input guarantees enforced before the engine is reached: the text
 (50k) / batch (≤100) / mapping (≤5,000) caps, the `Lang`/`DeidMethod` enums, the confidence range,
-`model_name` and `locale` format, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed and
-`Lang`⊆openmed (`SUPPORTED_LANGUAGES`) sync, and that a rejection message never echoes the offending
-input (PHI). `test_engine.py` covers
+`model_name` and `locale` format, the `NerRequest` rules (required `model_name`,
+`aggregation_strategy` enum), the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, the `DeidMethod`↔openmed,
+`Lang`⊆openmed (`SUPPORTED_LANGUAGES`), and `NER_MODELS`↔openmed-registry (`test_validation_ner_models_resolve_in_openmed`,
+asserting every curated alias resolves in its declared category) sync, and that a rejection message
+never echoes the offending input (PHI). `test_engine.py` covers
 `PIIEngine`'s lazy-loading contract, backend selection (bare `ModelLoader` vs
 `OpenMedConfig(backend=...)`), and that `deidentify` forwards every method — including `shift_dates`
 with its `date_shift_days`/`keep_year` controls, `use_safety_sweep`, `use_smart_merging`, and the
@@ -81,10 +86,14 @@ with its `date_shift_days`/`keep_year` controls, `use_safety_sweep`, `use_smart_
 explicit, documented exclusion list (`audit`/`config`/`policy`/`calibration_thresholds_path`/
 `normalize_accents`/`shift_dates`) — the parameter-set analogue of the `DeidMethod`/`Lang` sync
 tests, so a param openmed adds (or the engine silently drops) fails CI. It also pins
-that `PIIEngine.reidentify` restores a kept mapping in one regex pass so overlapping/substring
+that `PIIEngine.analyze` delegates to `openmed.analyze_text` (monkeypatched) forwarding
+`model_name`/`confidence_threshold`/`aggregation_strategy`/`group_entities`/`output_format="dict"`/
+`loader` and unwrapping the `PredictionResult` object via `_entities`, and that
+`PIIEngine.reidentify` restores a kept mapping in one regex pass so overlapping/substring
 keys can't corrupt each other (no model). Model tests are in `test_pii_model.py` plus the
 `@pytest.mark.model` tests in `test_engine.py` (which drive the real engine via the shared `loader`
-fixture), all **skipped by default**. The `--run-model` opt-in is wired via `pytest_addoption` +
+fixture — including `test_engine_analyze_detects_clinical_entities`, which loads a real per-domain
+NER model), all **skipped by default**. The `--run-model` opt-in is wired via `pytest_addoption` +
 `pytest_collection_modifyitems` in `conftest.py`, which also provides the session-scoped `loader`
 fixture (model loads once) and a `note` fixture.
 `test_pii_model.py::test_shift_dates_actually_shifts_dates` asserts the date-shifting fix holds:
@@ -99,11 +108,14 @@ tint plus `color: inherit` — and `build_base_opts` payload logic).
 `test_ui_app.py` drives `streamlit_app.py` via `streamlit.testing.v1.AppTest`, stubbing the engine
 **in-process** by patching `service.build_engine` (the shared module the running app imports) — no
 model, no network; sentinel values a real model would never produce (`[[STUB-DEID-OUTPUT]]`,
-`STUB/sentinel-model`) prove the rendered data came from the stub. It also covers the
+`STUB/sentinel-model`, the UPPERCASE NER label `DISEASE`) prove the rendered data came from the
+stub. It also covers the
 `Single`→`Re-identify` session-state handoff across the `@st.fragment` boundary, that the rendered
 marks are theme-agnostic (`color: inherit` + an `rgba` tint), a widget-key
-collision guard across all tabs, and that the sidebar `Replace locale` input flows through to the
-engine (driving the `Method` `segmented_control` to `replace`) — a `replace`-only knob, omitted otherwise. It opens
+collision guard across all five tabs, that the sidebar `Replace locale` input flows through to the
+engine (driving the `Method` `segmented_control` to `replace`) — a `replace`-only knob, omitted
+otherwise — and the `Clinical NER` tab (the `Entity domain` picker lists the curated `NER_MODELS`
+domains with `Disease` default; `Analyze` renders highlighted UPPERCASE-labelled entities). It opens
 with `pytest.importorskip("streamlit")`, but streamlit is a **core** dependency, so the default suite
 runs both UI test files and `ty check` sees `streamlit_app.py` — no extra needed.
 
@@ -129,9 +141,11 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   `~/.cache/openmed`; later runs are offline. The default PII model is the small
   `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1` (~44M params).
 - **Model reuse:** the app builds one `PIIEngine` (one shared `ModelLoader`) cached via Streamlit's
-  `st.cache_resource`, so the model loads at most once per process and is reused across every tab
+  `st.cache_resource`, so the PII model loads at most once per process and is reused across every tab
   and request. The engine pattern (construct one `ModelLoader`, pass `loader=` to every call) is the
-  documented best practice.
+  documented best practice. The shared loader dispatches/caches by `model_name`, so the `Clinical
+  NER` tab loads a per-domain NER model (~141M each, `Medical` 434M) into the *same* loader on first
+  use of that domain — switching domains loads another model rather than rebuilding the loader.
 - **Python:** `requires-python = ">=3.10"`; verified on 3.11, but uv may pick a
   newer interpreter (e.g. 3.13) for `.venv`.
 - **App structure:** `openmed_studio/` is the framework-free core (no Streamlit, no HTTP):
@@ -148,12 +162,24 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
     this. `use_smart_merging` (default on) is forwarded too, matching the `Detect` tab; `locale`
     picks the `replace` surrogate locale (e.g. `pt_BR`) instead of the default openmed derives
     from `lang`, and is the third `replace` determinism knob alongside `consistent`/`seed`.
-    Defines the `DeidMethod` and
-    `Backend` `Literal`s and `DEFAULT_PII_MODEL`.
-  - `validation.py` — the Pydantic request models (`ExtractRequest`, `DeidentifyRequest`,
-    `DeidentifyBatchRequest`, `ReidentifyRequest`, `extra="forbid"`) and the bound primitives
+    Also wraps clinical NER: `analyze(text, *, model_name, confidence_threshold=0.0,
+    aggregation_strategy, group_entities)` delegates to openmed's `analyze_text`
+    (token-classification). `model_name` is **required** — clinical NER is one model per
+    domain, so an absent one would silently fall back to openmed's disease-only default;
+    NER labels come back UPPERCASE. `analyze_text` returns a `PredictionResult` *object*
+    (its `output_format="dict"` is a misnomer), so `_entities` unwraps it via `.entities`
+    rather than iterating it; `lang` is **not** threaded (analyze_text has no `lang`).
+    Defines the `DeidMethod`/`Backend` `Literal`s, `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`,
+    and `NER_MODELS` — a curated `dict[domain → registry alias]` of one representative
+    ~141M "superclinical" model per clinical category (`Medical` uses the broader
+    `clinicalner` model).
+  - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`,
+    `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, `extra="forbid"`) and
+    the bound primitives
     (`ClinicalText`/`MAX_TEXT_CHARS` via `OPENMED_STUDIO_MAX_TEXT_LENGTH`, read at import by
-    `_max_text_chars`; `MAX_BATCH_ITEMS`, `MAX_MAPPING_ENTRIES`, `Lang`, `_check_model_name`, and
+    `_max_text_chars`; `MAX_BATCH_ITEMS`, `MAX_MAPPING_ENTRIES`, `Lang`, `_check_model_name`,
+    `RequiredModelName` — the non-optional model id `NerRequest` uses so an NER request can't
+    omit the domain model — and
     `_check_locale` — a format guard on the optional `replace` `locale`, shape-checked like
     `model_name`).
     These import only `pydantic`/`os`/`re` — no web framework — so they are reused as the
@@ -163,11 +189,15 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
     `_validate()` (calls `model_validate()` and raises a **PHI-safe** `ServiceError` built from
     only `loc`/`msg` — never Pydantic's `input`), `_run()` (translates `ValueError`→bad-options and
     `RuntimeError`/`OSError`→backend-unavailable into `ServiceError`, mirroring the old 400/503
-    split), the dict adapters (`_entity_dict`, `_deidentify_dict`), and
-    `extract`/`deidentify`/`deidentify_batch`/`reidentify(engine, …, **opts)` that validate →
-    call the engine → adapt to plain dicts. Every UI engine call funnels through here, so nothing
-    bypasses validation.
-  - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `PIIEngine`, and `__version__`.
+    split — the messages are capability-neutral now that NER flows through `_run` too), the
+    dict adapters (`_entity_dict`, `_deidentify_dict`), and
+    `extract`/`analyze`/`deidentify`/`deidentify_batch`/`reidentify(engine, …, **opts)` that
+    validate → call the engine → adapt to plain dicts. `analyze` (clinical NER) reuses
+    `_validate`/`_run`/`_entity_dict` verbatim — NER's `EntityPrediction` exposes the same
+    `.label`/`.text`/`.start`/`.end`/`.confidence` the adapter already reads. Every UI engine
+    call funnels through here, so nothing bypasses validation.
+  - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`, `NER_MODELS`,
+    `PIIEngine`, and `__version__`.
 
   It stays a uv **non-package** project, so pytest imports `openmed_studio` via the repo root on
   `sys.path` (`pythonpath = ["."]` for pytest; Streamlit adds the app's directory). The `DeidMethod`
@@ -177,14 +207,20 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
 - **UI structure:** the Streamlit app lives at the repo root: `streamlit_app.py` (the app —
   `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call` runs a `service.*`
   function in a spinner and renders any `ServiceError`; the sidebar reads engine
-  state (model/backend/`is_loaded`) directly, and the four tabs (`Detect` → `service.extract`,
-  `Single note`/`Batch` → `service.deidentify[_batch]`, `Re-identify` → `service.reidentify`) live in
+  state (model/backend/`is_loaded`) directly, and the five tabs (`Detect` → `service.extract`,
+  `Clinical NER` → `service.analyze`, `Single note`/`Batch` → `service.deidentify[_batch]`,
+  `Re-identify` → `service.reidentify`) live in
   `main()`, guarded by `if __name__ == "__main__"` so importing for tests has no side effects). The
-  `Detect`/`Batch`/`Re-identify` tab renderers are `@st.fragment` so an in-tab interaction reruns
+  `Detect`/`Clinical NER`/`Batch`/`Re-identify` tab renderers are `@st.fragment` so an in-tab
+  interaction reruns
   only that tab; `Single note` is **intentionally not** a fragment, because its form submit must
   trigger a full rerun to hand `last_deidentified`/`last_mapping` (via `st.session_state`, not widget
-  keys) to the `Re-identify` tab. `_render_highlight(text, entities)` (shared by Detect and Single)
-  renders the highlighted text plus its legend. The pure helpers live in
+  keys) to the `Re-identify` tab. The `Clinical NER` tab (`_render_ner`) has its own domain picker
+  (`st.selectbox` over `NER_MODELS`, default `Disease`) and confidence slider, independent of the
+  de-identification sidebar; `model_name` is resolved from the picked domain via `NER_MODELS`.
+  `_render_highlight(text, entities)` (shared by Detect, Single, and Clinical NER)
+  renders the highlighted text plus its legend (label-agnostic, so it handles NER's UPPERCASE
+  labels unchanged). The pure helpers live in
   `ui_helpers.py` (Streamlit-free `render_highlighted`/`render_legend` — both **theme-agnostic**: a
   translucent per-label tint from `PALETTE`/`color_for` plus `color: inherit`, so the marks read on
   light or dark with no runtime theme detection — `render_plain`/`build_base_opts`/
@@ -209,9 +245,11 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   not echoing input on a validation error. Only `OPENMED_STUDIO_BACKEND` and
   `OPENMED_STUDIO_MAX_TEXT_LENGTH` remain as env knobs.
 
-## OpenMed PII API (verified against installed v1.6.0)
+## OpenMed API (verified against installed v1.6.0)
 
-Top-level imports: `from openmed import extract_pii, deidentify, reidentify, ModelLoader, OpenMedConfig`.
+Top-level imports: `from openmed import extract_pii, deidentify, reidentify, analyze_text, ModelLoader, OpenMedConfig`.
+Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict alias→ModelInfo),
+`list_model_categories()`.
 
 - `extract_pii(text, model_name=<default>, confidence_threshold=0.5, use_smart_merging=True, lang="en", *, loader=None)`
   returns PII entities, each with `.label`, `.text`, `.start`, `.end`, `.confidence`.
@@ -239,6 +277,17 @@ Top-level imports: `from openmed import extract_pii, deidentify, reidentify, Mod
   determinism, `locale="pt_BR"` etc. for a specific surrogate locale, exposed as a sidebar
   input), `hash`, `shift_dates`.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
+- `analyze_text(text, model_name="disease_detection_superclinical", *, loader=None,
+  confidence_threshold=0.0, aggregation_strategy="simple", output_format="dict",
+  group_entities=False, …)` — the general **clinical NER** (token-classification) entry point. With
+  the default `output_format="dict"` it returns a `PredictionResult` **object** (a misnomer — *not*
+  a plain dict) whose `.entities` is a `list[EntityPrediction]`, each with `.text`/`.label`/
+  `.confidence`/`.start`/`.end`. Labels are **UPPERCASE** (`DISEASE`, `CHEM`, `GENE`, …), unlike
+  `extract_pii`'s lowercase. Clinical NER is **one model per domain** (no universal model), selected
+  by registry alias via `model_name`; the app curates one per domain in `engine.NER_MODELS` and
+  pins them with `tests/test_validation.py::test_validation_ner_models_resolve_in_openmed`. The
+  app's engine forwards `model_name`/`confidence_threshold`/`aggregation_strategy`/`group_entities`/
+  `output_format="dict"`/`loader` (no `lang` — `analyze_text` has none).
 
 ## Known gotchas
 

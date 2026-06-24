@@ -58,6 +58,14 @@ class _StubEngine:
             mapping=mapping,
         )
 
+    def analyze(self, _text, **_):
+        # UPPERCASE label is the NER sentinel a PII model would never emit.
+        return [
+            SimpleNamespace(
+                label="DISEASE", text="[[STUB-NER]]", start=8, end=16, confidence=0.97
+            )
+        ]
+
     def reidentify(self, _deidentified_text, _mapping):
         return "[[STUB-RESTORED]]"
 
@@ -106,7 +114,7 @@ def test_app_renders(monkeypatch):
     at = AppTest.from_file(APP).run(timeout=30)
     assert not at.exception
     assert at.title[0].value == "PII / PHI de-identification"
-    assert len(at.tabs) == 4
+    assert len(at.tabs) == 5  # Detect, Clinical NER, Single note, Batch, Re-identify
     # The sentinel model name can only appear if the stub (not a live model) was used.
     assert any("STUB/sentinel-model" in c.value for c in at.sidebar.caption)
     assert any("model loaded" in c.value for c in at.sidebar.caption)
@@ -254,6 +262,31 @@ def test_detect_renders_entities(monkeypatch):
     assert "<mark" in _html(at)  # highlighted, with a legend
 
 
+# --- clinical NER ------------------------------------------------------------
+def test_ner_renders_entities(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to analyze", "Patient has diabetes today.")
+    _click(at, "Analyze")
+
+    assert not at.exception
+    assert any(m.label == "Entities found" and str(m.value) == "1" for m in at.metric)
+    body = _html(at)
+    assert "<mark" in body  # entity highlighted
+    assert "DISEASE" in body  # UPPERCASE NER label rendered (proves the stub ran)
+
+
+def test_ner_model_picker_lists_curated_domains(monkeypatch):
+    # The domain picker is the curated per-domain catalog (Disease default).
+    from openmed_studio import NER_MODELS
+
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    picker = next(s for s in at.selectbox if s.label == "Entity domain")
+    assert list(picker.options) == list(NER_MODELS)
+    assert picker.value == "Disease"  # default = first (DEFAULT_NER_MODEL's domain)
+
+
 # --- batch -------------------------------------------------------------------
 def test_batch_renders(monkeypatch):
     # The data_editor seeds one non-empty note, so clicking without editing exercises
@@ -328,6 +361,9 @@ def test_no_duplicate_widget_keys_across_tabs(monkeypatch):
     assert not at.exception
     _set_area(at, "Clinical note to scan", "Patient John Doe.")
     _click(at, "Detect")
+    assert not at.exception
+    _set_area(at, "Clinical note to analyze", "Patient John Doe.")
+    _click(at, "Analyze")
     assert not at.exception
     _set_area(at, "Clinical note", "Patient John Doe.")
     _click(at, "De-identify")

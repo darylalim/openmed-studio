@@ -29,6 +29,9 @@ class _StubEngine:
     def deidentify(self, _text, **_):
         return SimpleNamespace(deidentified_text="ok", pii_entities=[], mapping=None)
 
+    def analyze(self, _text, **_):
+        return []
+
     def reidentify(self, deidentified_text, _mapping):
         return deidentified_text
 
@@ -93,6 +96,38 @@ def test_rejects_malformed_locale() -> None:
         service.deidentify(ENGINE, "x", method="replace", locale="not a locale!")
 
 
+_NER_MODEL = "disease_detection_superclinical_141m"
+
+
+def test_ner_rejects_missing_model_name() -> None:
+    # model_name is REQUIRED for NER — an absent one would silently fall back to
+    # openmed's disease-only default, so validation must reject it.
+    with pytest.raises(ServiceError):
+        service.analyze(ENGINE, "x")
+
+
+def test_ner_rejects_invalid_model_name() -> None:
+    with pytest.raises(ServiceError):
+        service.analyze(ENGINE, "x", model_name="../etc/passwd")
+
+
+def test_ner_rejects_out_of_range_confidence() -> None:
+    with pytest.raises(ServiceError):
+        service.analyze(ENGINE, "x", model_name=_NER_MODEL, confidence_threshold=1.5)
+
+
+def test_ner_rejects_bad_aggregation_strategy() -> None:
+    with pytest.raises(ServiceError):
+        service.analyze(
+            ENGINE, "x", model_name=_NER_MODEL, aggregation_strategy="bogus"
+        )
+
+
+def test_ner_rejects_unknown_field() -> None:
+    with pytest.raises(ServiceError):
+        service.analyze(ENGINE, "x", model_name=_NER_MODEL, bogus=1)
+
+
 def test_batch_rejects_empty_items() -> None:
     with pytest.raises(ServiceError):
         service.deidentify_batch(ENGINE, [])
@@ -128,6 +163,10 @@ def test_accepts_newly_added_languages(lang) -> None:
 def test_accepts_date_controls() -> None:
     result = service.deidentify(ENGINE, "x", method="shift_dates", date_shift_days=180)
     assert result["method"] == "shift_dates"
+
+
+def test_ner_accepts_valid_request() -> None:
+    assert service.analyze(ENGINE, "x", model_name=_NER_MODEL) == {"entities": []}
 
 
 # --- PHI safety + the text cap ----------------------------------------------
@@ -173,3 +212,22 @@ def test_validation_lang_subset_of_openmed() -> None:
     from openmed.core.pii_i18n import SUPPORTED_LANGUAGES
 
     assert set(typing.get_args(validation.Lang)) <= set(SUPPORTED_LANGUAGES)
+
+
+def test_validation_ner_models_resolve_in_openmed() -> None:
+    # Every curated NER alias must still resolve in openmed's registry, in its declared
+    # category, and every domain key must be a real openmed category — so a renamed alias
+    # or a dropped category fails CI (the catalog analogue of the DeidMethod/Lang sync
+    # guards). Registry metadata only — no model download.
+    import openmed
+
+    from openmed_studio.engine import NER_MODELS
+
+    catalog = openmed.get_all_models()  # dict[alias -> ModelInfo]
+    categories = set(openmed.list_model_categories())
+    for domain, alias in NER_MODELS.items():
+        assert domain in categories, f"{domain!r} is not an openmed category"
+        assert alias in catalog, f"NER alias {alias!r} is not in openmed's registry"
+        assert catalog[alias].category == domain, (
+            f"{alias!r} is category {catalog[alias].category!r}, expected {domain!r}"
+        )

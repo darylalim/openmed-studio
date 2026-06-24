@@ -24,6 +24,31 @@ if TYPE_CHECKING:
 
 DEFAULT_PII_MODEL = "OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1"
 
+# Clinical NER (token-classification) is one model PER domain, not one universal
+# model, so the app curates one representative ~141M "superclinical" model per clinical
+# category (Medical uses the broader ClinicalNER model — its only non-MLX option). Keys
+# are openmed's own category names (openmed.list_model_categories() minus the "Privacy"
+# PII bucket); values are registry aliases passed to analyze_text(model_name=...).
+# tests/test_validation.py::test_validation_ner_models_resolve_in_openmed pins every
+# alias/category against the installed registry so a renamed alias fails loudly.
+NER_MODELS: dict[str, str] = {
+    "Disease": "disease_detection_superclinical_141m",
+    "Pharmaceutical": "pharma_detection_superclinical_141m",
+    "Chemical": "chemical_detection_superclinical_141m",
+    "Anatomy": "anatomy_detection_superclinical_141m",
+    "Genomics": "dna_detection_superclinical_141m",
+    "Protein": "protein_detection_superclinical_141m",
+    "Oncology": "oncology_detection_superclinical_141m",
+    "Species": "species_detection_superclinical_141m",
+    "Pathology": "pathology_detection_superclinical_141m",
+    "Hematology": "bloodcancer_detection_superclinical_141m",
+    "Medical": "clinicalner_superclinical_large_434m",
+}
+
+# The default NER model: the Disease detector (smallest superclinical family, known
+# entity types), mirroring openmed.analyze_text's own disease-domain default.
+DEFAULT_NER_MODEL = NER_MODELS["Disease"]
+
 # Inference backends openmed exposes. ``None`` (the engine default) lets openmed
 # auto-detect — it prefers MLX on Apple Silicon when the `mlx` extra is installed,
 # else HuggingFace/PyTorch. Forcing ``"mlx"`` raises if MLX is unavailable (e.g.
@@ -117,6 +142,45 @@ class PIIEngine:
             confidence_threshold=confidence_threshold,
             use_smart_merging=use_smart_merging,
             **self._model_kwargs(lang=lang, model_name=model_name),
+        )
+        return _entities(result)
+
+    def analyze(
+        self,
+        text: str,
+        *,
+        model_name: str,
+        confidence_threshold: float = 0.0,
+        aggregation_strategy: str = "simple",
+        group_entities: bool = False,
+    ) -> list[Any]:
+        """Detect clinical entities with a token-classification (NER) model.
+
+        Wraps openmed's ``analyze_text`` the way :meth:`extract` wraps ``extract_pii``:
+        the entities returned each expose ``.label``/``.text``/``.start``/``.end``/
+        ``.confidence`` (labels are UPPERCASE, e.g. ``"DISEASE"``). Unlike PII detection,
+        clinical NER is one model PER domain, so ``model_name`` is **required** — pass a
+        registry alias from :data:`NER_MODELS` (a missing model would silently fall back
+        to openmed's disease-only default). The shared :class:`ModelLoader` is reused as
+        ``loader=`` (``analyze_text`` dispatches/caches by ``model_name``), so switching
+        domains loads another model into the same loader rather than rebuilding it.
+
+        ``analyze_text`` returns a ``PredictionResult`` *object* whose ``.entities`` holds
+        the spans (``output_format="dict"`` is a misnomer — it is not a plain dict), so
+        ``_entities`` unwraps it via its ``.entities`` attribute, not by iterating it.
+        ``lang`` is intentionally not threaded: ``analyze_text`` has no ``lang`` parameter
+        (it uses ``sentence_language``, left at its ``"en"`` default).
+        """
+        from openmed import analyze_text
+
+        result = analyze_text(
+            text,
+            model_name=model_name,
+            confidence_threshold=confidence_threshold,
+            aggregation_strategy=aggregation_strategy,
+            group_entities=group_entities,
+            output_format="dict",
+            loader=self.loader,
         )
         return _entities(result)
 
