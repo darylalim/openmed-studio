@@ -101,6 +101,58 @@ def _render_highlight(text: str, entities: list[dict[str, Any]]) -> None:
         st.html(legend)
 
 
+def _render_deid_result(
+    text: str,
+    result: dict[str, Any],
+    *,
+    out_caption: str,
+    out_filename: str,
+    dl_key: str,
+    export_caveat: str | None = None,
+    show_entities: bool = False,
+) -> None:
+    """Shared result panel for the Single note + Anonymize tabs.
+
+    Hands the de-identified text + mapping to the Re-identify tab — set together so a
+    prior run's mapping never lingers against this run's text (a result with
+    ``keep_mapping`` off has ``mapping=None``, which must clear any earlier mapping).
+    This is the single, security-relevant copy of that invariant. Then renders the
+    original-vs-output columns + Download (with an optional ``export_caveat`` beside the
+    button), optionally the entity table, and the mapping expander. Callers render their
+    own metric row first, since the labels/values differ per tab.
+    """
+    st.session_state.last_deidentified = result["deidentified_text"]
+    st.session_state.last_mapping = result.get("mapping") or None
+
+    entities = result["entities"]
+    left, right = st.columns(2)
+    with left.container(border=True, height="stretch"):
+        st.caption("Original — detected PII highlighted")
+        _render_highlight(text, entities)
+    with right.container(border=True, height="stretch"):
+        st.caption(out_caption)
+        st.html(render_plain(result["deidentified_text"]))
+        st.download_button(
+            "Download",
+            result["deidentified_text"],
+            file_name=out_filename,
+            icon=":material/download:",
+            key=dl_key,
+        )
+        if export_caveat:
+            st.caption(export_caveat)
+
+    if show_entities:
+        with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
+            st.dataframe(entities, hide_index=True, column_config=_entity_columns())
+    if result.get("mapping"):
+        with st.expander("Mapping — re-identification key", icon=":material/key:"):
+            st.caption(
+                "As sensitive as raw PHI. Held in this session for the Re-identify tab."
+            )
+            st.json(result["mapping"])
+
+
 def _render_single(base_opts: dict[str, Any]) -> None:
     with st.form("single"):
         text = st.text_area("Clinical note", value=EXAMPLE_NOTE, height=200)
@@ -118,39 +170,17 @@ def _render_single(base_opts: dict[str, Any]) -> None:
         return
 
     entities = result["entities"]
-    # Update both together so the Re-identify tab never prefills this run's text
-    # with a previous run's mapping (a result with keep_mapping off has mapping=None,
-    # which must clear any earlier mapping).
-    st.session_state.last_deidentified = result["deidentified_text"]
-    st.session_state.last_mapping = result.get("mapping") or None
-
     m1, m2 = st.columns(2)
     m1.metric("Entities found", len(entities))
     m2.metric("Method", result["method"])
-
-    left, right = st.columns(2)
-    with left.container(border=True, height="stretch"):
-        st.caption("Original — detected PII highlighted")
-        _render_highlight(text, entities)
-    with right.container(border=True, height="stretch"):
-        st.caption("De-identified")
-        st.html(render_plain(result["deidentified_text"]))
-        st.download_button(
-            "Download",
-            result["deidentified_text"],
-            file_name="deidentified.txt",
-            icon=":material/download:",
-            key="dl_single",
-        )
-
-    with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
-        st.dataframe(entities, hide_index=True, column_config=_entity_columns())
-    if result.get("mapping"):
-        with st.expander("Mapping — re-identification key", icon=":material/key:"):
-            st.caption(
-                "As sensitive as raw PHI. Held in this session for the Re-identify tab."
-            )
-            st.json(result["mapping"])
+    _render_deid_result(
+        text,
+        result,
+        out_caption="De-identified",
+        out_filename="deidentified.txt",
+        dl_key="dl_single",
+        show_entities=True,
+    )
 
 
 @st.fragment
@@ -295,42 +325,20 @@ def _render_anonymize() -> None:
     if result is None:
         return
 
-    # Hand the synthetic text + mapping to the Re-identify tab, set together so an earlier
-    # run's mapping never lingers against this run's text (mirrors _render_single).
-    st.session_state.last_deidentified = result["deidentified_text"]
-    st.session_state.last_mapping = result.get("mapping") or None
-
     entities = result["entities"]
     m1, m2 = st.columns(2)
     m1.metric("Entities replaced", len(entities))
     m2.metric("Deterministic", "On" if consistent else "Off")
-
-    left, right = st.columns(2)
-    with left.container(border=True, height="stretch"):
-        st.caption("Original — detected PII highlighted")
-        _render_highlight(text, entities)
-    with right.container(border=True, height="stretch"):
-        st.caption(
+    _render_deid_result(
+        text,
+        result,
+        out_caption=(
             "Anonymized — synthetic surrogates · review for residual identifiers before sharing"
-        )
-        st.html(render_plain(result["deidentified_text"]))
-        st.download_button(
-            "Download",
-            result["deidentified_text"],
-            file_name="anonymized.txt",
-            icon=":material/download:",
-            key="dl_anon",
-        )
-        st.caption(
-            "May still contain any PII the model missed — review before sharing."
-        )
-
-    if result.get("mapping"):
-        with st.expander("Mapping — re-identification key", icon=":material/key:"):
-            st.caption(
-                "As sensitive as raw PHI. Held in this session for the Re-identify tab."
-            )
-            st.json(result["mapping"])
+        ),
+        out_filename="anonymized.txt",
+        dl_key="dl_anon",
+        export_caveat="May still contain any PII the model missed — review before sharing.",
+    )
 
 
 @st.fragment
