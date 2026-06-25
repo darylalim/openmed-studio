@@ -161,14 +161,30 @@ def build_batch_table(
 ) -> list[dict[str, Any]]:
     """Pair each note with its de-identification result for the batch table.
 
-    The in-process service returns exactly one result per item, in order, so notes
-    and results zip 1:1 (``zip`` stops at the shorter if they ever diverge).
+    The in-process service returns exactly one result per item, in order, so notes and
+    results zip 1:1 (``zip`` stops at the shorter if they ever diverge). Each result is
+    tagged ``ok``; a failed note (``ok`` False) shows ``Failed`` in the status column with
+    its error message in place of the de-identified text, so one bad note stays visible
+    rather than aborting the whole batch.
     """
-    return [
-        {
-            "original": note,
-            "deidentified": item["deidentified_text"],
-            "entities": len(item["entities"]),
-        }
-        for note, item in zip(notes, results)
-    ]
+    rows: list[dict[str, Any]] = []
+    for note, item in zip(notes, results):
+        if item.get("ok", True):
+            rows.append(
+                {
+                    "status": "OK",
+                    "original": note,
+                    "deidentified": item["deidentified_text"],
+                    "entities": len(item["entities"]),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "status": "Failed",
+                    "original": note,
+                    "deidentified": item.get("error", "failed"),
+                    "entities": 0,
+                }
+            )
+    return rows

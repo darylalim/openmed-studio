@@ -244,13 +244,31 @@ def test_build_base_opts_seed_tracks_consistent_not_method():
 def test_build_batch_table_pairs_notes_with_results():
     notes = ["note A", "note B"]
     results = [
-        {"deidentified_text": "A_DEID", "entities": [{"label": "x"}]},
-        {"deidentified_text": "B_DEID", "entities": []},
+        {"ok": True, "deidentified_text": "A_DEID", "entities": [{"label": "x"}]},
+        {"ok": True, "deidentified_text": "B_DEID", "entities": []},
     ]
     assert build_batch_table(notes, results) == [
-        {"original": "note A", "deidentified": "A_DEID", "entities": 1},
-        {"original": "note B", "deidentified": "B_DEID", "entities": 0},
+        {"status": "OK", "original": "note A", "deidentified": "A_DEID", "entities": 1},
+        {"status": "OK", "original": "note B", "deidentified": "B_DEID", "entities": 0},
     ]
+
+
+def test_build_batch_table_marks_failed_items():
+    # A note that failed (ok=False) becomes a Failed row with its error in place of the
+    # de-identified text, so the bad note stays visible instead of aborting the batch.
+    notes = ["good", "bad"]
+    results = [
+        {"ok": True, "deidentified_text": "G", "entities": []},
+        {"ok": False, "error": "boom"},
+    ]
+    table = build_batch_table(notes, results)
+    assert table[0]["status"] == "OK"
+    assert table[1] == {
+        "status": "Failed",
+        "original": "bad",
+        "deidentified": "boom",
+        "entities": 0,
+    }
 
 
 def test_build_batch_table_truncates_on_length_mismatch():

@@ -65,7 +65,11 @@ download).
 Test layout (`tests/`): fast, no-model tests live in `test_pii_pure.py`, `test_service.py`,
 `test_validation.py`, `test_engine.py`, `test_ui_helpers.py`, and `test_ui_app.py`.
 `test_service.py` covers the in-process seam (`PIIEngine`-stub) — `resolve_backend`/`build_engine`
-backend wiring, the dict adapters (`_entity_dict`, the deidentify shaping), the success paths, that
+backend wiring, the dict adapters (`_entity_dict`, the deidentify shaping), the success paths, the
+batch per-item isolation (`test_batch_isolates_per_item_value_error`/
+`test_batch_isolates_failing_note_keeps_others`: a per-note `ValueError` becomes an `ok=False` row
+while the rest succeed, and `test_batch_backend_failure_aborts_and_does_not_leak`: a `RuntimeError`
+aborts the whole batch without leaking), that
 the `use_safety_sweep`, `use_smart_merging`, and `replace` `locale` options are forwarded to the
 engine (the first two default on and overridable; `locale` flows only when set), the clinical-NER
 `analyze` path (`service.analyze` → `_entity_dict` preserving UPPERCASE labels, `model_name`/
@@ -115,9 +119,12 @@ model, no network; sentinel values a real model would never produce (`[[STUB-DEI
 stub. It also covers the
 `Single`→`Re-identify` session-state handoff across the `@st.fragment` boundary, that the rendered
 marks are theme-agnostic (`color: inherit` + an `rgba` tint), a widget-key
-collision guard across all six tabs, that the sidebar `Replace locale` input flows through to the
-engine (driving the `Method` `segmented_control` to `replace`) — a `replace`-only knob, omitted
-otherwise — and the `Clinical NER` tab: the `Entity domain` picker lists the curated `NER_MODELS`
+collision guard across all six tabs, that the de-identification controls live in the
+`Single note`/`Batch` tabs and not the sidebar (`test_deid_controls_live_in_tabs_not_sidebar`: the
+sidebar keeps only the engine readout + the global `Language`, while `single_method`/`batch_method`
+carry the `Method` picker), that the in-tab `Replace locale` input flows through to the engine
+(setting the Single tab's `Method` `segmented_control` to `replace` so the method-conditional knob
+renders) — a `replace`-only knob, omitted otherwise — and the `Clinical NER` tab: the `Entity domain` picker lists the curated `NER_MODELS`
 domains (`Disease` default) and forwards the picked domain's `.alias`; `Analyze` renders highlighted
 UPPERCASE-labelled entities; the confidence slider seeds from the model's `recommended_confidence`;
 the preview shows the `display_name`/`entity_types` (and the `Medical` broad-coverage flag); and the
@@ -163,11 +170,13 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
     `OpenMedConfig(backend=...)`, else bare so openmed auto-detects), lazy model load, thin
     wrappers over `extract_pii`/`deidentify`/`reidentify` with per-call detection/redaction
     options (`lang`, `model_name`, `confidence_threshold`, `use_smart_merging`, `consistent`/
-    `seed`, `locale`, `date_shift_days`/`keep_year`, `use_safety_sweep`); every method —
+    `seed`, `locale`, `date_shift_days`/`keep_year`, `use_safety_sweep` — the UI surfaces the
+    method-specific ones in each de-identifying tab's `Advanced` expander, conditioned on the picked
+    method); every method —
     including `method="shift_dates"` — is delegated straight to openmed (openmed >=1.6.0
     shifts dates correctly on the default model). `use_safety_sweep` defaults to `True`
     (openmed's default) — a deterministic structured-identifier sweep run after model
-    detection, exposed as a sidebar toggle — so de-identification can redact identifiers the
+    detection, exposed as a per-tab `Advanced` toggle — so de-identification can redact identifiers the
     `Detect` tab's `extract_pii` (which has no sweep) does not; the `Detect` caption flags
     this. `use_smart_merging` (default on) is forwarded too, matching the `Detect` tab; `locale`
     picks the `replace` surrogate locale (e.g. `pt_BR`) instead of the default openmed derives
@@ -205,7 +214,11 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
     split — the messages are capability-neutral now that NER flows through `_run` too), the
     dict adapters (`_entity_dict`, `_deidentify_dict`), and
     `extract`/`analyze`/`deidentify`/`deidentify_batch`/`reidentify(engine, …, **opts)` that
-    validate → call the engine → adapt to plain dicts. `analyze` (clinical NER) reuses
+    validate → call the engine → adapt to plain dicts. `deidentify_batch` isolates each note
+    in its own try/except: a per-note `ValueError` becomes a `{"ok": False, "error": …}` row
+    so one bad note doesn't abort the batch, while a `RuntimeError`/`OSError` (backend load
+    failure — not note-specific) propagates through `_run` and aborts the whole batch. `analyze`
+    (clinical NER) reuses
     `_validate`/`_run`/`_entity_dict` verbatim — NER's `EntityPrediction` exposes the same
     `.label`/`.text`/`.start`/`.end`/`.confidence` the adapter already reads. Every UI engine
     call funnels through here, so nothing bypasses validation.
@@ -219,8 +232,9 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   canonical method set.
 - **UI structure:** the Streamlit app lives at the repo root: `streamlit_app.py` (the app —
   `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call` runs a `service.*`
-  function in a spinner and renders any `ServiceError`; the sidebar reads engine
-  state (model/backend/`is_loaded`) directly, and the six tabs (`Detect` → `service.extract`,
+  function in a spinner and renders any `ServiceError`; the sidebar holds only the engine
+  readout (model/backend/`is_loaded`, read directly) and the one global `Language` filter
+  (`_render_sidebar` returns the chosen `lang`), and the six tabs (`Detect` → `service.extract`,
   `Clinical NER` → `service.analyze`, `Single note`/`Batch` → `service.deidentify[_batch]`,
   `Anonymize` → `service.deidentify` (`method=replace`), `Re-identify` → `service.reidentify`) live in
   `main()`, guarded by `if __name__ == "__main__"` so importing for tests has no side effects). The
@@ -228,8 +242,21 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   interaction reruns
   only that tab; `Single note` and `Anonymize` are **intentionally not** fragments, because their form
   submit must trigger a full rerun to hand `last_deidentified`/`last_mapping` (via `st.session_state`,
-  not widget keys) to the `Re-identify` tab. The `Clinical NER` tab (`_render_ner`) has its own controls,
-  independent of the de-identification sidebar: a domain picker (`st.selectbox` over `NER_MODELS`,
+  not widget keys) to the `Re-identify` tab — the handoff is set once per submit by `_set_handoff`
+  (the single security-relevant copy of "set the two together so a stale mapping can't linger"),
+  *not* on re-render. Each tab persists its latest result (`single_result`/`anon_result` in
+  `st.session_state`) and renders the panel from there, so post-submit reruns (a Download or the
+  "Show re-identification key" click) don't blank it; the mapping itself is revealed in an
+  `@st.dialog` (`_show_mapping_dialog`) behind a button rather than an always-open expander. The
+  de-identification controls — `Method` plus the
+  method-conditional `Advanced` knobs (`replace`→consistent/seed/locale, `shift_dates`→
+  date_shift_days/keep_year, plus the safety sweep) — live in the `Single note` + `Batch` tabs via a
+  shared `_render_deid_controls(key_prefix=…, lang=…)` (rendered above each tab's form, with widget
+  keys `key_prefix`-scoped so the two tabs don't collide); `Detect` has its own confidence slider +
+  smart-merge toggle, and `Anonymize` reads the sidebar `Language`. Only `Method`/`Advanced` are
+  per-tab — `Language` is the lone global sidebar filter. The `Clinical NER` tab (`_render_ner`) has
+  its own controls, independent of the de-identification controls: a domain picker (`st.selectbox`
+  over `NER_MODELS`,
   default `Disease`) **outside** the form so selecting a domain reruns the fragment and refreshes a
   reactive preview (the model's `display_name`, size, and `entity_types` — flagging `Medical` as the
   broad 434M model) and the confidence slider's default (seeded from the model's
@@ -250,8 +277,9 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   `result.get("mapping")`). `streamlit>=1.58` (1.58 horizontal/`height="stretch"` flex layout) is a
   core dependency. The confidence slider defaults to `0.5` (the de-identify default is `0.7`). App
   config lives in `.streamlit/config.toml` (both `[theme.light]` and `[theme.dark]` are defined so
-  the app honors the user's mode; the theme-agnostic marks read correctly in either;
-  `gatherUsageStats = false` — a
+  the app honors the user's mode; the theme-agnostic marks read correctly in either; a shared
+  `[theme]` sets `baseRadius` plus a semantic `red`/`green`/`orange` palette — brightened per mode
+  under `[theme.dark]` — so status accents/badges feel intentional; `gatherUsageStats = false` — a
   clinical-text tool shouldn't phone home); any local secrets go in the gitignored
   `.streamlit/secrets.toml`. The app's download outputs (`deidentified.txt`/`anonymized.txt`/
   `reidentified.txt`/`deidentified_batch.json`) are gitignored too, since they can carry PHI or
@@ -292,11 +320,11 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `shift_dates`/`normalize_accents`/`policy`/`calibration_thresholds_path` knobs.
   `tests/test_engine.py::test_deidentify_forwards_every_openmed_param_or_allowlists_it`
   introspects this real signature and pins the forwarded-vs-excluded split so it can't drift.
-  `use_safety_sweep=True` (the app's default, exposed as a sidebar toggle) runs a deterministic
-  structured-identifier sweep after detection; `extract_pii` has no such parameter.
+  `use_safety_sweep=True` (the app's default, exposed as a per-tab `Advanced` toggle) runs a
+  deterministic structured-identifier sweep after detection; `extract_pii` has no such parameter.
   Methods: `mask`, `remove`, `replace` (Faker surrogates — `consistent=True, seed=N` for
-  determinism, `locale="pt_BR"` etc. for a specific surrogate locale, exposed as a sidebar
-  input), `hash`, `shift_dates`.
+  determinism, `locale="pt_BR"` etc. for a specific surrogate locale, exposed in the de-identifying
+  tabs' `Advanced` expander), `hash`, `shift_dates`.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
 - `analyze_text(text, model_name="disease_detection_superclinical", *, loader=None,
   confidence_threshold=0.0, aggregation_strategy="simple", output_format="dict",

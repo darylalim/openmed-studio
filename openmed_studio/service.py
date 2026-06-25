@@ -196,19 +196,36 @@ def deidentify(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
 def deidentify_batch(
     engine: PIIEngine, items: list[str], **opts: Any
 ) -> dict[str, Any]:
-    """De-identify many notes in order; returns ``{"results": [...]}`` (one per item)."""
+    """De-identify many notes in order; returns ``{"results": [...]}`` (one per item).
+
+    Each result is tagged ``ok``: a success is ``{"ok": True, **deidentify dict}``; a note
+    that trips a ``ValueError`` (bad options/content for *that* note) is isolated as
+    ``{"ok": False, "error": <message>}`` so one bad note doesn't abort the whole batch.
+    A backend-load failure (``RuntimeError``/``OSError``) is *not* note-specific — it would
+    fail every note identically — so it propagates through ``_run`` and aborts the batch,
+    surfacing one ``ServiceError`` rather than N identical failed rows.
+    """
     req = _validate(validation.DeidentifyBatchRequest, {"items": items, **opts})
-    results = _run(
-        lambda: [
-            _deidentify_dict(
-                _deidentify_call(engine, text, req),
-                method=req.method,
-                keep_mapping=req.keep_mapping,
+
+    def _process_all() -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for text in req.items:
+            try:
+                result = _deidentify_call(engine, text, req)
+            except ValueError as exc:  # bad options/content for THIS note — isolate it
+                out.append({"ok": False, "error": str(exc)})
+                continue
+            out.append(
+                {
+                    "ok": True,
+                    **_deidentify_dict(
+                        result, method=req.method, keep_mapping=req.keep_mapping
+                    ),
+                }
             )
-            for text in req.items
-        ]
-    )
-    return {"results": results}
+        return out
+
+    return {"results": _run(_process_all)}
 
 
 def reidentify(

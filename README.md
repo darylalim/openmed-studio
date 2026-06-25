@@ -38,9 +38,11 @@ It opens with six tabs:
   download, the confidence slider defaults to that model's recommended threshold, and each domain
   loads its specialized model on first use. Highlights and tables the entities like Detect.
 - **Single note** — de-identify one note; shows the original with detected PII highlighted
-  side-by-side with the redacted text (with a **download** button), plus an entity table and
-  (optionally) the mapping.
-- **Batch** — edit a table of notes (up to 100) and de-identify them in one go.
+  side-by-side with the redacted text (with a **download** button), plus an entity table and a
+  **Show re-identification key** button that reveals the mapping in a dialog (when Keep mapping is on).
+- **Batch** — edit a table of notes (up to 100) and de-identify them in one go; each note is
+  isolated, so a note that fails shows as a `Failed` row (with a summary warning) instead of
+  aborting the whole batch.
 - **Anonymize** — replace *detected* PII/PHI with realistic *fake* surrogates rather than masking
   (review the output before sharing — anything the model misses is left in place); shows the original
   (highlighted) beside the anonymized text with a **download** button, and keeps the mapping so the
@@ -48,13 +50,15 @@ It opens with six tabs:
 - **Re-identify** — restore originals from a kept mapping (auto-filled from the last Single note or
   Anonymize run).
 
-The sidebar reports the engine's model/backend/load state and holds the shared de-identification
-options: method (`mask` / `remove` / `replace` / `hash` / `shift_dates`), language (12 supported),
-confidence, `keep_mapping`, and the deterministic-`replace` (with an optional surrogate `locale`) /
-`shift_dates` controls. The
-confidence slider defaults to **0.5** for higher PHI recall — note the de-identify default is
-`0.7`. The model loads on the first request, so the first call shows a spinner and is slower than
-the rest.
+The sidebar reports the engine's model/backend/load state and holds the one global filter — the
+detection **language** (12 supported), which feeds the Detect, Single note, Batch, and Anonymize
+tabs. The de-identification controls live in the tabs that use them: **Single note** and **Batch**
+each show the method (`mask` / `remove` / `replace` / `hash` / `shift_dates`), confidence,
+`keep_mapping`, and an **Advanced** expander whose knobs follow the chosen method
+(deterministic-`replace` with an optional surrogate `locale`; the `shift_dates` controls; the safety
+sweep). The confidence slider defaults to **0.5** for higher PHI recall — note the de-identify
+default is `0.7`. The model loads on the first request, so the first call shows a spinner and is
+slower than the rest.
 
 ### How it works
 
@@ -152,8 +156,9 @@ request, across Python 3.10 and 3.13.
 - Smart entity merging is on by default (`use_smart_merging=True`) and recombines
   token-fragmented PII like dates and SSNs into whole spans.
 - De-identification runs a deterministic structured-identifier **safety sweep** after model
-  detection (`use_safety_sweep=True`, toggleable in the sidebar), so it may redact a few
-  identifiers the **Detect** tab (which doesn't run the sweep) doesn't surface.
+  detection (`use_safety_sweep=True`, toggleable in each de-identifying tab's **Advanced**
+  expander), so it may redact a few identifiers the **Detect** tab (which doesn't run the sweep)
+  doesn't surface.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).

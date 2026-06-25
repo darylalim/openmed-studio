@@ -219,7 +219,27 @@ def test_deidentify_batch_returns_per_item_results() -> None:
     )
     results = result["results"]
     assert len(results) == 2
+    assert all(r["ok"] for r in results)
     assert all(r["deidentified_text"] == "[first_name] A. Doe" for r in results)
+
+
+def test_batch_isolates_failing_note_keeps_others() -> None:
+    # One pathological note fails (ValueError) while the others succeed — the per-item
+    # isolation a single shared _run would not provide (it would abort the whole batch).
+    class _Mixed(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            if "boom" in _text:
+                raise ValueError("note-specific failure")
+            return super().deidentify(_text, **kwargs)
+
+    engine = cast("PIIEngine", _Mixed())
+    result = service.deidentify_batch(
+        engine, ["Patient John.", "boom note", "Patient Jane."], method="mask"
+    )
+    results = result["results"]
+    assert [r["ok"] for r in results] == [True, False, True]
+    assert "note-specific failure" in results[1]["error"]
+    assert results[0]["deidentified_text"] == "[first_name] A. Doe"
 
 
 def test_reidentify_restores() -> None:
@@ -321,13 +341,20 @@ def test_backend_failure_does_not_leak_internal_message() -> None:
     assert "unavailable" in message.lower()
 
 
-def test_batch_value_error_maps_to_service_error() -> None:
-    # deidentify_batch wraps a per-item loop in one _run; a per-item raise is normalized.
-    with pytest.raises(ServiceError, match="bad option"):
-        service.deidentify_batch(_raising(ValueError("bad option")), ["x", "y"])
+def test_batch_isolates_per_item_value_error() -> None:
+    # A note that trips a ValueError is isolated as a failed item (ok=False) so the rest of
+    # the batch still completes — it no longer aborts the whole batch.
+    result = service.deidentify_batch(
+        _raising(ValueError("bad option")), ["x", "y"], method="mask"
+    )
+    results = result["results"]
+    assert [r["ok"] for r in results] == [False, False]
+    assert all("bad option" in r["error"] for r in results)
 
 
-def test_batch_backend_failure_does_not_leak() -> None:
+def test_batch_backend_failure_aborts_and_does_not_leak() -> None:
+    # A backend-load failure isn't note-specific (it fails every note identically), so it
+    # aborts the whole batch via _run rather than spamming N failed rows — and never leaks.
     with pytest.raises(ServiceError) as excinfo:
         service.deidentify_batch(_raising(RuntimeError("kaboom")), ["x", "y"])
     assert "kaboom" not in str(excinfo.value)

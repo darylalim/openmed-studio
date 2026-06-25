@@ -15,6 +15,14 @@ showErrorDetails = "none"
 # entity-highlight colors in ui_helpers.py adapt to whichever is active.
 [theme]
 primaryColor = "#2563eb"
+# Rounded corners on widgets/containers, in step with the entity-highlight marks.
+baseRadius = "8px"
+# Semantic palette for st.error/warning/success accents, badges, and status text
+# (light-mode shades; [theme.dark] brightens them for contrast). Streamlit derives the
+# background/text variants automatically.
+redColor = "#dc2626"
+greenColor = "#16a34a"
+orangeColor = "#d97706"
 
 [theme.light]
 backgroundColor = "#ffffff"
@@ -26,3 +34,6 @@ primaryColor = "#60a5fa"
 backgroundColor = "#0d1117"
 secondaryBackgroundColor = "#161b22"
 textColor = "#e6edf3"
+redColor = "#f87171"
+greenColor = "#4ade80"
+orangeColor = "#fbbf24"

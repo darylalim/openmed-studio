@@ -130,6 +130,20 @@ def test_sidebar_reports_lazy_load(monkeypatch):
     assert any("loads on first request" in c.value for c in at.sidebar.caption)
 
 
+def test_deid_controls_live_in_tabs_not_sidebar(monkeypatch):
+    # #1: the de-identification Method/Advanced moved OUT of the sidebar into the Single
+    # note + Batch tabs; the sidebar keeps only the engine readout + the global Language.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    assert not at.exception
+    # Sidebar holds the global Language and no de-identification Method picker.
+    assert any(s.label == "Language" for s in at.sidebar.selectbox)
+    assert not list(at.sidebar.segmented_control)
+    # The Method picker now lives in the de-identifying tabs, keyed per tab.
+    method_keys = {s.key for s in at.segmented_control}
+    assert {"single_method", "batch_method"} <= method_keys
+
+
 # --- single-note de-identify -------------------------------------------------
 def test_single_note_renders_metrics_and_output(monkeypatch):
     _use_engine(monkeypatch, _StubEngine())
@@ -147,8 +161,9 @@ def test_single_note_renders_metrics_and_output(monkeypatch):
 
 
 def test_single_note_forwards_replace_locale_to_engine(monkeypatch):
-    # The sidebar "Replace locale" input flows through build_base_opts -> service ->
-    # engine when method=replace (it's a replace-only knob, omitted otherwise).
+    # The Method + its replace-only knobs now live in the Single note tab (#1), not the
+    # sidebar. "Replace locale" renders only when method=replace (conditional Advanced),
+    # and flows through build_base_opts -> service -> engine.
     captured: dict = {}
 
     class _Capturing(_StubEngine):
@@ -160,8 +175,11 @@ def test_single_note_forwards_replace_locale_to_engine(monkeypatch):
 
     _use_engine(monkeypatch, _Capturing())
     at = AppTest.from_file(APP).run(timeout=30)
-    next(s for s in at.segmented_control if s.label == "Method").set_value("replace")
-    next(t for t in at.text_input if t.label == "Replace locale").set_value("pt_BR")
+    # Set method=replace and rerun so the conditional "Replace locale" knob renders.
+    next(s for s in at.segmented_control if s.key == "single_method").set_value(
+        "replace"
+    ).run(timeout=30)
+    next(t for t in at.text_input if t.key == "single_locale").set_value("pt_BR")
     _set_area(at, "Clinical note", "Patient John Doe.")
     _click(at, "De-identify")
 
@@ -181,13 +199,25 @@ def test_single_note_persists_mapping_to_session_state(monkeypatch):
     assert at.session_state["last_deidentified"] == "[[STUB-DEID-OUTPUT]]"
 
 
+def test_single_note_offers_mapping_reveal_when_kept(monkeypatch):
+    # With Keep mapping on (default), the result offers a "Show re-identification key" button
+    # (the mapping is revealed in a dialog now, not an always-open expander).
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+
+    assert not at.exception
+    assert any(b.label == "Show re-identification key" for b in at.button)
+
+
 def test_single_note_clears_stale_mapping_when_keep_off(monkeypatch):
     # Regression guard: a run whose result has no mapping must clear a previous one.
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP)
     at.session_state["last_mapping"] = {"OLD_1": "secret"}
     at.run(timeout=30)
-    next(t for t in at.toggle if t.label == "Keep mapping").set_value(False)
+    next(t for t in at.toggle if t.key == "single_keepmap").set_value(False)
     _set_area(at, "Clinical note", "Patient John Doe.")
     _click(at, "De-identify")
 
@@ -228,14 +258,19 @@ def test_detect_error_renders_message(monkeypatch):
     assert not at.metric
 
 
-def test_batch_error_renders_message(monkeypatch):
+def test_batch_isolates_failed_note_in_table(monkeypatch):
+    # A model ValueError on a note no longer aborts the batch (#1 batch isolation): the note
+    # is shown as a Failed row and the batch completes, with a warning summarizing failures.
     _use_engine(monkeypatch, _RaisingEngine(ValueError("batch boom")))
     at = AppTest.from_file(APP).run(timeout=30)
     _click(at, "De-identify all")
 
     assert not at.exception
-    assert any("batch boom" in e.value for e in at.error)
-    assert not at.metric
+    assert not at.error  # no whole-batch abort banner
+    assert any("failed" in w.value.lower() for w in at.warning)
+    # the per-note error is surfaced in the results table, not swallowed (the batch editor
+    # also surfaces as a dataframe, so search across them rather than assuming an index)
+    assert any("batch boom" in df.value.to_string() for df in at.dataframe)
 
 
 def test_oversize_text_rejected_without_phi_echo(monkeypatch):
@@ -395,8 +430,8 @@ def test_anonymize_renders_synthetic_output(monkeypatch):
 
 def test_anonymize_forwards_replace_method_locale_and_keep_mapping(monkeypatch):
     # The tab pins method=replace and forwards the in-tab locale + keep_mapping=True, so the
-    # call is a reversible surrogate replacement (the in-tab "Locale" is distinct from the
-    # sidebar's "Replace locale", which the Single tab uses).
+    # call is a reversible surrogate replacement (the Anonymize tab's "Locale" is distinct
+    # from the Single/Batch tabs' "Replace locale").
     captured: dict = {}
 
     class _Capturing(_StubEngine):

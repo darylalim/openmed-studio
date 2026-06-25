@@ -56,9 +56,15 @@ def get_engine() -> PIIEngine:
 
 
 def _entity_columns() -> dict[str, Any]:
-    """Shared ``st.dataframe`` column config for the entity tables (Detect + Single)."""
+    """Shared ``st.dataframe`` column config for the entity tables (Detect/NER/Single).
+
+    Confidence renders as a 0–1 progress bar so a reviewer can scan model certainty at a
+    glance rather than reading decimals.
+    """
     return {
-        "confidence": st.column_config.NumberColumn(format="%.2f"),
+        "confidence": st.column_config.ProgressColumn(
+            "confidence", min_value=0.0, max_value=1.0, format="%.2f"
+        ),
         "start": st.column_config.NumberColumn(width="small"),
         "end": st.column_config.NumberColumn(width="small"),
     }
@@ -101,6 +107,38 @@ def _render_highlight(text: str, entities: list[dict[str, Any]]) -> None:
         st.html(legend)
 
 
+def _toast_downloaded() -> None:
+    """Lightweight confirmation when a Download button is clicked (an on_click callback)."""
+    st.toast("Downloaded", icon=":material/download:")
+
+
+def _set_handoff(result: dict[str, Any]) -> None:
+    """Hand the de-identified text + mapping to the Re-identify tab.
+
+    Set together so a prior run's mapping never lingers against this run's text (a result
+    with ``keep_mapping`` off has ``mapping=None``, which must clear any earlier mapping).
+    This is the single, security-relevant copy of that invariant; callers invoke it only on
+    an actual submit (never on the panel's persistent re-render), so the handoff always
+    reflects the most recent de-identification rather than whichever tab rendered last.
+    """
+    st.session_state.last_deidentified = result["deidentified_text"]
+    st.session_state.last_mapping = result.get("mapping") or None
+
+
+@st.dialog("Re-identification key")
+def _show_mapping_dialog(mapping: dict[str, str]) -> None:
+    """Reveal the surrogate→original mapping in a modal (a deliberate 'show the key' action).
+
+    Gating it behind a button + dialog (rather than an always-open expander) makes exposing
+    the key — which reverses the de-identification and is as sensitive as raw PHI — explicit.
+    """
+    st.caption(
+        "As sensitive as raw PHI — it reverses the de-identification. Held in this session "
+        "for the Re-identify tab."
+    )
+    st.json(mapping)
+
+
 def _render_deid_result(
     text: str,
     result: dict[str, Any],
@@ -113,17 +151,13 @@ def _render_deid_result(
 ) -> None:
     """Shared result panel for the Single note + Anonymize tabs.
 
-    Hands the de-identified text + mapping to the Re-identify tab — set together so a
-    prior run's mapping never lingers against this run's text (a result with
-    ``keep_mapping`` off has ``mapping=None``, which must clear any earlier mapping).
-    This is the single, security-relevant copy of that invariant. Then renders the
-    original-vs-output columns + Download (with an optional ``export_caveat`` beside the
-    button), optionally the entity table, and the mapping expander. Callers render their
-    own metric row first, since the labels/values differ per tab.
+    Renders the original-vs-output columns + Download (with an optional ``export_caveat``
+    beside the button), optionally the entity table, and a button that reveals the
+    re-identification mapping in a dialog. Pure rendering — callers persist the result and
+    call :func:`_set_handoff` on submit, so it's safe to re-run on post-submit reruns (a
+    Download or a Show-key click) without the panel blanking or the handoff drifting.
+    Callers render their own metric row first, since the labels/values differ per tab.
     """
-    st.session_state.last_deidentified = result["deidentified_text"]
-    st.session_state.last_mapping = result.get("mapping") or None
-
     entities = result["entities"]
     left, right = st.columns(2)
     with left.container(border=True, height="stretch"):
@@ -138,6 +172,7 @@ def _render_deid_result(
             file_name=out_filename,
             icon=":material/download:",
             key=dl_key,
+            on_click=_toast_downloaded,
         )
         if export_caveat:
             st.caption(export_caveat)
@@ -145,34 +180,141 @@ def _render_deid_result(
     if show_entities:
         with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
             st.dataframe(entities, hide_index=True, column_config=_entity_columns())
-    if result.get("mapping"):
-        with st.expander("Mapping — re-identification key", icon=":material/key:"):
-            st.caption(
-                "As sensitive as raw PHI. Held in this session for the Re-identify tab."
+    if result.get("mapping") and st.button(
+        "Show re-identification key", icon=":material/key:", key=f"{dl_key}_showkey"
+    ):
+        _show_mapping_dialog(result["mapping"])
+
+
+def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
+    """Render the de-identification controls for a tab and return the request options.
+
+    Shared by the Single note + Batch tabs so the method and its dependent knobs live in
+    the tab that performs the de-identification — not the sidebar, which now holds only the
+    engine readout and the global ``lang`` filter. Rendered ABOVE the tab's form (like the
+    NER domain picker) so changing the method reruns and re-renders only the Advanced knobs
+    that method actually consumes (``replace`` → consistent/seed/locale; ``shift_dates`` →
+    date_shift_days/keep_year). Every widget key is ``key_prefix``-scoped so Single and
+    Batch keep independent state without colliding.
+    """
+    method = (
+        st.segmented_control(
+            "Method", METHODS, default="mask", key=f"{key_prefix}_method"
+        )
+        or "mask"
+    )
+    c1, c2 = st.columns([3, 2])
+    confidence = c1.slider(
+        "Confidence threshold",
+        0.0,
+        1.0,
+        0.5,
+        0.05,
+        key=f"{key_prefix}_conf",
+        help="Minimum model confidence to keep an entity. The UI defaults to 0.5 for "
+        "higher PHI recall; the de-identify default is 0.7.",
+    )
+    keep_mapping = c2.toggle(
+        "Keep mapping",
+        value=True,
+        key=f"{key_prefix}_keepmap",
+        help="Return the surrogate→original map; enables the Re-identify tab.",
+    )
+
+    # Defaults for the method-specific knobs; only the chosen method's are rendered, and
+    # build_base_opts omits whichever the selected method doesn't consume.
+    consistent = False
+    seed = 0
+    locale = ""
+    date_shift_days = 0
+    keep_year = True
+    with st.expander("Advanced", icon=":material/tune:"):
+        if method == "replace":
+            consistent = st.toggle(
+                "Deterministic replace",
+                key=f"{key_prefix}_consistent",
+                help="The same input maps to the same surrogate.",
             )
-            st.json(result["mapping"])
+            if consistent:
+                seed = st.number_input(
+                    "Seed",
+                    value=0,
+                    step=1,
+                    key=f"{key_prefix}_seed",
+                    help="Reproducible surrogates across runs.",
+                )
+            locale = st.text_input(
+                "Replace locale",
+                value="",
+                placeholder="e.g. en_US, pt_BR",
+                key=f"{key_prefix}_locale",
+                help="Faker locale for replace surrogates (e.g. pt_BR for Brazilian-format "
+                "IDs). Blank uses the default for the selected language.",
+            )
+        elif method == "shift_dates":
+            date_shift_days = st.number_input(
+                "Date shift days",
+                value=0,
+                step=1,
+                key=f"{key_prefix}_shift",
+                help="0 = random per-note shift.",
+            )
+            keep_year = st.toggle(
+                "Keep year",
+                value=True,
+                key=f"{key_prefix}_keepyear",
+                help="Preserve the year when shifting dates.",
+            )
+        use_safety_sweep = st.toggle(
+            "Safety sweep",
+            value=True,
+            key=f"{key_prefix}_sweep",
+            help="Run a deterministic structured-identifier sweep after model detection. "
+            "Recommended on — it catches IDs (SSNs, phones) the model misses; turning it "
+            "off lowers PHI recall.",
+        )
+
+    return build_base_opts(
+        method=method,
+        confidence_threshold=confidence,
+        lang=lang,
+        keep_mapping=keep_mapping,
+        consistent=consistent,
+        seed=int(seed),
+        locale=locale,
+        date_shift_days=int(date_shift_days),
+        keep_year=keep_year,
+        use_safety_sweep=use_safety_sweep,
+    )
 
 
-def _render_single(base_opts: dict[str, Any]) -> None:
+def _render_single(lang: str) -> None:
+    base_opts = _render_deid_controls(key_prefix="single", lang=lang)
     with st.form("single"):
         text = st.text_area("Clinical note", value=EXAMPLE_NOTE, height=200)
         submitted = st.form_submit_button(
             "De-identify", type="primary", icon=":material/lock:"
         )
-    if submitted and not text.strip():
-        st.warning("Enter some text to de-identify.")
-        return
-    if not submitted:
-        return
+    if submitted:
+        if not text.strip():
+            st.warning("Enter some text to de-identify.")
+            return
+        result = _call(service.deidentify, text, action="De-identifying", **base_opts)
+        if result is None:
+            return
+        # Persist so the panel survives post-submit reruns (Download / Show key clicks),
+        # and hand off to Re-identify here (only on submit) so the handoff can't drift.
+        st.session_state["single_result"] = {"text": text, "result": result}
+        _set_handoff(result)
 
-    result = _call(service.deidentify, text, action="De-identifying", **base_opts)
-    if result is None:
+    stored = st.session_state.get("single_result")
+    if not stored:
         return
-
+    text, result = stored["text"], stored["result"]
     entities = result["entities"]
     m1, m2 = st.columns(2)
-    m1.metric("Entities found", len(entities))
-    m2.metric("Method", result["method"])
+    m1.metric("Entities found", len(entities), border=True)
+    m2.metric("Method", result["method"], border=True)
     _render_deid_result(
         text,
         result,
@@ -184,7 +326,8 @@ def _render_single(base_opts: dict[str, Any]) -> None:
 
 
 @st.fragment
-def _render_batch(base_opts: dict[str, Any]) -> None:
+def _render_batch(lang: str) -> None:
+    base_opts = _render_deid_controls(key_prefix="batch", lang=lang)
     st.caption(
         f"Edit the table (one note per row, up to {MAX_BATCH_ITEMS}), then "
         "de-identify all at once."
@@ -222,13 +365,23 @@ def _render_batch(base_opts: dict[str, Any]) -> None:
         return
 
     # The engine is called once per note, in order, so results and notes line up 1:1.
+    # Each result carries ok/error: a bad note is isolated (shown as a Failed row) instead
+    # of aborting the whole batch.
     results = result["results"]
     table = build_batch_table(notes, results)
-    st.metric("Notes de-identified", len(table))
+    n_ok = sum(1 for r in results if r.get("ok", True))
+    n_failed = len(results) - n_ok
+    st.metric("Notes de-identified", n_ok, border=True)
+    if n_failed:
+        st.warning(
+            f"{n_failed} of {len(results)} note(s) failed — see the Status column.",
+            icon=":material/error:",
+        )
     st.dataframe(
         table,
         hide_index=True,
         column_config={
+            "status": st.column_config.TextColumn(width="small"),
             "original": st.column_config.TextColumn(width="large"),
             "deidentified": st.column_config.TextColumn(width="large"),
             "entities": st.column_config.NumberColumn(width="small"),
@@ -240,10 +393,11 @@ def _render_batch(base_opts: dict[str, Any]) -> None:
         file_name="deidentified_batch.json",
         icon=":material/download:",
         key="dl_batch",
+        on_click=_toast_downloaded,
     )
 
 
-def _render_anonymize() -> None:
+def _render_anonymize(lang: str) -> None:
     """Replace detected PII/PHI with realistic fake surrogates (surrogate replacement).
 
     A focused, surrogate-first view over ``service.deidentify(method="replace")``: the
@@ -267,8 +421,7 @@ def _render_anonymize() -> None:
             key="anon_text",
         )
         c1, c2 = st.columns(2)
-        lang = c1.selectbox("Language", LANGS, index=0, key="anon_lang")
-        confidence = c2.slider(
+        confidence = c1.slider(
             "Confidence threshold",
             0.0,
             1.0,
@@ -277,20 +430,20 @@ def _render_anonymize() -> None:
             key="anon_conf",
             help="Lower keeps more entities (higher PHI recall = more replaced).",
         )
-        consistent = c1.toggle(
+        consistent = c2.toggle(
             "Deterministic",
             value=True,
             key="anon_consistent",
             help="Same input → same surrogate, so repeated mentions resolve to one identity.",
         )
-        seed = c2.number_input(
+        seed = c1.number_input(
             "Seed",
             value=42,
             step=1,
             key="anon_seed",
             help="Reproducible surrogates across runs (used when Deterministic is on).",
         )
-        locale = st.text_input(
+        locale = c2.text_input(
             "Locale",
             value="",
             placeholder="e.g. en_US, pt_BR",
@@ -300,35 +453,44 @@ def _render_anonymize() -> None:
         submitted = st.form_submit_button(
             "Anonymize", type="primary", icon=":material/masks:"
         )
-    if submitted and not text.strip():
-        st.warning("Enter some text to anonymize.")
-        return
-    if not submitted:
-        return
+    if submitted:
+        if not text.strip():
+            st.warning("Enter some text to anonymize.")
+            return
+        # Pin method=replace; only add seed when deterministic and locale when set (mirrors
+        # build_base_opts, so openmed gets its per-call random surrogates / lang-derived
+        # locale rather than a zero seed or empty locale).
+        opts: dict[str, Any] = {
+            "method": "replace",
+            "confidence_threshold": confidence,
+            "lang": lang,
+            "consistent": consistent,
+            "keep_mapping": True,
+        }
+        if consistent:
+            opts["seed"] = int(seed)
+        if locale.strip():
+            opts["locale"] = locale.strip()
+        result = _call(service.deidentify, text, action="Anonymizing", **opts)
+        if result is None:
+            return
+        # Persist (with the determinism flag for the metric) and hand off on submit only,
+        # so the panel survives post-submit reruns (Download / Show key).
+        st.session_state["anon_result"] = {
+            "text": text,
+            "result": result,
+            "consistent": consistent,
+        }
+        _set_handoff(result)
 
-    # Pin method=replace; only add seed when deterministic and locale when set (mirrors
-    # build_base_opts, so openmed gets its per-call random surrogates / lang-derived locale
-    # rather than a zero seed or empty locale).
-    opts: dict[str, Any] = {
-        "method": "replace",
-        "confidence_threshold": confidence,
-        "lang": lang,
-        "consistent": consistent,
-        "keep_mapping": True,
-    }
-    if consistent:
-        opts["seed"] = int(seed)
-    if locale.strip():
-        opts["locale"] = locale.strip()
-
-    result = _call(service.deidentify, text, action="Anonymizing", **opts)
-    if result is None:
+    stored = st.session_state.get("anon_result")
+    if not stored:
         return
-
+    text, result, consistent = stored["text"], stored["result"], stored["consistent"]
     entities = result["entities"]
     m1, m2 = st.columns(2)
-    m1.metric("Entities replaced", len(entities))
-    m2.metric("Deterministic", "On" if consistent else "Off")
+    m1.metric("Entities replaced", len(entities), border=True)
+    m2.metric("Deterministic", "On" if consistent else "Off", border=True)
     _render_deid_result(
         text,
         result,
@@ -376,22 +538,34 @@ def _render_reidentify() -> None:
                     file_name="reidentified.txt",
                     icon=":material/download:",
                     key="dl_reid",
+                    on_click=_toast_downloaded,
                 )
+                st.toast("Re-identified", icon=":material/lock_open:")
         elif mapping is not None:
             st.warning("Provide a non-empty mapping object.")
 
 
 @st.fragment
-def _render_detect(base_opts: dict[str, Any]) -> None:
+def _render_detect(lang: str) -> None:
     st.caption(
         "Detect PII entities without redacting — audit what the model finds. De-identification "
         "may redact more than is shown here: it keeps smart merging on and runs a deterministic "
-        "structured-identifier safety sweep (toggleable in the sidebar) that catches IDs the "
-        "model misses."
+        "structured-identifier safety sweep (toggleable per de-identification tab) that catches "
+        "IDs the model misses."
     )
     with st.form("detect"):
         text = st.text_area("Clinical note to scan", value=EXAMPLE_NOTE, height=200)
-        smart = st.toggle(
+        c1, c2 = st.columns([3, 2])
+        confidence = c1.slider(
+            "Confidence threshold",
+            0.0,
+            1.0,
+            0.5,
+            0.05,
+            key="detect_conf",
+            help="Minimum model confidence to keep an entity (UI default 0.5 for recall).",
+        )
+        smart = c2.toggle(
             "Smart entity merging",
             value=True,
             help="Recombine token-fragmented PII (dates, SSNs) into whole spans.",
@@ -409,15 +583,15 @@ def _render_detect(base_opts: dict[str, Any]) -> None:
         service.extract,
         text,
         action="Detecting",
-        confidence_threshold=base_opts["confidence_threshold"],
+        confidence_threshold=confidence,
         use_smart_merging=smart,
-        lang=base_opts["lang"],
+        lang=lang,
     )
     if result is None:
         return
 
     entities = result["entities"]
-    st.metric("Entities found", len(entities))
+    st.metric("Entities found", len(entities), border=True)
     with st.container(border=True):
         st.caption("Detected PII")
         _render_highlight(text, entities)
@@ -486,7 +660,7 @@ def _render_ner() -> None:
     analyzed.add(domain)
 
     entities = result["entities"]
-    st.metric("Entities found", len(entities))
+    st.metric("Entities found", len(entities), border=True)
     st.caption(f"Model: {model.display_name} (`{model.alias}`)")
     with st.container(border=True):
         st.caption(f"Detected {domain.lower()} entities")
@@ -494,8 +668,16 @@ def _render_ner() -> None:
     st.dataframe(entities, hide_index=True, column_config=_entity_columns())
 
 
-def _render_sidebar() -> dict[str, Any]:
-    """Draw the sidebar and return the de-identification request options."""
+def _render_sidebar() -> str:
+    """Draw the sidebar (engine status + the global Language filter); return the language.
+
+    Per Streamlit layout guidance the sidebar holds only app-level state: the engine
+    readout and the one cross-cutting filter — ``lang``, which selects the per-language
+    detection model/locale for the Detect, Single note, Batch, and Anonymize tabs. The
+    de-identification *method* and its dependent knobs live in the tabs that perform
+    de-identification (Single note + Batch, via :func:`_render_deid_controls`), so tabs
+    that don't de-identify (Clinical NER, Re-identify) show no stray controls.
+    """
     with st.sidebar:
         st.subheader("Engine")
         engine = get_engine()
@@ -507,69 +689,15 @@ def _render_sidebar() -> dict[str, Any]:
             f"Backend: {engine.backend or 'auto'} · v{__version__} · "
             + ("model loaded" if engine.is_loaded else "loads on first request")
         )
-
-        st.subheader("De-identification")
-        method = st.segmented_control("Method", METHODS, default="mask") or "mask"
-        lang = st.selectbox("Language", LANGS, index=0)
-        confidence = st.slider(
-            "Confidence threshold",
-            0.0,
-            1.0,
-            0.5,
-            0.05,
-            help="Minimum model confidence to keep an entity. The UI defaults to 0.5 for "
-            "higher PHI recall; the de-identify default is 0.7.",
+        lang = st.selectbox(
+            "Language",
+            LANGS,
+            index=0,
+            help="Detection language for the Detect, Single note, Batch, and Anonymize "
+            "tabs (selects the per-language model/locale). Clinical NER and Re-identify "
+            "don't use it.",
         )
-        keep_mapping = st.toggle(
-            "Keep mapping",
-            value=True,
-            help="Return the surrogate→original map; enables the Re-identify tab.",
-        )
-        with st.expander("Advanced", icon=":material/tune:"):
-            consistent = st.toggle(
-                "Deterministic replace",
-                help="With method=replace, the same input maps to the same surrogate.",
-            )
-            seed = st.number_input(
-                "Seed", value=0, step=1, help="Used with deterministic replace."
-            )
-            locale = st.text_input(
-                "Replace locale",
-                value="",
-                placeholder="e.g. en_US, pt_BR",
-                help="Faker locale for method=replace surrogates (e.g. pt_BR for "
-                "Brazilian-format IDs). Blank uses the default for the selected language.",
-            )
-            date_shift_days = st.number_input(
-                "Date shift days",
-                value=0,
-                step=1,
-                help="Only used by method=shift_dates. 0 = random per-note shift.",
-            )
-            keep_year = st.toggle(
-                "Keep year", value=True, help="Used by method=shift_dates."
-            )
-            use_safety_sweep = st.toggle(
-                "Safety sweep",
-                value=True,
-                help="Run a deterministic structured-identifier sweep after model "
-                "detection. Recommended on — it catches IDs (SSNs, phones) the model "
-                "misses; turning it off lowers PHI recall.",
-            )
-
-    base_opts = build_base_opts(
-        method=method,
-        confidence_threshold=confidence,
-        lang=lang,
-        keep_mapping=keep_mapping,
-        consistent=consistent,
-        seed=int(seed),
-        locale=locale,
-        date_shift_days=int(date_shift_days),
-        keep_year=keep_year,
-        use_safety_sweep=use_safety_sweep,
-    )
-    return base_opts
+    return lang
 
 
 def main() -> None:
@@ -581,13 +709,13 @@ def main() -> None:
     st.session_state.setdefault("last_mapping", None)
     st.session_state.setdefault("last_deidentified", "")
 
-    base_opts = _render_sidebar()
+    lang = _render_sidebar()
 
     st.title("PII / PHI de-identification")
     st.caption(
         "Detect PII, run clinical NER, or de-identify clinical text with OpenMed, review "
         "the entities, and round-trip with re-identification. The model runs in-process; "
-        "the de-identification method lives in the sidebar."
+        "pick the de-identification method in the Single note and Batch tabs."
     )
 
     tab_detect, tab_ner, tab_single, tab_batch, tab_anon, tab_reid = st.tabs(
@@ -601,15 +729,15 @@ def main() -> None:
         ]
     )
     with tab_detect:
-        _render_detect(base_opts)
+        _render_detect(lang)
     with tab_ner:
         _render_ner()
     with tab_single:
-        _render_single(base_opts)
+        _render_single(lang)
     with tab_batch:
-        _render_batch(base_opts)
+        _render_batch(lang)
     with tab_anon:
-        _render_anonymize()
+        _render_anonymize(lang)
     with tab_reid:
         _render_reidentify()
 
