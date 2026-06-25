@@ -387,7 +387,7 @@ def test_anonymize_renders_synthetic_output(monkeypatch):
     assert not at.exception
     metrics = {m.label: str(m.value) for m in at.metric}
     assert metrics.get("Entities replaced") == "2"  # stub returns 2 pii_entities
-    assert metrics.get("Method") == "replace"
+    assert metrics.get("Deterministic") == "On"  # Deterministic toggle defaults on
     body = _html(at)
     assert "[[STUB-DEID-OUTPUT]]" in body  # synthetic surrogate text rendered
     assert "<mark" in body  # original highlighted
@@ -434,6 +434,10 @@ def test_anonymize_feeds_reidentify_handoff(monkeypatch):
     assert (
         reid.value == "[[STUB-DEID-OUTPUT]]"
     )  # handed off across the fragment boundary
+    mapping_area = next(t for t in at.text_area if t.label == "Mapping (JSON)")
+    assert "PERSON_1" in (
+        mapping_area.value or ""
+    )  # the mapping crosses the boundary too
 
 
 def test_empty_anonymize_warns_and_skips(monkeypatch):
@@ -479,6 +483,9 @@ def test_anonymize_forwards_consistent_and_seed(monkeypatch):
     assert not at.exception
     assert captured.get("consistent") is True
     assert captured.get("seed") == 7
+    # Blank Locale → the `if locale.strip()` branch omits it, so the service forwards
+    # locale=None (the seam always passes req.locale), never an empty/real locale value.
+    assert captured.get("locale") is None
 
 
 def test_anonymize_omits_seed_when_not_deterministic(monkeypatch):

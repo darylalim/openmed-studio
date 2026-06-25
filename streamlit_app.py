@@ -214,7 +214,7 @@ def _render_batch(base_opts: dict[str, Any]) -> None:
 
 
 def _render_anonymize() -> None:
-    """Replace PII/PHI with realistic fake surrogates — a safe-to-share synthetic note.
+    """Replace detected PII/PHI with realistic fake surrogates (surrogate replacement).
 
     A focused, surrogate-first view over ``service.deidentify(method="replace")``: the
     capability already exists (it's the sidebar's ``replace`` method), this just surfaces it
@@ -224,9 +224,10 @@ def _render_anonymize() -> None:
     here (``replace`` + ``keep_mapping`` is the canonical reversible-pseudonymization round trip).
     """
     st.caption(
-        "Replace PII/PHI with realistic *fake* surrogates — a safe-to-share synthetic note "
-        "rather than redaction. Repeated mentions stay one identity with 'Deterministic'; the "
-        "mapping round-trips through the Re-identify tab."
+        "Replace *detected* PII/PHI with realistic *fake* surrogates rather than redacting. Like "
+        "all model-based de-identification, anything the model misses is left in place — review "
+        "before sharing. Repeated mentions stay one identity with 'Deterministic'; the mapping "
+        "round-trips through the Re-identify tab."
     )
     with st.form("anonymize"):
         text = st.text_area(
@@ -302,14 +303,16 @@ def _render_anonymize() -> None:
     entities = result["entities"]
     m1, m2 = st.columns(2)
     m1.metric("Entities replaced", len(entities))
-    m2.metric("Method", result["method"])
+    m2.metric("Deterministic", "On" if consistent else "Off")
 
     left, right = st.columns(2)
     with left.container(border=True, height="stretch"):
         st.caption("Original — detected PII highlighted")
         _render_highlight(text, entities)
     with right.container(border=True, height="stretch"):
-        st.caption("Anonymized — synthetic surrogates")
+        st.caption(
+            "Anonymized — synthetic surrogates · review for residual identifiers before sharing"
+        )
         st.html(render_plain(result["deidentified_text"]))
         st.download_button(
             "Download",
@@ -317,6 +320,9 @@ def _render_anonymize() -> None:
             file_name="anonymized.txt",
             icon=":material/download:",
             key="dl_anon",
+        )
+        st.caption(
+            "May still contain any PII the model missed — review before sharing."
         )
 
     if result.get("mapping"):

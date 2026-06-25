@@ -41,9 +41,10 @@ It opens with six tabs:
   side-by-side with the redacted text (with a **download** button), plus an entity table and
   (optionally) the mapping.
 - **Batch** — edit a table of notes (up to 100) and de-identify them in one go.
-- **Anonymize** — replace PII/PHI with realistic *fake* surrogates (a safe-to-share synthetic note)
-  rather than masking; shows the original (highlighted) beside the anonymized text with a **download**
-  button, and keeps the mapping so the result round-trips through Re-identify.
+- **Anonymize** — replace *detected* PII/PHI with realistic *fake* surrogates rather than masking
+  (review the output before sharing — anything the model misses is left in place); shows the original
+  (highlighted) beside the anonymized text with a **download** button, and keeps the mapping so the
+  result round-trips through Re-identify.
 - **Re-identify** — restore originals from a kept mapping (auto-filled from the last Single note or
   Anonymize run).
 
