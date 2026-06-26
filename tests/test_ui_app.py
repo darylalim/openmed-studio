@@ -634,3 +634,131 @@ def test_highlight_marks_are_theme_agnostic(monkeypatch):
     assert "<mark" in body
     assert "color:inherit" in body
     assert "rgba(" in body
+
+
+# --- review follow-ups: persistence, handoff drift, conditional Advanced, dialog ----
+def test_handoff_not_overwritten_on_non_submit_rerun(monkeypatch):
+    # Security-relevant invariant (H1): _set_handoff fires ONLY on submit, never on the
+    # persisted-panel re-render — so a post-submit rerun (Show key / Download) can't drift
+    # last_deidentified/last_mapping and resurface a stale mapping.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+    assert at.session_state["last_mapping"] == {"PERSON_1": "John"}
+    # Overwrite the handoff with sentinels, then force a NON-submit rerun (Show key).
+    at.session_state["last_mapping"] = {"SENTINEL": "x"}
+    at.session_state["last_deidentified"] = "SENTINEL-TEXT"
+    next(b for b in at.button if b.label == "Show re-identification key").click().run(
+        timeout=30
+    )
+    assert not at.exception
+    assert at.session_state["last_mapping"] == {"SENTINEL": "x"}
+    assert at.session_state["last_deidentified"] == "SENTINEL-TEXT"
+
+
+def test_single_note_panel_persists_across_reruns(monkeypatch):
+    # M3: the panel renders from session_state, so a post-submit rerun (Show key) must NOT
+    # blank it — reverting the persistence refactor would fail here.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+    assert any(m.label == "Entities found" for m in at.metric)
+    next(b for b in at.button if b.label == "Show re-identification key").click().run(
+        timeout=30
+    )
+    assert not at.exception
+    assert any(m.label == "Entities found" for m in at.metric)
+    assert "[[STUB-DEID-OUTPUT]]" in _html(at)
+
+
+def test_single_note_keeps_panel_on_empty_resubmit(monkeypatch):
+    # L3: after a good result, an empty re-submit warns but does NOT blank the persisted panel.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+    assert any(m.label == "Entities found" for m in at.metric)
+    _set_area(at, "Clinical note", "   ")  # whitespace only
+    _click(at, "De-identify")
+    assert not at.exception
+    assert any("Enter some text" in w.value for w in at.warning)
+    assert any(m.label == "Entities found" for m in at.metric)  # panel survived
+
+
+def test_batch_panel_persists_across_reruns(monkeypatch):
+    # M1: batch results are persisted, so a post-submit fragment rerun (tweaking an in-tab
+    # control) no longer blanks the table.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _click(at, "De-identify all")
+    assert any(m.label == "Notes de-identified" for m in at.metric)
+    next(s for s in at.segmented_control if s.key == "batch_method").set_value(
+        "replace"
+    ).run(timeout=30)
+    assert not at.exception
+    assert any(m.label == "Notes de-identified" for m in at.metric)
+
+
+def test_single_note_forwards_shift_dates_controls(monkeypatch):
+    # M2: the shift_dates branch of the conditional Advanced renders date_shift_days/keep_year
+    # and forwards them to the engine (the replace branch is covered separately).
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(s for s in at.segmented_control if s.key == "single_method").set_value(
+        "shift_dates"
+    ).run(timeout=30)
+    next(n for n in at.number_input if n.key == "single_shift").set_value(30)
+    _set_area(at, "Clinical note", "Seen on 04/15/2024.")
+    _click(at, "De-identify")
+
+    assert not at.exception
+    assert captured.get("method") == "shift_dates"
+    assert captured.get("date_shift_days") == 30
+    assert captured.get("keep_year") is True
+
+
+def test_advanced_knobs_absent_under_default_mask(monkeypatch):
+    # M2 (negative): under the default mask method, neither the replace locale nor the
+    # shift_dates inputs render — the whole point of the conditional Advanced.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    keys = {w.key for w in at.text_input} | {n.key for n in at.number_input}
+    assert "single_locale" not in keys
+    assert "single_shift" not in keys
+
+
+def test_mapping_reveal_absent_when_keep_mapping_off(monkeypatch):
+    # L4: no mapping → no "Show re-identification key" button (the reveal guard).
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(t for t in at.toggle if t.key == "single_keepmap").set_value(False)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+
+    assert not at.exception
+    assert not any(b.label == "Show re-identification key" for b in at.button)
+
+
+def test_mapping_dialog_renders_mapping(monkeypatch):
+    # L4: clicking the reveal button opens the dialog and renders the mapping JSON.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+    next(b for b in at.button if b.label == "Show re-identification key").click().run(
+        timeout=30
+    )
+
+    assert not at.exception
+    assert any("PERSON_1" in str(getattr(j, "value", "")) for j in at.json)

@@ -125,6 +125,41 @@ def _set_handoff(result: dict[str, Any]) -> None:
     st.session_state.last_mapping = result.get("mapping") or None
 
 
+def _submit_deidentify(
+    *,
+    submitted: bool,
+    text: str,
+    opts: dict[str, Any],
+    store_key: str,
+    action: str,
+    empty_warning: str,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Run a de-identify submit and persist its result; return the stored panel state.
+
+    Shared by the Single note + Anonymize tabs — the load-bearing submit→call→persist→handoff
+    sequence in one place so the two can't drift. On submit it warns on empty text, else calls
+    the service; on success it persists ``{text, result, **extra}`` under ``store_key`` and sets
+    the Re-identify handoff via :func:`_set_handoff` — **only here**, never on the panel's
+    re-render, so the handoff can't drift. Returns the stored dict (this run's or a prior run's),
+    so the caller renders the panel from it on every rerun and a failed/empty re-submit warns
+    without blanking the last good panel.
+    """
+    if submitted:
+        if not text.strip():
+            st.warning(empty_warning)
+        else:
+            result = _call(service.deidentify, text, action=action, **opts)
+            if result is not None:
+                st.session_state[store_key] = {
+                    "text": text,
+                    "result": result,
+                    **(extra or {}),
+                }
+                _set_handoff(result)
+    return st.session_state.get(store_key)
+
+
 @st.dialog("Re-identification key")
 def _show_mapping_dialog(mapping: dict[str, str]) -> None:
     """Reveal the surrogate→original mapping in a modal (a deliberate 'show the key' action).
@@ -158,6 +193,9 @@ def _render_deid_result(
     Download or a Show-key click) without the panel blanking or the handoff drifting.
     Callers render their own metric row first, since the labels/values differ per tab.
     """
+    st.caption(
+        "Showing your most recent run — re-run after changing the note or controls to refresh."
+    )
     entities = result["entities"]
     left, right = st.columns(2)
     with left.container(border=True, height="stretch"):
@@ -295,19 +333,14 @@ def _render_single(lang: str) -> None:
         submitted = st.form_submit_button(
             "De-identify", type="primary", icon=":material/lock:"
         )
-    if submitted:
-        if not text.strip():
-            st.warning("Enter some text to de-identify.")
-            return
-        result = _call(service.deidentify, text, action="De-identifying", **base_opts)
-        if result is None:
-            return
-        # Persist so the panel survives post-submit reruns (Download / Show key clicks),
-        # and hand off to Re-identify here (only on submit) so the handoff can't drift.
-        st.session_state["single_result"] = {"text": text, "result": result}
-        _set_handoff(result)
-
-    stored = st.session_state.get("single_result")
+    stored = _submit_deidentify(
+        submitted=submitted,
+        text=text,
+        opts=base_opts,
+        store_key="single_result",
+        action="De-identifying",
+        empty_warning="Enter some text to de-identify.",
+    )
     if not stored:
         return
     text, result = stored["text"], stored["result"]
@@ -341,33 +374,36 @@ def _render_batch(lang: str) -> None:
         },
         key="batch_editor",
     )
-    if not st.button(
+    if st.button(
         "De-identify all", type="primary", icon=":material/lock:", key="batch_go"
     ):
-        return
+        notes = [
+            r["note"].strip()
+            for r in rows
+            if isinstance(r.get("note"), str) and r["note"].strip()
+        ]
+        if not notes:
+            st.warning("Add at least one note.")
+        elif len(notes) > MAX_BATCH_ITEMS:
+            st.warning(f"Max {MAX_BATCH_ITEMS} notes per batch (got {len(notes)}).")
+        else:
+            result = _call(
+                service.deidentify_batch, notes, action="De-identifying", **base_opts
+            )
+            if result is not None:
+                # Persist so post-submit reruns (control tweak / Download) don't blank the
+                # table. The engine runs once per note, in order, so notes/results stay 1:1.
+                st.session_state["batch_result"] = {
+                    "notes": notes,
+                    "results": result["results"],
+                }
 
-    notes = [
-        r["note"].strip()
-        for r in rows
-        if isinstance(r.get("note"), str) and r["note"].strip()
-    ]
-    if not notes:
-        st.warning("Add at least one note.")
+    stored = st.session_state.get("batch_result")
+    if not stored:
         return
-    if len(notes) > MAX_BATCH_ITEMS:
-        st.warning(f"Max {MAX_BATCH_ITEMS} notes per batch (got {len(notes)}).")
-        return
-
-    result = _call(
-        service.deidentify_batch, notes, action="De-identifying", **base_opts
-    )
-    if result is None:
-        return
-
-    # The engine is called once per note, in order, so results and notes line up 1:1.
-    # Each result carries ok/error: a bad note is isolated (shown as a Failed row) instead
-    # of aborting the whole batch.
-    results = result["results"]
+    # Each result carries ok/error: a bad note is isolated (shown as a Failed row) instead of
+    # aborting the whole batch.
+    notes, results = stored["notes"], stored["results"]
     table = build_batch_table(notes, results)
     n_ok = sum(1 for r in results if r.get("ok", True))
     n_failed = len(results) - n_ok
@@ -400,9 +436,9 @@ def _render_batch(lang: str) -> None:
 def _render_anonymize(lang: str) -> None:
     """Replace detected PII/PHI with realistic fake surrogates (surrogate replacement).
 
-    A focused, surrogate-first view over ``service.deidentify(method="replace")``: the
-    capability already exists (it's the sidebar's ``replace`` method), this just surfaces it
-    as its own workflow with the determinism/locale knobs in-tab. Like ``_render_single`` it
+    A focused, surrogate-first view over ``service.deidentify(method="replace")``: the same
+    capability the Single note / Batch tabs expose via their ``replace`` method, surfaced as
+    its own workflow with the determinism/locale knobs in-tab. Like ``_render_single`` it
     is intentionally **not** an ``@st.fragment`` — its form submit must trigger a full rerun
     so the Re-identify fragment re-reads the ``last_deidentified``/``last_mapping`` handed off
     here (``replace`` + ``keep_mapping`` is the canonical reversible-pseudonymization round trip).
@@ -453,37 +489,30 @@ def _render_anonymize(lang: str) -> None:
         submitted = st.form_submit_button(
             "Anonymize", type="primary", icon=":material/masks:"
         )
-    if submitted:
-        if not text.strip():
-            st.warning("Enter some text to anonymize.")
-            return
-        # Pin method=replace; only add seed when deterministic and locale when set (mirrors
-        # build_base_opts, so openmed gets its per-call random surrogates / lang-derived
-        # locale rather than a zero seed or empty locale).
-        opts: dict[str, Any] = {
-            "method": "replace",
-            "confidence_threshold": confidence,
-            "lang": lang,
-            "consistent": consistent,
-            "keep_mapping": True,
-        }
-        if consistent:
-            opts["seed"] = int(seed)
-        if locale.strip():
-            opts["locale"] = locale.strip()
-        result = _call(service.deidentify, text, action="Anonymizing", **opts)
-        if result is None:
-            return
-        # Persist (with the determinism flag for the metric) and hand off on submit only,
-        # so the panel survives post-submit reruns (Download / Show key).
-        st.session_state["anon_result"] = {
-            "text": text,
-            "result": result,
-            "consistent": consistent,
-        }
-        _set_handoff(result)
-
-    stored = st.session_state.get("anon_result")
+    # Pin method=replace and reuse build_base_opts (the same payload builder the Single/Batch
+    # controls use) so the determinism/locale knobs are shaped identically — seed only when
+    # deterministic, locale only when set; date_shift_days/keep_year are inert for replace.
+    opts = build_base_opts(
+        method="replace",
+        confidence_threshold=confidence,
+        lang=lang,
+        keep_mapping=True,
+        consistent=consistent,
+        seed=int(seed),
+        locale=locale,
+        date_shift_days=0,
+        keep_year=True,
+        use_safety_sweep=True,
+    )
+    stored = _submit_deidentify(
+        submitted=submitted,
+        text=text,
+        opts=opts,
+        store_key="anon_result",
+        action="Anonymizing",
+        empty_warning="Enter some text to anonymize.",
+        extra={"consistent": consistent},
+    )
     if not stored:
         return
     text, result, consistent = stored["text"], stored["result"], stored["consistent"]
@@ -529,20 +558,25 @@ def _render_reidentify() -> None:
                 service.reidentify, deid_text, mapping, action="Re-identifying"
             )
             if result is not None:
-                with st.container(border=True):
-                    st.caption("Re-identified")
-                    st.html(render_plain(result["text"]))
-                st.download_button(
-                    "Download",
-                    result["text"],
-                    file_name="reidentified.txt",
-                    icon=":material/download:",
-                    key="dl_reid",
-                    on_click=_toast_downloaded,
-                )
+                # Persist so the preview + Download survive post-action reruns (e.g. Download).
+                st.session_state["reid_result"] = result["text"]
                 st.toast("Re-identified", icon=":material/lock_open:")
         elif mapping is not None:
             st.warning("Provide a non-empty mapping object.")
+
+    restored = st.session_state.get("reid_result")
+    if restored is not None:
+        with st.container(border=True):
+            st.caption("Re-identified")
+            st.html(render_plain(restored))
+        st.download_button(
+            "Download",
+            restored,
+            file_name="reidentified.txt",
+            icon=":material/download:",
+            key="dl_reid",
+            on_click=_toast_downloaded,
+        )
 
 
 @st.fragment

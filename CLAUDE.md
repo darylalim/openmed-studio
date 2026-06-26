@@ -245,10 +245,14 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   submit must trigger a full rerun to hand `last_deidentified`/`last_mapping` (via `st.session_state`,
   not widget keys) to the `Re-identify` tab — the handoff is set once per submit by `_set_handoff`
   (the single security-relevant copy of "set the two together so a stale mapping can't linger"),
-  *not* on re-render. Each tab persists its latest result (`single_result`/`anon_result` in
-  `st.session_state`) and renders the panel from there, so post-submit reruns (a Download or the
-  "Show re-identification key" click) don't blank it; the mapping itself is revealed in an
-  `@st.dialog` (`_show_mapping_dialog`) behind a button rather than an always-open expander. The
+  *not* on re-render. All four de-identifying surfaces persist their latest result in
+  `st.session_state` (`single_result`/`anon_result` via the shared `_submit_deidentify` helper —
+  which centralizes the submit→call→persist→handoff sequence so Single/Anonymize can't drift — plus
+  `batch_result` and `reid_result`) and render from there, so post-submit reruns (a Download, a
+  control tweak, or the "Show re-identification key" click) don't blank the panel and a failed/empty
+  re-submit warns without losing the last good result. A snapshot caption flags that the panel shows
+  the most recent run. The mapping is revealed in an `@st.dialog` (`_show_mapping_dialog`) behind a
+  button rather than an always-open expander. The
   de-identification controls — `Method` plus the
   method-conditional `Advanced` knobs (`replace`→consistent/seed/locale, `shift_dates`→
   date_shift_days/keep_year, plus the safety sweep) — live in the `Single note` + `Batch` tabs via a
