@@ -702,7 +702,7 @@ def _render_sidebar() -> str:
 
 def main() -> None:
     st.set_page_config(
-        page_title="OpenMed Studio — de-identification",
+        page_title="OpenMed Studio",
         page_icon=":material/health_and_safety:",
         layout="wide",
     )
@@ -711,7 +711,7 @@ def main() -> None:
 
     lang = _render_sidebar()
 
-    st.title("PII / PHI de-identification")
+    st.title("OpenMed Studio")
     st.caption(
         "Detect PII, run clinical NER, or de-identify clinical text with OpenMed, review "
         "the entities, and round-trip with re-identification. The model runs in-process; "

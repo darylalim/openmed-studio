@@ -113,7 +113,7 @@ def test_app_renders(monkeypatch):
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
     assert not at.exception
-    assert at.title[0].value == "PII / PHI de-identification"
+    assert at.title[0].value == "OpenMed Studio"
     # Detect, Clinical NER, Single note, Batch, Anonymize, Re-identify
     assert len(at.tabs) == 6
     # The sentinel model name can only appear if the stub (not a live model) was used.

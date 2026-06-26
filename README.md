@@ -1,4 +1,4 @@
-# openmed-studio
+# OpenMed Studio
 
 **A clinical-NLP application built on [OpenMed](https://openmed.life/docs/).**
 
