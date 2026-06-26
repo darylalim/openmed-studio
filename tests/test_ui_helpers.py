@@ -297,7 +297,7 @@ def test_build_base_opts_shift_dates_includes_date_fields():
 
 
 def test_build_base_opts_shift_dates_omits_zero_days():
-    # date_shift_days=0 (the sidebar default) must be omitted so the request falls to
+    # date_shift_days=0 (the Advanced number_input default) must be omitted so the request falls to
     # openmed's per-note random shift instead of shifting by zero — which, once shift_dates
     # actually runs under openmed 1.6.0, would emit every date verbatim (a PHI leak).
     opts = build_base_opts(
