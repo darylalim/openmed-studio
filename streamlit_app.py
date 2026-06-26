@@ -96,7 +96,7 @@ def _call(
 
 
 def _render_highlight(text: str, entities: list[dict[str, Any]]) -> None:
-    """Render highlighted ``text`` plus its color legend (shared by Detect/Single).
+    """Render highlighted ``text`` plus its color legend (shared by Detect/Single/Anonymize/NER).
 
     The marks are theme-agnostic (translucent tint + ``color: inherit``), so this
     needs no theme detection.
