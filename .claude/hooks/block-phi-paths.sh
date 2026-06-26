@@ -6,9 +6,9 @@
 # surrogates). Blocking the file tools on those paths keeps that data from ever
 # entering the model's context window or being written somewhere not gitignored.
 #
-# Matches .gitignore: /deidentified.txt, /deidentified_batch.json, /anonymized.txt,
-# /reidentified.txt, .streamlit/secrets.toml. Exit 2 denies the call and surfaces the
-# message to Claude; exit 0 allows it.
+# The names guarded below mirror the App-download-outputs + secrets entries in .gitignore
+# (the gitignored files that can hold PHI/surrogates) — the case arms are the single source
+# of truth. Exit 2 denies the call and surfaces the message to Claude; exit 0 allows it.
 #
 # Known gap: this guards the file tools (Read/Edit/Write/MultiEdit), not `Bash(cat ...)`.
 # Tighten with a Bash-matcher hook later if needed.

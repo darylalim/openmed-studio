@@ -19,6 +19,7 @@ esac
 
 # Run from the project root so uv resolves this project's pinned ruff (dev group).
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
-uv run ruff format "$file_path" >/dev/null 2>&1
-uv run ruff check --fix "$file_path" >/dev/null 2>&1
+# Both passes in one `uv run` so the env resolves once, not twice (format + check are
+# distinct subcommands, so the two ruff passes themselves can't merge).
+uv run sh -c 'ruff format "$1" >/dev/null 2>&1; ruff check --fix "$1" >/dev/null 2>&1' _ "$file_path"
 exit 0
