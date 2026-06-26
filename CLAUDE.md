@@ -237,7 +237,8 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   (`_render_sidebar` returns the chosen `lang`), and the six tabs (`Detect` → `service.extract`,
   `Clinical NER` → `service.analyze`, `Single note`/`Batch` → `service.deidentify[_batch]`,
   `Anonymize` → `service.deidentify` (`method=replace`), `Re-identify` → `service.reidentify`) live in
-  `main()`, guarded by `if __name__ == "__main__"` so importing for tests has no side effects). The
+  `main()` (which titles the page and in-app heading "OpenMed Studio"), guarded by
+  `if __name__ == "__main__"` so importing for tests has no side effects). The
   `Detect`/`Clinical NER`/`Batch`/`Re-identify` tab renderers are `@st.fragment` so an in-tab
   interaction reruns
   only that tab; `Single note` and `Anonymize` are **intentionally not** fragments, because their form
@@ -272,7 +273,9 @@ pass the `PIIEngine`-typed seam a structural stub via `typing.cast` (the repo co
   light or dark with no runtime theme detection — `render_plain`/`build_base_opts`/
   `build_batch_table`, kept separate so they unit-test without a browser). The de-identified output
   offers a `Download` button (no copy-to-clipboard button — the in-process tool deliberately avoids
-  sending PHI to a browser-side clipboard component). The UI
+  sending PHI to a browser-side clipboard component); entity tables render confidence as a
+  `ProgressColumn`, the count/method metrics are bordered cards, and `Download`/`Re-identify` confirm
+  with an `st.toast`. The UI
   consumes the plain dicts `service` produces (`result["entities"]`, `result["deidentified_text"]`,
   `result.get("mapping")`). `streamlit>=1.58` (1.58 horizontal/`height="stretch"` flex layout) is a
   core dependency. The confidence slider defaults to `0.5` (the de-identify default is `0.7`). App
