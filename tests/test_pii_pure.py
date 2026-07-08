@@ -25,6 +25,7 @@ def test_known_deidentification_methods() -> None:
         "replace",
         "hash",
         "shift_dates",
+        "format_preserve",  # added in openmed 1.7.0
     }
 
 

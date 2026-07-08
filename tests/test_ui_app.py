@@ -161,9 +161,9 @@ def test_single_note_renders_metrics_and_output(monkeypatch):
 
 
 def test_single_note_forwards_replace_locale_to_engine(monkeypatch):
-    # The Method + its replace-only knobs now live in the Single note tab (#1), not the
-    # sidebar. "Replace locale" renders only when method=replace (conditional Advanced),
-    # and flows through build_base_opts -> service -> engine.
+    # The Method + its surrogate-method knobs now live in the Single note tab (#1), not the
+    # sidebar. "Surrogate locale" renders only for the surrogate methods replace/format_preserve
+    # (conditional Advanced), and flows through build_base_opts -> service -> engine.
     captured: dict = {}
 
     class _Capturing(_StubEngine):
@@ -175,7 +175,7 @@ def test_single_note_forwards_replace_locale_to_engine(monkeypatch):
 
     _use_engine(monkeypatch, _Capturing())
     at = AppTest.from_file(APP).run(timeout=30)
-    # Set method=replace and rerun so the conditional "Replace locale" knob renders.
+    # Set method=replace and rerun so the conditional "Surrogate locale" knob renders.
     next(s for s in at.segmented_control if s.key == "single_method").set_value(
         "replace"
     ).run(timeout=30)
@@ -431,7 +431,7 @@ def test_anonymize_renders_synthetic_output(monkeypatch):
 def test_anonymize_forwards_replace_method_locale_and_keep_mapping(monkeypatch):
     # The tab pins method=replace and forwards the in-tab locale + keep_mapping=True, so the
     # call is a reversible surrogate replacement (the Anonymize tab's "Locale" is distinct
-    # from the Single/Batch tabs' "Replace locale").
+    # from the Single/Batch tabs' "Surrogate locale").
     captured: dict = {}
 
     class _Capturing(_StubEngine):

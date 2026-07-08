@@ -153,7 +153,12 @@ Backend = Literal["hf", "mlx"]
 
 # The de-identification strategies openmed's deidentify() accepts. Mirrors
 # openmed.core.pii.DeidentificationMethod; a test enforces they stay in sync.
-DeidMethod = Literal["mask", "remove", "replace", "hash", "shift_dates"]
+# ``format_preserve`` (added in openmed 1.7.0) is a ``replace`` sibling: it swaps
+# structured identifiers for synthetic values of the same shape (a phone stays
+# phone-shaped), falling back to masking for entities it can't format-preserve.
+DeidMethod = Literal[
+    "mask", "remove", "replace", "hash", "shift_dates", "format_preserve"
+]
 
 
 def _entities(result: Any) -> list[Any]:
@@ -304,9 +309,12 @@ class PIIEngine:
         Returns OpenMed's ``DeidentificationResult`` (``.deidentified_text``,
         ``.pii_entities``, and ``.mapping`` when ``keep_mapping=True``). Every
         method — including ``"shift_dates"`` — is delegated straight to openmed;
-        ``date_shift_days``/``keep_year`` apply only to ``shift_dates``, and
-        ``locale`` (a Faker locale, e.g. ``"pt_BR"``) only to ``"replace"``, where it
-        picks the surrogate locale instead of the default openmed derives from ``lang``.
+        ``date_shift_days``/``keep_year`` apply only to ``shift_dates``, and the
+        surrogate knobs ``consistent``/``seed``/``locale`` (``locale`` a Faker
+        locale, e.g. ``"pt_BR"``, picking the surrogate locale instead of the default
+        openmed derives from ``lang``) apply to the surrogate methods ``"replace"``
+        and ``"format_preserve"``. They are forwarded unconditionally; openmed ignores
+        the ones a method doesn't consume, and the UI only surfaces each where it applies.
 
         ``use_safety_sweep`` (default on, openmed 1.6.0's default) runs a
         deterministic structured-identifier sweep after model detection — it can

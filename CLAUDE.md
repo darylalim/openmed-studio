@@ -187,7 +187,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     is revealed in an `@st.dialog` (`_show_mapping_dialog`) behind a button, not an always-open
     expander.
   - *De-identification controls:* `Method` plus the method-conditional `Advanced` knobs
-    (`replace`→consistent/seed/locale, `shift_dates`→date_shift_days/keep_year, plus the safety
+    (the surrogate methods `replace`/`format_preserve`→consistent/seed/locale,
+    `shift_dates`→date_shift_days/keep_year, plus the safety
     sweep) live in `Single note` + `Batch` via a shared `_render_deid_controls(key_prefix=…, lang=…)`
     (above each tab's form, widget keys `key_prefix`-scoped so the tabs don't collide). `Detect` has
     its own confidence slider + smart-merge toggle; `Anonymize` reads the sidebar `Language`. Only

@@ -53,10 +53,11 @@ It opens with six tabs:
 The sidebar reports the engine's model/backend/load state and holds the one global filter — the
 detection **language** (12 supported), which feeds the Detect, Single note, Batch, and Anonymize
 tabs. The de-identification controls live in the tabs that use them: **Single note** and **Batch**
-each show the method (`mask` / `remove` / `replace` / `hash` / `shift_dates`), confidence,
-`keep_mapping`, and an **Advanced** expander whose knobs follow the chosen method
-(deterministic-`replace` with an optional surrogate `locale`; the `shift_dates` controls; the safety
-sweep). The confidence slider defaults to **0.5** for higher PHI recall — note the de-identify
+each show the method (`mask` / `remove` / `replace` / `hash` / `shift_dates` / `format_preserve`),
+confidence, `keep_mapping`, and an **Advanced** expander whose knobs follow the chosen method (the
+surrogate methods `replace`/`format_preserve` — the latter keeps each identifier's format, e.g. a
+phone stays phone-shaped — share the deterministic toggle, `seed`, and surrogate `locale`; the
+`shift_dates` controls; the safety sweep). The confidence slider defaults to **0.5** for higher PHI recall — note the de-identify
 default is `0.7`. The model loads on the first request, so the first call shows a spinner and is
 slower than the rest.
 

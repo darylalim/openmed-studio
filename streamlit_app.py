@@ -231,8 +231,9 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
     the tab that performs the de-identification — not the sidebar, which now holds only the
     engine readout and the global ``lang`` filter. Rendered ABOVE the tab's form (like the
     NER domain picker) so changing the method reruns and re-renders only the Advanced knobs
-    that method actually consumes (``replace`` → consistent/seed/locale; ``shift_dates`` →
-    date_shift_days/keep_year). Every widget key is ``key_prefix``-scoped so Single and
+    that method actually consumes (the surrogate methods ``replace``/``format_preserve`` →
+    consistent/seed/locale; ``shift_dates`` → date_shift_days/keep_year). Every widget key
+    is ``key_prefix``-scoped so Single and
     Batch keep independent state without colliding.
     """
     method = (
@@ -267,9 +268,11 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
     date_shift_days = 0
     keep_year = True
     with st.expander("Advanced", icon=":material/tune:"):
-        if method == "replace":
+        # replace and format_preserve are both surrogate methods, so they share the
+        # consistent/seed/locale knobs (openmed groups them for surrogate generation).
+        if method in ("replace", "format_preserve"):
             consistent = st.toggle(
-                "Deterministic replace",
+                "Deterministic surrogates",
                 key=f"{key_prefix}_consistent",
                 help="The same input maps to the same surrogate.",
             )
@@ -282,11 +285,11 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
                     help="Reproducible surrogates across runs.",
                 )
             locale = st.text_input(
-                "Replace locale",
+                "Surrogate locale",
                 value="",
                 placeholder="e.g. en_US, pt_BR",
                 key=f"{key_prefix}_locale",
-                help="Faker locale for replace surrogates (e.g. pt_BR for Brazilian-format "
+                help="Faker locale for the surrogates (e.g. pt_BR for Brazilian-format "
                 "IDs). Blank uses the default for the selected language.",
             )
         elif method == "shift_dates":

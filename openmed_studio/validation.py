@@ -137,8 +137,9 @@ class _DeidentifyOptions(_Strict):
     keep_mapping: bool = False
     consistent: bool = False
     seed: int | None = None
-    # Faker locale for `replace` surrogates (e.g. 'pt_BR' for Brazilian CPF/CNPJ),
-    # overriding the default openmed derives from `lang`. Only used by method='replace'.
+    # Faker locale for the surrogate methods (e.g. 'pt_BR' for Brazilian CPF/CNPJ),
+    # overriding the default openmed derives from `lang`. Used by method='replace'
+    # and method='format_preserve'.
     locale: LocaleName = None
     date_shift_days: int | None = Field(
         default=None, description="Only used with method='shift_dates'."

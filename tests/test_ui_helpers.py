@@ -331,6 +331,23 @@ def test_build_base_opts_replace_includes_nonblank_locale():
     assert opts["locale"] == "pt_BR"
 
 
+def test_build_base_opts_format_preserve_includes_nonblank_locale():
+    # format_preserve is a surrogate method too, so it carries locale like replace.
+    opts = build_base_opts(
+        method="format_preserve",
+        confidence_threshold=0.5,
+        lang="pt",
+        keep_mapping=False,
+        consistent=False,
+        seed=0,
+        locale="  pt_BR  ",  # stripped before sending
+        date_shift_days=0,
+        keep_year=True,
+        use_safety_sweep=True,
+    )
+    assert opts["locale"] == "pt_BR"
+
+
 def test_build_base_opts_replace_omits_blank_locale():
     # Blank means "use openmed's default for the language" — omit it from the payload.
     for blank in ("", "   ", None):
@@ -349,8 +366,9 @@ def test_build_base_opts_replace_omits_blank_locale():
         assert "locale" not in opts
 
 
-def test_build_base_opts_non_replace_omits_locale():
-    # locale is a replace-only knob; other methods must not carry it even if supplied.
+def test_build_base_opts_non_surrogate_omits_locale():
+    # locale is a surrogate-method knob (replace/format_preserve); other methods must
+    # not carry it even if supplied.
     opts = build_base_opts(
         method="mask",
         confidence_threshold=0.5,

@@ -126,10 +126,11 @@ def build_base_opts(
 ) -> dict[str, Any]:
     """Build the shared de-identify request body from the sidebar options.
 
-    ``seed`` is included only for deterministic ``replace``; ``locale`` only for
-    ``replace`` (and only when non-empty); ``date_shift_days`` and ``keep_year``
-    only for ``shift_dates`` — so the payload carries just the fields the chosen
-    method actually consumes. A ``date_shift_days`` of 0 (the sidebar default) is
+    ``seed`` is included only when ``consistent`` is on; ``locale`` only for the
+    surrogate methods ``replace``/``format_preserve`` (and only when non-empty);
+    ``date_shift_days`` and ``keep_year`` only for ``shift_dates`` — so the payload
+    carries just the fields the chosen method actually consumes. A ``date_shift_days``
+    of 0 (the sidebar default) is
     omitted so openmed applies its per-note random shift rather than shifting by
     zero — shifting by zero would leave dates in the output verbatim.
     """
@@ -143,9 +144,9 @@ def build_base_opts(
     }
     if consistent:
         opts["seed"] = int(seed)
-    if method == "replace" and locale and locale.strip():
-        # Faker locale for `replace` surrogates; empty means "use openmed's default
-        # derived from lang", so omit it. Only `replace` consumes it.
+    if method in ("replace", "format_preserve") and locale and locale.strip():
+        # Faker locale for the surrogate methods; empty means "use openmed's default
+        # derived from lang", so omit it. Only replace/format_preserve consume it.
         opts["locale"] = locale.strip()
     if method == "shift_dates":
         # 0 (the number_input default) means "unset": omit it so openmed applies its
