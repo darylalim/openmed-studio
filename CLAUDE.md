@@ -233,7 +233,7 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   not echoing input on a validation error. Only `OPENMED_STUDIO_BACKEND` and
   `OPENMED_STUDIO_MAX_TEXT_LENGTH` remain as env knobs.
 
-## OpenMed API (verified against installed v1.6.0)
+## OpenMed API (verified against installed v1.7.0)
 
 Top-level imports: `from openmed import extract_pii, deidentify, reidentify, analyze_text, ModelLoader, OpenMedConfig`.
 Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict alias→ModelInfo),
@@ -247,26 +247,35 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   owns loading, so `config`/`normalize_accents` are not threaded).
 - `deidentify(text, method="mask", model_name=<default>, confidence_threshold=0.7,
   use_smart_merging=True, keep_mapping=False, consistent=False, seed=None, locale=None,
-  date_shift_days=None, keep_year=True, lang="en", use_safety_sweep=True, audit=False,
-  loader=None, …)` — the installed v1.6.0 signature **also** accepts `shift_dates` (a bool,
-  distinct from `method="shift_dates"`), `normalize_accents`, `config`, `policy`, and
-  `calibration_thresholds_path`. It returns a `DeidentificationResult` with
+  date_shift_days=None, keep_year=False, lang="en", use_safety_sweep=True, audit=False,
+  loader=None, …)` — the installed v1.7.0 signature **also** accepts `shift_dates` (a bool,
+  distinct from `method="shift_dates"`), `normalize_accents`, `config`, `policy`,
+  `calibration_thresholds_path`, and 1.7.0's `patient_key`/`date_shift_max_days`/
+  `date_shift_secret`/`surrogate_vault`/`custom_recognizer`/`cache_results`/`max_cache_entries`.
+  (Note: `keep_year` now defaults to `False` upstream, but the app always passes its own value —
+  default `True` in `_DeidentifyOptions`/`PIIEngine.deidentify` — so the flip is inert.)
+  It returns a `DeidentificationResult` with
   `.deidentified_text`, `.pii_entities`, `.mapping` (or an `AuditReport` when `audit=True` —
-  1.6.0 types the return as `DeidentificationResult | AuditReport`; the app's engine returns it
+  1.7.0 types the return as `DeidentificationResult | AuditReport`; the app's engine returns it
   as `Any`, never sets `audit`, and `tests/test_pii_model.py` casts it back to
   `DeidentificationResult`).
   The app's engine forwards `method`/`confidence_threshold`/`use_smart_merging`/`keep_mapping`/
   `consistent`/`seed`/`locale`/`date_shift_days`/`keep_year`/`use_safety_sweep` plus
   `lang`/`model_name`/`loader`; it deliberately does **not** forward `audit` (would flip the
   return type), `config` (the engine owns loading via `loader=`), or the advanced
-  `shift_dates`/`normalize_accents`/`policy`/`calibration_thresholds_path` knobs.
+  `shift_dates`/`normalize_accents`/`policy`/`calibration_thresholds_path` and the 1.7.0
+  `patient_key`/`date_shift_max_days`/`date_shift_secret`/`surrogate_vault`/`custom_recognizer`/
+  `cache_results`/`max_cache_entries` knobs.
   `tests/test_engine.py::test_deidentify_forwards_every_openmed_param_or_allowlists_it`
   introspects this real signature and pins the forwarded-vs-excluded split so it can't drift.
   `use_safety_sweep=True` runs a post-detection structured-identifier sweep `extract_pii` has no
   equivalent of (see the `engine.py` notes for how the UI surfaces it).
   Methods: `mask`, `remove`, `replace` (Faker surrogates — `consistent=True, seed=N` for
   determinism, `locale="pt_BR"` etc. for a specific surrogate locale, exposed in the de-identifying
-  tabs' `Advanced` expander), `hash`, `shift_dates`.
+  tabs' `Advanced` expander), `hash`, `shift_dates`, and `format_preserve` (a `replace` sibling
+  added in 1.7.0 — synthetic *format-preserving* surrogates for structured identifiers, masking
+  free-text entities like names it can't shape-preserve; shares `replace`'s consistent/seed/locale
+  knobs).
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
 - `analyze_text(text, model_name="disease_detection_superclinical", *, loader=None,
   confidence_threshold=0.0, aggregation_strategy="simple", output_format="dict",
@@ -278,7 +287,12 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   by registry alias via `model_name`; the app curates one per domain in `engine.NER_MODELS` and
   pins them with `tests/test_validation.py::test_validation_ner_models_resolve_in_openmed`. The
   app's engine forwards `model_name`/`confidence_threshold`/`aggregation_strategy`/`group_entities`/
-  `output_format="dict"`/`loader` (no `lang` — `analyze_text` has none).
+  `output_format="dict"`/`loader` (no `lang` — `analyze_text` has none). It excludes the alternate
+  construction / tuning knobs (`model_id`/`config`/`include_confidence`/`formatter_kwargs`/
+  `metadata`/`use_fast_tokenizer`/`sentence_*`) plus 1.7.0's `cache_results`/`max_cache_entries`;
+  `tests/test_engine.py::test_analyze_forwards_every_openmed_param_or_allowlists_it` pins that split
+  (it matters more here than for `deidentify`: `analyze_text` declares `**pipeline_kwargs`, so a
+  drifted forwarded param would be silently swallowed rather than raising).
 
 ## Known gotchas
 

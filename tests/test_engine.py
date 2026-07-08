@@ -181,6 +181,15 @@ def test_deidentify_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -
         "normalize_accents",
         "policy",
         "calibration_thresholds_path",
+        # openmed 1.7.0 additions — advanced date-shift / surrogate / recognizer plumbing
+        # and result caching the engine deliberately doesn't thread (yet):
+        "patient_key",  # deterministic per-patient date-shift key
+        "date_shift_max_days",  # bounds the random date shift
+        "date_shift_secret",  # HMAC secret for keyed date shifting
+        "surrogate_vault",  # external surrogate-consistency store for replace
+        "custom_recognizer",  # caller-supplied entity recognizer
+        "cache_results",  # openmed-side result memoization
+        "max_cache_entries",  # cache size bound (only meaningful with cache_results)
     }
 
     captured: dict[str, object] = {}
@@ -320,6 +329,9 @@ def test_analyze_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -> N
         "sentence_language",
         "sentence_clean",
         "sentence_segmenter",
+        # openmed 1.7.0 additions — openmed-side result caching the engine doesn't thread:
+        "cache_results",
+        "max_cache_entries",
     }
 
     captured: dict[str, object] = {}
