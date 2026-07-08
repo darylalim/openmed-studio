@@ -43,10 +43,16 @@ def loader():
 
     Session-scoped so the ~44M-parameter PII model is initialized at most once
     for the whole test run (the documented pipeline-reuse best practice).
-    """
-    from openmed import ModelLoader
 
-    return ModelLoader()
+    Built via ``PIIEngine().loader`` (not a bare ``ModelLoader()``) so the model
+    tests exercise the app's real loader construction — in particular the
+    ``torch_attention_backend="eager"`` pin the DeBERTa-v2 models require to load on
+    transformers >=5.13 (see ``PIIEngine.loader`` / "Known gotchas"). A bare loader
+    would request SDPA and fail to load any model.
+    """
+    from openmed_studio import PIIEngine
+
+    return PIIEngine().loader
 
 
 @pytest.fixture

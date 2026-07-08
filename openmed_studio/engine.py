@@ -196,21 +196,27 @@ class PIIEngine:
     def loader(self) -> ModelLoader:
         """The shared ModelLoader, created on first access.
 
-        With ``backend=None`` openmed auto-detects (MLX on Apple Silicon when the
-        `mlx` extra is installed, else HuggingFace). A non-None ``backend`` is
-        pinned via ``OpenMedConfig`` — ``"mlx"`` raises at first model load on a
+        Built with ``OpenMedConfig(backend=self.backend,
+        torch_attention_backend="eager")``. ``backend`` stays ``None`` unless pinned,
+        so openmed still auto-detects it (MLX on Apple Silicon when the `mlx` extra is
+        installed, else HuggingFace); a pinned ``"mlx"`` raises at first model load on a
         host without MLX, so prefer ``None`` for portable auto-fallback.
+
+        ``torch_attention_backend="eager"`` is pinned deliberately: the OpenMed models
+        are DeBERTa-v2, which has no SDPA/flash-attention kernel. openmed's default
+        ``"auto"`` requests SDPA, which transformers <=5.12 silently downgraded to eager
+        but 5.13+ rejects outright (``DebertaV2ForTokenClassification does not support
+        ... scaled_dot_product_attention``). eager is the implementation these models run
+        under either way, so pinning it keeps model loading working on the latest
+        transformers. (The ``OPENMED_TORCH_ATTENTION_BACKEND`` env var still overrides it.)
         """
         loader = self._loader
         if loader is None:
-            from openmed import ModelLoader
+            from openmed import ModelLoader, OpenMedConfig
 
-            if self.backend is None:
-                loader = ModelLoader()
-            else:
-                from openmed import OpenMedConfig
-
-                loader = ModelLoader(OpenMedConfig(backend=self.backend))
+            loader = ModelLoader(
+                OpenMedConfig(backend=self.backend, torch_attention_backend="eager")
+            )
             self._loader = loader
         return loader
 

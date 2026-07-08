@@ -38,29 +38,38 @@ def test_engine_backend_defaults_to_none() -> None:
     assert PIIEngine(backend="mlx").backend == "mlx"
 
 
-def test_engine_default_backend_builds_bare_loader(monkeypatch) -> None:
-    # backend=None must construct ModelLoader() with no config (openmed auto-detects).
+def test_engine_default_backend_builds_eager_config(monkeypatch) -> None:
+    # backend=None still auto-detects the backend (config backend stays None), but the
+    # loader is always built with OpenMedConfig(torch_attention_backend="eager") so the
+    # DeBERTa-v2 models load on transformers >=5.13 (which rejects the SDPA openmed's
+    # "auto" backend requests). See PIIEngine.loader for the full rationale.
     import openmed
 
     captured = {}
 
+    class _FakeConfig:
+        def __init__(self, **kwargs):
+            captured["config_kwargs"] = kwargs
+
     class _FakeLoader:
         def __init__(self, config=None):
-            captured["config"] = config
+            captured["loader_config"] = config
 
-    def _no_config(**_kwargs):
-        raise AssertionError("OpenMedConfig must not be built when backend is None")
-
+    monkeypatch.setattr(openmed, "OpenMedConfig", _FakeConfig)
     monkeypatch.setattr(openmed, "ModelLoader", _FakeLoader)
-    monkeypatch.setattr(openmed, "OpenMedConfig", _no_config)
 
     engine = PIIEngine()
     assert isinstance(engine.loader, _FakeLoader)
-    assert captured["config"] is None
+    assert captured["config_kwargs"] == {
+        "backend": None,
+        "torch_attention_backend": "eager",
+    }
+    assert isinstance(captured["loader_config"], _FakeConfig)
 
 
 def test_engine_backend_forwarded_via_openmedconfig(monkeypatch) -> None:
-    # backend="mlx" must reach ModelLoader as OpenMedConfig(backend="mlx").
+    # backend="mlx" reaches ModelLoader as OpenMedConfig(backend="mlx"), alongside the
+    # eager attention pin every loader gets.
     import openmed
 
     captured = {}
@@ -78,7 +87,10 @@ def test_engine_backend_forwarded_via_openmedconfig(monkeypatch) -> None:
 
     engine = PIIEngine(backend="mlx")
     assert isinstance(engine.loader, _FakeLoader)
-    assert captured["config_kwargs"] == {"backend": "mlx"}
+    assert captured["config_kwargs"] == {
+        "backend": "mlx",
+        "torch_attention_backend": "eager",
+    }
     assert isinstance(captured["loader_config"], _FakeConfig)
 
 

@@ -114,11 +114,14 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   newer interpreter (e.g. 3.13) for `.venv`.
 - **App structure:** `openmed_studio/` is the framework-free core (no Streamlit, no HTTP):
   - `engine.py` — the `PIIEngine` (one shared `ModelLoader`, lazy load) plus the model registry:
-    - *Loader + wrappers:* the `ModelLoader` is built with an optional `backend` →
-      `OpenMedConfig(backend=...)`, else bare so openmed auto-detects; thin wrappers cover
-      `extract_pii`/`deidentify`/`reidentify`.
+    - *Loader + wrappers:* the `ModelLoader` is always built with
+      `OpenMedConfig(backend=self.backend, torch_attention_backend="eager")` — `backend` stays
+      `None` unless pinned, so openmed still auto-detects it, while `torch_attention_backend="eager"`
+      is pinned deliberately (the OpenMed DeBERTa-v2 models have no SDPA kernel — see "Known
+      gotchas"); thin wrappers cover `extract_pii`/`deidentify`/`reidentify`.
     - *De-identify options* (per-call, surfaced in each de-identifying tab's `Advanced` expander,
-      conditioned on the method): `consistent`/`seed`/`locale` are the `replace` determinism knobs
+      conditioned on the method): `consistent`/`seed`/`locale` are the surrogate-method
+      (`replace`/`format_preserve`) determinism knobs
       (`locale` e.g. `pt_BR` overrides the locale openmed derives from `lang`);
       `date_shift_days`/`keep_year` drive `shift_dates`; `use_safety_sweep` (default `True`) is a
       deterministic structured-identifier sweep run after detection that redacts identifiers
@@ -311,6 +314,17 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   replacement is re-scanned and both failure modes are eliminated; `tests/test_engine.py` pins
   the prefix and value-contains-key cases. The raw-openmed limitation is still captured as a
   `strict` xfail in `tests/test_pii_pure.py`.
+- **The engine pins eager attention because DeBERTa-v2 has no SDPA kernel.** The OpenMed
+  models (default PII + the NER models) are `DebertaV2ForTokenClassification`, which has no
+  SDPA/flash-attention kernel. openmed's default `torch_attention_backend="auto"` requests SDPA;
+  transformers ≤5.12 silently downgraded that to eager for unsupported architectures, but
+  transformers ≥5.13 hard-errors (`DebertaV2ForTokenClassification does not support ...
+  scaled_dot_product_attention`), which breaks **all** model loading — and no fast test catches it
+  (they stub the model; the real load path is `--run-model` only). `PIIEngine.loader` therefore
+  builds every `ModelLoader` with `OpenMedConfig(torch_attention_backend="eager")`. eager is the
+  impl these models ran under all along, so this is behavior-preserving; the
+  `OPENMED_TORCH_ATTENTION_BACKEND` env var still overrides it. Verify model loading end-to-end
+  (not just the fast suite) after any torch/transformers/openmed bump.
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
   literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.
