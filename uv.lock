@@ -492,7 +492,7 @@ wheels = [
 
 [[package]]
 name = "huggingface-hub"
-version = "1.22.0"
+version = "1.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -505,9 +505,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/77/ea/dc54b4dda5841cb3a7812a178695be776e7c15c597887c2ed892f17d015a/huggingface_hub-1.22.0.tar.gz", hash = "sha256:e2dfe5fe1ec3b87ba2709aa34555b23e3f3f6ad4d7255238e13ddb8348e6bbfa", size = 914232, upload-time = "2026-07-03T09:46:44.685Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1a/8f/999e4dda11c6187c78f090eac00895a47e11a0049308f07579bcb7aa3aa2/huggingface_hub-1.23.0.tar.gz", hash = "sha256:c04997fb8bbdace1e57b7703d30ed7678af51f70d00d241819ff411b92ae9a88", size = 919163, upload-time = "2026-07-09T14:49:32.315Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/9c/a1a377265abd8b823a2c661c665028ccb6b9fba1ca9d08e52ff679c20ecd/huggingface_hub-1.22.0-py3-none-any.whl", hash = "sha256:b09e19309ae09ee0a71892701c4fe70af39ab4e00817321dc62f2289a977249b", size = 765085, upload-time = "2026-07-03T09:46:42.832Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/ce/13b2ba57838b8db1e6bd033c1b21ce0b9f6153b87d4e4939f77074e41eb0/huggingface_hub-1.23.0-py3-none-any.whl", hash = "sha256:b1d604788f5adc7f0eb246e03e0ec19011ca06e38400218c347dccc3dffa64a2", size = 770336, upload-time = "2026-07-09T14:49:30.597Z" },
 ]
 
 [[package]]
@@ -1169,16 +1169,16 @@ wheels = [
 
 [[package]]
 name = "openmed"
-version = "1.7.0"
+version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "faker" },
     { name = "pysbd" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cb/13/8e36307d5e0ac8bda2b0be6521bc104b14fae03e73d38cff6c0a76d35a4a/openmed-1.7.0.tar.gz", hash = "sha256:50b26b55889273c2364b9ea5781622c122827557490fcf2ca6cd1c0f02202a97", size = 761074, upload-time = "2026-07-01T08:06:54.572Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/36/09dae3cd04c61878e9146b59d8991db20f6939b5dfda4d1ae716ccd8662f/openmed-1.8.0.tar.gz", hash = "sha256:811c1aad11f7e44a1d2f37d8dad6ccf033ede2f3c2e9b3f55e995470623822ba", size = 1225692, upload-time = "2026-07-09T13:23:15.422Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/35/98bb1e77dbff44779841df71789a2aafad37e52e70e6ad364e0914a49b6a/openmed-1.7.0-py3-none-any.whl", hash = "sha256:de96eb41c21931e09aaf6050f8e963a3e5db243a813153eaad6593d0718676b7", size = 926627, upload-time = "2026-07-01T08:06:56.132Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/60/9003728d70d5c1c5cfa38bf6bc20ce066618d6db608dcdde5ca5b4c9e681/openmed-1.8.0-py3-none-any.whl", hash = "sha256:779fd38ba9200c016fdaa8b8391756717f834687edab2dfdc4a619b95f13950f", size = 1454265, upload-time = "2026-07-09T13:23:13.302Z" },
 ]
 
 [package.optional-dependencies]
@@ -1222,8 +1222,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "openmed", extras = ["hf"], specifier = ">=1.7.0" },
-    { name = "openmed", extras = ["mlx"], marker = "extra == 'mlx'", specifier = ">=1.7.0" },
+    { name = "openmed", extras = ["hf"], specifier = ">=1.8.0" },
+    { name = "openmed", extras = ["mlx"], marker = "extra == 'mlx'", specifier = ">=1.8.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "streamlit", specifier = ">=1.58" },
 ]

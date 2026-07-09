@@ -237,22 +237,24 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   not echoing input on a validation error. Only `OPENMED_STUDIO_BACKEND` and
   `OPENMED_STUDIO_MAX_TEXT_LENGTH` remain as env knobs.
 
-## OpenMed API (verified against installed v1.7.0)
+## OpenMed API (verified against installed v1.8.0)
 
 Top-level imports: `from openmed import extract_pii, deidentify, reidentify, analyze_text, ModelLoader, OpenMedConfig`.
 Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict alias→ModelInfo),
 `list_model_categories()`.
 
-- `extract_pii(text, model_name=<default>, confidence_threshold=0.5, config=None, use_smart_merging=True, lang="en", normalize_accents=None, *, loader=None)`
+- `extract_pii(text, model_name=<default>, confidence_threshold=0.5, config=None, use_smart_merging=True, lang="en", cache_results=False, max_cache_entries=128, normalize_accents=None, *, locale=None, loader=None, custom_recognizer=None)`
   returns a `PredictionResult` object (like `analyze_text`, below) whose `.entities` are PII
   predictions with `.label`/`.text`/`.start`/`.end`/`.confidence` — the engine's `_entities` unwraps
   it. Labels are **lowercase** (`first_name`, `last_name`, `date`, `ssn`, `phone_number`, …). The
   engine forwards `confidence_threshold`/`use_smart_merging`/`lang`/`model_name`/`loader` only (it
-  owns loading, so `config`/`normalize_accents` are not threaded).
+  owns loading, so `config`/`normalize_accents` and 1.8.0's `locale`/`cache_results`/
+  `max_cache_entries`/`custom_recognizer` are not threaded). No drift guard pins this split (unlike
+  `deidentify`/`analyze_text`), since the unforwarded params are all optional with safe defaults.
 - `deidentify(text, method="mask", model_name=<default>, confidence_threshold=0.7,
   use_smart_merging=True, keep_mapping=False, consistent=False, seed=None, locale=None,
   date_shift_days=None, keep_year=False, lang="en", use_safety_sweep=True, audit=False,
-  loader=None, …)` — the installed v1.7.0 signature **also** accepts `shift_dates` (a bool,
+  loader=None, …)` — the installed v1.8.0 signature (unchanged since 1.7.0) **also** accepts `shift_dates` (a bool,
   distinct from `method="shift_dates"`), `normalize_accents`, `config`, `policy`,
   `calibration_thresholds_path`, and 1.7.0's `patient_key`/`date_shift_max_days`/
   `date_shift_secret`/`surrogate_vault`/`custom_recognizer`/`cache_results`/`max_cache_entries`.
