@@ -25,9 +25,15 @@ from typing import Any, get_args
 
 import streamlit as st
 
-from openmed_studio import DEFAULT_PII_MODEL, NER_MODELS, __version__, service
+from openmed_studio import (
+    DEFAULT_PII_MODEL,
+    NER_MODELS,
+    ZERO_SHOT_MODELS,
+    __version__,
+    service,
+)
 from openmed_studio.engine import DeidMethod, PIIEngine
-from openmed_studio.validation import MAX_BATCH_ITEMS, Lang
+from openmed_studio.validation import MAX_BATCH_ITEMS, MAX_ZERO_SHOT_LABELS, Lang
 from ui_helpers import (
     build_base_opts,
     build_batch_table,
@@ -705,6 +711,107 @@ def _render_ner() -> None:
     st.dataframe(entities, hide_index=True, column_config=_entity_columns())
 
 
+@st.fragment
+def _render_zero_shot() -> None:
+    st.caption(
+        "Extract **any** entity types you name — no fine-tuned model per label. Pick a "
+        "domain to choose the GLiNER backbone, then edit the suggested labels or type your "
+        "own (e.g. “chemotherapy regimen”, “biopsy site”). Each domain loads a specialized "
+        "model on first use; switching domains loads another."
+    )
+    engine = get_engine()
+    if not engine.zero_shot_available():
+        # The gliner extra isn't installed, so short-circuit with install instructions
+        # rather than letting the first Extract fail. (Kept out of the sidebar engine
+        # readout so the hint sits next to the tab that needs it.)
+        st.info(
+            "Zero-shot extraction needs the optional **gliner** backend, which isn't "
+            "installed. Install it and restart the app:",
+            icon=":material/download:",
+        )
+        st.code("uv sync --extra gliner", language="bash")
+        st.caption(
+            "It pins an older `transformers`, so it installs into a separate resolution — "
+            "the other tabs are unaffected. See the README's zero-shot note."
+        )
+        return
+
+    # The domain picker and its preview live OUTSIDE the form, so choosing a domain reruns
+    # the fragment and refreshes the preview, the label suggestions, and the slider default.
+    domain = st.selectbox("Entity domain", list(ZERO_SHOT_MODELS), key="zs_domain")
+    model = ZERO_SHOT_MODELS[domain]
+    tuned = ", ".join(model.entity_types)
+    st.caption(
+        f"**{model.display_name}** · {model.params} · zero-shot — extracts whatever labels "
+        f"you provide (tuned for: {tuned})"
+    )
+    # Seed the label picker live from openmed's label vocabulary (natural-language prompts
+    # GLiNER reads well); the user edits them or adds their own via accept_new_options.
+    seeds = engine.default_labels(model.label_domain)
+
+    with st.form("zero_shot"):
+        text = st.text_area(
+            "Clinical note to analyze", value=EXAMPLE_NOTE, height=200, key="zs_text"
+        )
+        labels = st.multiselect(
+            "Entity labels to extract",
+            options=seeds,
+            default=seeds,
+            accept_new_options=True,
+            max_selections=MAX_ZERO_SHOT_LABELS,
+            # Per-domain key so switching domains reseeds the suggestions and remembers a
+            # per-domain edit independently (matching the confidence slider below).
+            key=f"zs_labels_{domain}",
+            help="Type any entity type to extract. Suggestions are seeded from the domain "
+            "but you can add your own; each runs as a separate detection pass.",
+        )
+        confidence = st.slider(
+            "Confidence threshold",
+            0.0,
+            1.0,
+            model.recommended_confidence,
+            0.05,
+            key=f"zs_conf_{domain}",
+            help="Minimum model confidence to keep an entity "
+            "(default = this model's recommended threshold).",
+        )
+        submitted = st.form_submit_button(
+            "Extract", type="primary", icon=":material/frame_inspect:"
+        )
+    if submitted and not text.strip():
+        st.warning("Enter some text to analyze.")
+        return
+    if submitted and not labels:
+        st.warning("Add at least one entity label to extract.")
+        return
+    if not submitted:
+        return
+
+    # is_loaded never reflects a zero-shot model (that path bypasses the shared loader), so
+    # gauge the download wait-hint from a per-domain set, like the Clinical NER tab.
+    analyzed: set[str] = st.session_state.setdefault("zs_analyzed_domains", set())
+    result = _call(
+        service.extract_zero_shot,
+        text,
+        action="Extracting",
+        needs_load=domain not in analyzed,
+        model_name=model.alias,
+        labels=labels,
+        confidence_threshold=confidence,
+    )
+    if result is None:
+        return
+    analyzed.add(domain)
+
+    entities = result["entities"]
+    st.metric("Entities found", len(entities), border=True)
+    st.caption(f"Model: {model.display_name} (`{model.alias}`)")
+    with st.container(border=True):
+        st.caption("Extracted entities")
+        _render_highlight(text, entities)
+    st.dataframe(entities, hide_index=True, column_config=_entity_columns())
+
+
 def _render_sidebar() -> str:
     """Draw the sidebar (engine status + the global Language filter); return the language.
 
@@ -750,15 +857,17 @@ def main() -> None:
 
     st.title("OpenMed Studio")
     st.caption(
-        "Detect PII, run clinical NER, or de-identify clinical text with OpenMed, review "
-        "the entities, and round-trip with re-identification. The model runs in-process; "
-        "pick the de-identification method in the Single note and Batch tabs."
+        "Detect PII, run clinical NER, extract any entity type zero-shot, or de-identify "
+        "clinical text with OpenMed, review the entities, and round-trip with "
+        "re-identification. The model runs in-process; pick the de-identification method in "
+        "the Single note and Batch tabs."
     )
 
-    tab_detect, tab_ner, tab_single, tab_batch, tab_anon, tab_reid = st.tabs(
+    tab_detect, tab_ner, tab_zero, tab_single, tab_batch, tab_anon, tab_reid = st.tabs(
         [
             ":material/search: Detect",
             ":material/biotech: Clinical NER",
+            ":material/frame_inspect: Zero-shot",
             ":material/description: Single note",
             ":material/stacks: Batch",
             ":material/masks: Anonymize",
@@ -769,6 +878,8 @@ def main() -> None:
         _render_detect(lang)
     with tab_ner:
         _render_ner()
+    with tab_zero:
+        _render_zero_shot()
     with tab_single:
         _render_single(lang)
     with tab_batch:

@@ -41,6 +41,11 @@ def _max_text_chars() -> int:
 MAX_TEXT_CHARS = _max_text_chars()
 MAX_BATCH_ITEMS = 100
 MAX_MAPPING_ENTRIES = 5_000
+# Zero-shot extraction runs one forward pass per label and GLiNER's accuracy degrades with
+# very large label sets, so cap the count (and each label's length) the way MAX_BATCH_ITEMS
+# caps notes.
+MAX_ZERO_SHOT_LABELS = 30
+MAX_ZERO_SHOT_LABEL_CHARS = 80
 
 # Languages OpenMed ships PII models for (openmed.core.pii_i18n.SUPPORTED_LANGUAGES).
 # A non-"en" value makes openmed auto-select a larger language-specific model.
@@ -94,6 +99,43 @@ def _check_locale(value: str | None) -> str | None:
 LocaleName = Annotated[str | None, AfterValidator(_check_locale)]
 
 
+def _check_zero_shot_labels(values: list[str]) -> list[str]:
+    """Normalize the user's zero-shot labels: strip, drop empties, dedup, cap.
+
+    Runs after each item is coerced to ``str``. Strips surrounding whitespace, drops blanks,
+    bounds each label's length, and dedups case-insensitively (a repeated label is harmless
+    — unlike an unknown *field*, which ``extra="forbid"`` still rejects — so we quietly
+    collapse duplicates rather than error). Requires at least one surviving label and caps
+    the total at :data:`MAX_ZERO_SHOT_LABELS`. Errors name the cap, never a label value.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        value = value.strip()
+        if not value:
+            continue
+        if len(value) > MAX_ZERO_SHOT_LABEL_CHARS:
+            raise ValueError(
+                f"each label must be at most {MAX_ZERO_SHOT_LABEL_CHARS} characters"
+            )
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    if not out:
+        raise ValueError("provide at least one entity label")
+    if len(out) > MAX_ZERO_SHOT_LABELS:
+        raise ValueError(f"at most {MAX_ZERO_SHOT_LABELS} labels are allowed")
+    return out
+
+
+# The user's arbitrary zero-shot entity labels, normalized/deduped/capped. A plain
+# list[str] with one AfterValidator (matching _check_model_name/_check_locale) so the
+# whole set is validated together after per-item string coercion.
+ZeroShotLabels = Annotated[list[str], AfterValidator(_check_zero_shot_labels)]
+
+
 class _Strict(BaseModel):
     """Reject unknown fields so request typos fail loudly with a validation error."""
 
@@ -122,6 +164,22 @@ class NerRequest(_Strict):
     confidence_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     aggregation_strategy: Literal["simple", "first", "average", "max"] = "simple"
     group_entities: bool = False
+
+
+class ZeroShotRequest(_Strict):
+    """Zero-shot (GLiNER) extraction request: arbitrary labels + a domain-tuned model.
+
+    Like :class:`NerRequest`, ``model_name`` is required (each GLiNER checkpoint is
+    domain-tuned; the UI passes a :data:`~openmed_studio.engine.ZERO_SHOT_MODELS` alias) and
+    there is no ``lang``. Unlike it, the user supplies ``labels`` — normalized, deduped, and
+    capped by ``ZeroShotLabels`` — and the confidence default is ``0.6`` (GLiNER's own
+    recommendation), not NER's ``0.0``.
+    """
+
+    text: ClinicalText
+    model_name: RequiredModelName
+    labels: ZeroShotLabels
+    confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
 
 class _DeidentifyOptions(_Strict):
@@ -172,4 +230,5 @@ __all__ = [
     "Lang",
     "NerRequest",
     "ReidentifyRequest",
+    "ZeroShotRequest",
 ]

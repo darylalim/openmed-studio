@@ -373,6 +373,80 @@ def test_analyze_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -> N
     )
 
 
+def test_extract_zero_shot_delegates_to_openmed(monkeypatch) -> None:
+    # engine.extract_zero_shot resolves the alias -> HF repo id, fabricates a one-entry
+    # in-memory ModelIndex (openmed.ner.infer's default on-disk index isn't shipped), and
+    # forwards the labels/threshold. Crucially it must NOT touch the shared loader: the
+    # GLiNER path bypasses ModelLoader, so is_loaded stays False afterwards.
+    import openmed
+    import openmed.ner as ner
+
+    repo_id = "OpenMed/OpenMed-ZeroShot-NER-Disease-Small-166M"
+    monkeypatch.setattr(
+        openmed,
+        "get_all_models",
+        lambda: {"zeroshot_disease_small_166m": SimpleNamespace(model_id=repo_id)},
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_infer(request, *, index):
+        captured["model_id"] = request.model_id
+        captured["labels"] = request.labels
+        captured["threshold"] = request.threshold
+        captured["index_ids"] = [r.id for r in index.models]
+        captured["index_families"] = [r.family for r in index.models]
+        return SimpleNamespace(
+            entities=[
+                SimpleNamespace(
+                    label="Problem", text="diabetes", start=0, end=8, score=0.91
+                )
+            ]
+        )
+
+    monkeypatch.setattr(ner, "infer", fake_infer)
+
+    engine = PIIEngine()  # NO loader passed
+    entities = engine.extract_zero_shot(
+        "diabetes today",
+        model_name="zeroshot_disease_small_166m",
+        labels=["Problem", "Treatment"],
+        confidence_threshold=0.6,
+    )
+
+    assert captured["model_id"] == repo_id  # alias resolved to the HF repo id
+    assert captured["index_ids"] == [repo_id]  # index points at the same repo id
+    assert captured["index_families"] == ["gliner"]  # routed down the GLiNER branch
+    assert captured["labels"] == ["Problem", "Treatment"]
+    assert captured["threshold"] == 0.6
+    assert [e.label for e in entities] == ["Problem"]  # NerResponse.entities unwrapped
+    assert engine.is_loaded is False  # zero-shot never built the shared loader
+
+
+def test_extract_zero_shot_unknown_model_raises_value_error(monkeypatch) -> None:
+    # A model_name that passes validation's format check but isn't a registry alias must
+    # raise a clear ValueError (the seam maps it to a pass-through message) rather than a
+    # bare KeyError that surfaces as the opaque "failed unexpectedly".
+    import openmed
+
+    monkeypatch.setattr(openmed, "get_all_models", dict)  # empty registry
+    engine = PIIEngine()
+    with pytest.raises(ValueError, match="unknown zero-shot model"):
+        engine.extract_zero_shot(
+            "x", model_name="org/not-a-real-alias", labels=["Problem"]
+        )
+
+
+def test_zero_shot_available_and_default_labels_delegate(monkeypatch) -> None:
+    import openmed.ner as ner
+
+    monkeypatch.setattr(ner, "is_gliner_available", lambda: True)
+    monkeypatch.setattr(ner, "get_default_labels", lambda _domain: ["Problem", "Test"])
+
+    assert PIIEngine.zero_shot_available() is True
+    assert PIIEngine.default_labels("clinical") == ["Problem", "Test"]
+
+
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
 
 
@@ -420,3 +494,23 @@ def test_engine_analyze_detects_clinical_entities(loader) -> None:
     assert entities  # at least one entity detected
     assert any("diabetes" in e.text.lower() for e in entities)
     assert all(e.label.isupper() for e in entities)  # NER labels are UPPERCASE
+
+
+@pytest.mark.model
+def test_engine_extract_zero_shot_detects_user_labels() -> None:
+    # Real GLiNER zero-shot: needs the `gliner` extra AND --run-model. Doubly gated so CI
+    # (neither present) never downloads. The zero-shot path bypasses the shared loader, so
+    # this builds a bare engine rather than using the PII `loader` fixture.
+    pytest.importorskip("gliner")
+    from openmed_studio.engine import DEFAULT_ZERO_SHOT_MODEL
+
+    engine = PIIEngine()
+    entities = engine.extract_zero_shot(
+        "The patient was diagnosed with diabetes mellitus and hypertension.",
+        model_name=DEFAULT_ZERO_SHOT_MODEL,
+        labels=["Problem"],
+        confidence_threshold=0.3,
+    )
+    assert entities  # at least one span for the arbitrary "Problem" label
+    assert any("diabetes" in e.text.lower() for e in entities)
+    assert all(e.score is not None for e in entities)  # zero-shot exposes .score

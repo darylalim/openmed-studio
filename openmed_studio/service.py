@@ -95,6 +95,15 @@ def _run(call: Callable[[], Any]) -> Any:
         raise ServiceError(
             "Model backend unavailable (the model failed to load)."
         ) from exc
+    except ImportError as exc:
+        # An optional backend isn't installed — e.g. openmed's MissingDependencyError when
+        # the Zero-shot tab is used without the `gliner` extra. The message is a safe,
+        # actionable install hint (no PHI), so pass it straight through. We log the traceback
+        # too (like the branches above): a *different* ImportError — an installed-but-broken
+        # optional dep — would otherwise reach the UI as a bare message with no server-side
+        # trail to diagnose the real import regression.
+        logger.exception("optional dependency import failure")
+        raise ServiceError(str(exc)) from exc
     except Exception as exc:  # any other engine/pipeline error — never surface raw
         # A raw exception would escape to Streamlit, whose default showErrorDetails
         # renders the message in the browser (possible PHI). Normalize to a generic
@@ -110,6 +119,9 @@ def _entity_dict(entity: Any) -> dict[str, Any]:
     if text is None:
         text = getattr(entity, "original_text", "")
     confidence = getattr(entity, "confidence", None)
+    if confidence is None:
+        # openmed.ner.Entity (GLiNER / zero-shot) names it .score, not .confidence.
+        confidence = getattr(entity, "score", None)
     return {
         "label": str(label),
         "text": str(text),
@@ -181,6 +193,27 @@ def analyze(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
             confidence_threshold=req.confidence_threshold,
             aggregation_strategy=req.aggregation_strategy,
             group_entities=req.group_entities,
+        )
+    )
+    return {"entities": [_entity_dict(e) for e in entities]}
+
+
+def extract_zero_shot(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
+    """Extract user-named entity labels with a GLiNER model; returns ``{"entities": [...]}``.
+
+    Mirrors :func:`analyze` but validates against ``ZeroShotRequest`` (which requires the
+    ``labels`` list) and calls ``engine.extract_zero_shot``. Reuses ``_entity_dict``, whose
+    ``.score`` fallback handles openmed's zero-shot ``Entity`` (it exposes ``.score`` rather
+    than ``.confidence``). A missing ``gliner`` extra surfaces via ``_run``'s ImportError
+    branch as an actionable ``ServiceError``.
+    """
+    req = _validate(validation.ZeroShotRequest, {"text": text, **opts})
+    entities = _run(
+        lambda: engine.extract_zero_shot(
+            req.text,
+            model_name=req.model_name,
+            labels=req.labels,
+            confidence_threshold=req.confidence_threshold,
         )
     )
     return {"entities": [_entity_dict(e) for e in entities]}

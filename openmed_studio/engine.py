@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 import warnings
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 # pysbd (a transitive openmed dependency) raises harmless SyntaxWarnings from its
@@ -171,6 +173,149 @@ NER_MODELS: dict[str, NerModel] = {
 # entity types), mirroring openmed.analyze_text's own disease-domain default.
 DEFAULT_NER_MODEL = NER_MODELS["Disease"].alias
 
+
+class ZeroShotModel(NamedTuple):
+    """A curated GLiNER zero-shot model plus the metadata the Zero-shot tab needs.
+
+    Zero-shot extraction lets the user name **arbitrary** entity labels, so unlike
+    :class:`NerModel` the ``entity_types`` here are *not* the output vocabulary — they
+    are the checkpoint's training focus, shown as a "tuned for" hint. The actual labels
+    come from the user (seeded from :func:`PIIEngine.default_labels` for ``label_domain``).
+
+    ``alias``/``recommended_confidence``/``entity_types`` are pinned against openmed's live
+    registry, and ``label_domain`` against ``openmed.ner.available_domains()``, by
+    ``tests/test_validation.py::test_zero_shot_models_resolve_in_openmed`` — so a registry
+    rename or a dropped label vocabulary fails CI rather than leaving this table stale.
+    """
+
+    # registry alias -> resolved to the HF repo id passed to openmed.ner.infer()
+    alias: str
+    # friendly name for the UI (vs the raw alias)
+    display_name: str
+    # the checkpoint's suggested threshold (the UI slider default)
+    recommended_confidence: float
+    # the labels the checkpoint was tuned on — a "tuned for" hint, not the output vocab
+    entity_types: tuple[str, ...]
+    # human model size, e.g. "166M"
+    params: str
+    # openmed.ner label-vocabulary domain used to SEED the label picker (a suggestion the
+    # user edits freely); a key of openmed.ner.available_domains(), distinct from the
+    # model-category names above (openmed's label vocab is its own 24-domain taxonomy).
+    label_domain: str
+
+
+# Curated zero-shot (GLiNER) models: one representative Small/166M checkpoint per clinical
+# domain, mirroring NER_MODELS' domain vocabulary. Every OpenMed zero-shot checkpoint is
+# domain-tuned (there is no universal one), so the domain picks the backbone while the labels
+# stay free-text. Keys are the same display domains the Clinical NER tab uses (minus Medical,
+# whose broad ClinicalNER model has no zero-shot sibling — Disease covers the general case).
+ZERO_SHOT_MODELS: dict[str, ZeroShotModel] = {
+    "Disease": ZeroShotModel(
+        "zeroshot_disease_small_166m",
+        "ZeroShot Disease 166M",
+        0.6,
+        ("DISEASE", "CONDITION", "PATHOLOGY"),
+        "166M",
+        "clinical",
+    ),
+    "Pharmaceutical": ZeroShotModel(
+        "zeroshot_pharma_small_166m",
+        "ZeroShot Pharma 166M",
+        0.6,
+        ("SIMPLE_CHEMICAL", "CHEM", "DRUG", "MEDICATION"),
+        "166M",
+        "biomedical",
+    ),
+    "Chemical": ZeroShotModel(
+        "zeroshot_chemical_small_166m",
+        "ZeroShot Chemical 166M",
+        0.6,
+        ("SIMPLE_CHEMICAL", "CHEM", "DRUG", "MEDICATION"),
+        "166M",
+        "chemistry",
+    ),
+    "Anatomy": ZeroShotModel(
+        "zeroshot_anatomy_small_166m",
+        "ZeroShot Anatomy 166M",
+        0.6,
+        ("ORGAN", "TISSUE", "ANATOMY"),
+        "166M",
+        "clinical",
+    ),
+    "Genomics": ZeroShotModel(
+        "zeroshot_dna_small_166m",
+        "ZeroShot DNA 166M",
+        0.6,
+        ("GENE_OR_GENE_PRODUCT", "DNA", "RNA", "GENE", "PROTEIN"),
+        "166M",
+        "genomic",
+    ),
+    "Protein": ZeroShotModel(
+        "zeroshot_protein_small_166m",
+        "ZeroShot Protein 166M",
+        0.6,
+        ("GENE_OR_GENE_PRODUCT", "PROTEIN"),
+        "166M",
+        "biomedical",
+    ),
+    "Oncology": ZeroShotModel(
+        "zeroshot_oncology_small_166m",
+        "ZeroShot Oncology 166M",
+        0.6,
+        (
+            "SIMPLE_CHEMICAL",
+            "CHEM",
+            "CANCER",
+            "CELL",
+            "GENE_OR_GENE_PRODUCT",
+            "ORGANISM",
+            "SPECIES",
+        ),
+        "166M",
+        "biomedical",
+    ),
+    "Species": ZeroShotModel(
+        "zeroshot_species_small_166m",
+        "ZeroShot Species 166M",
+        0.6,
+        ("ORGANISM", "SPECIES"),
+        "166M",
+        "organism",
+    ),
+    "Pathology": ZeroShotModel(
+        "zeroshot_pathology_small_166m",
+        "ZeroShot Pathology 166M",
+        0.6,
+        ("DISEASE", "CONDITION", "PATHOLOGY"),
+        "166M",
+        "clinical",
+    ),
+    "Hematology": ZeroShotModel(
+        "zeroshot_bloodcancer_small_166m",
+        "ZeroShot BloodCancer 166M",
+        0.65,
+        (
+            "CANCER",
+            "DISEASE",
+            "CONDITION",
+            "PATHOLOGY",
+            "GENE_OR_GENE_PRODUCT",
+            "PROTEIN",
+        ),
+        "166M",
+        "biomedical",
+    ),
+}
+
+# The default zero-shot domain/model: Disease (the general clinical case), mirroring
+# DEFAULT_NER_MODEL's choice.
+DEFAULT_ZERO_SHOT_MODEL = ZERO_SHOT_MODELS["Disease"].alias
+
+# A fixed timestamp for the in-memory ModelIndex the zero-shot path fabricates (see
+# PIIEngine.extract_zero_shot). openmed.ner.infer only echoes it into result metadata the
+# app discards, so its value is irrelevant — a constant keeps the call deterministic.
+_ZERO_SHOT_INDEX_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
 # Inference backends openmed exposes. ``None`` (the engine default) lets openmed
 # auto-detect — it prefers MLX on Apple Silicon when the `mlx` extra is installed,
 # else HuggingFace/PyTorch. Forcing ``"mlx"`` raises if MLX is unavailable (e.g.
@@ -316,6 +461,85 @@ class PIIEngine:
             group_entities=group_entities,
             output_format="dict",
             loader=self.loader,
+        )
+        return _entities(result)
+
+    @staticmethod
+    def zero_shot_available() -> bool:
+        """Whether the optional GLiNER backend (the ``gliner`` extra) is importable.
+
+        The Zero-shot tab is gated on this so it can show install instructions instead of
+        failing at call time. Delegates to openmed's own probe, which checks ``gliner`` plus
+        its ancillary deps without importing Torch or loading a model.
+        """
+        from openmed.ner import is_gliner_available
+
+        return is_gliner_available()
+
+    @staticmethod
+    def default_labels(label_domain: str) -> list[str]:
+        """Suggested entity labels for a domain, from openmed's label vocabulary.
+
+        Seeds the Zero-shot tab's label picker (the user edits them freely). Read live from
+        ``openmed.ner.get_default_labels`` so the suggestions track openmed rather than a
+        baked copy — and so the Streamlit layer needs no openmed import of its own. These
+        are natural-language prompts (``"Problem"``, ``"Treatment"``), which GLiNER reads
+        better than UPPERCASE tag names.
+        """
+        from openmed.ner import get_default_labels
+
+        return list(get_default_labels(label_domain))
+
+    def extract_zero_shot(
+        self,
+        text: str,
+        *,
+        model_name: str,
+        labels: list[str],
+        confidence_threshold: float = 0.6,
+    ) -> list[Any]:
+        """Extract user-named ``labels`` from ``text`` with a GLiNER zero-shot model.
+
+        Unlike :meth:`analyze` (a fixed per-domain label set), zero-shot takes **arbitrary**
+        ``labels`` and a domain-tuned backbone selected by ``model_name`` (a
+        :data:`ZERO_SHOT_MODELS` alias). The entities returned each expose ``.label``/
+        ``.text``/``.start``/``.end``/``.score`` — note ``.score``, not ``.confidence``
+        (``openmed.ner.Entity``); the service adapter maps it.
+
+        This path deliberately does **not** use the shared :attr:`loader`: openmed's GLiNER
+        inference (``openmed.ner.infer``) bypasses ``ModelLoader`` entirely, caching its own
+        model instances, and needs no DeBERTa-v2 eager pin (the ``gliner`` fork runs on an
+        older transformers where the SDPA request degrades to eager on its own). So
+        :attr:`is_loaded` does not reflect a loaded zero-shot model; the UI tracks that
+        separately. ``infer`` also defaults to a on-disk model index that isn't shipped, so
+        a one-entry :class:`~openmed.ner.ModelIndex` is fabricated in memory to point it at
+        the resolved HF repo id.
+        """
+        from openmed import get_all_models
+        from openmed.ner import ModelIndex, ModelRecord, NerRequest, infer
+
+        info = get_all_models().get(model_name)
+        if info is None:
+            # model_name passed the format check but isn't a registry alias. The UI only ever
+            # sends a curated ZERO_SHOT_MODELS alias (pinned by the drift guard), so this is
+            # unreachable from the app — but a direct service caller (or an openmed rename)
+            # gets a clear message instead of an opaque "failed unexpectedly" (ValueError maps
+            # to a pass-through ServiceError in the seam).
+            raise ValueError(f"unknown zero-shot model: {model_name!r}")
+        model_id = info.model_id
+        index = ModelIndex(
+            models=(ModelRecord(id=model_id, family="gliner"),),
+            generated_at=_ZERO_SHOT_INDEX_EPOCH,
+            source_dir=Path(),
+        )
+        result = infer(
+            NerRequest(
+                model_id=model_id,
+                text=text,
+                labels=labels,
+                threshold=confidence_threshold,
+            ),
+            index=index,
         )
         return _entities(result)
 

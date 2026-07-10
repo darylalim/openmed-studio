@@ -32,6 +32,9 @@ class _StubEngine:
     def analyze(self, _text, **_):
         return []
 
+    def extract_zero_shot(self, _text, **_):
+        return []
+
     def reidentify(self, deidentified_text, _mapping):
         return deidentified_text
 
@@ -126,6 +129,88 @@ def test_ner_rejects_bad_aggregation_strategy() -> None:
 def test_ner_rejects_unknown_field() -> None:
     with pytest.raises(ServiceError):
         service.analyze(ENGINE, "x", model_name=_NER_MODEL, bogus=1)
+
+
+# --- zero-shot (GLiNER) request guards --------------------------------------
+
+_ZERO_SHOT_MODEL = "zeroshot_disease_small_166m"
+
+
+def test_zero_shot_accepts_valid_request() -> None:
+    assert service.extract_zero_shot(
+        ENGINE, "x", model_name=_ZERO_SHOT_MODEL, labels=["Problem", "Treatment"]
+    ) == {"entities": []}
+
+
+def test_zero_shot_normalizes_and_dedups_labels() -> None:
+    # strip each label, drop blanks, and dedup case-insensitively (first spelling wins).
+    req = validation.ZeroShotRequest.model_validate(
+        {
+            "text": "x",
+            "model_name": _ZERO_SHOT_MODEL,
+            "labels": ["Problem", " Problem ", "problem", "", "Treatment"],
+        }
+    )
+    assert req.labels == ["Problem", "Treatment"]
+
+
+def test_zero_shot_rejects_missing_model_name() -> None:
+    with pytest.raises(ServiceError):
+        service.extract_zero_shot(ENGINE, "x", labels=["Problem"])
+
+
+def test_zero_shot_rejects_empty_labels() -> None:
+    with pytest.raises(ServiceError):
+        service.extract_zero_shot(ENGINE, "x", model_name=_ZERO_SHOT_MODEL, labels=[])
+
+
+def test_zero_shot_rejects_all_blank_labels() -> None:
+    # A list that strips down to nothing is as empty as [].
+    with pytest.raises(ServiceError):
+        service.extract_zero_shot(
+            ENGINE, "x", model_name=_ZERO_SHOT_MODEL, labels=["  ", ""]
+        )
+
+
+def test_zero_shot_rejects_too_many_labels() -> None:
+    over = [f"label{i}" for i in range(validation.MAX_ZERO_SHOT_LABELS + 1)]
+    with pytest.raises(ServiceError):
+        service.extract_zero_shot(ENGINE, "x", model_name=_ZERO_SHOT_MODEL, labels=over)
+
+
+def test_zero_shot_rejects_overlong_label_without_echoing_it() -> None:
+    # The over-length label could carry pasted PHI, so the rejection names the cap, not it.
+    secret = "S" + "SECRET-9999" * 20  # > MAX_ZERO_SHOT_LABEL_CHARS
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract_zero_shot(
+            ENGINE, "x", model_name=_ZERO_SHOT_MODEL, labels=[secret]
+        )
+    assert secret not in str(excinfo.value)
+
+
+def test_zero_shot_rejects_out_of_range_confidence() -> None:
+    with pytest.raises(ServiceError):
+        service.extract_zero_shot(
+            ENGINE,
+            "x",
+            model_name=_ZERO_SHOT_MODEL,
+            labels=["Problem"],
+            confidence_threshold=1.5,
+        )
+
+
+def test_zero_shot_rejects_unknown_field() -> None:
+    with pytest.raises(ServiceError):
+        service.extract_zero_shot(
+            ENGINE, "x", model_name=_ZERO_SHOT_MODEL, labels=["Problem"], bogus=1
+        )
+
+
+def test_zero_shot_default_confidence_is_0_6() -> None:
+    req = validation.ZeroShotRequest.model_validate(
+        {"text": "x", "model_name": _ZERO_SHOT_MODEL, "labels": ["Problem"]}
+    )
+    assert req.confidence_threshold == 0.6
 
 
 def test_batch_rejects_empty_items() -> None:
@@ -242,4 +327,40 @@ def test_validation_ner_models_resolve_in_openmed() -> None:
         assert set(info.entity_types) == set(model.entity_types), (
             f"{model.alias!r} entity_types drifted: registry {sorted(info.entity_types)} "
             f"!= baked {sorted(model.entity_types)}"
+        )
+
+
+def test_zero_shot_models_resolve_in_openmed() -> None:
+    # Pin the curated zero-shot catalog against openmed's live registry the way the NER guard
+    # does: every alias resolves, its baked recommended_confidence/entity_types still match,
+    # and every label_domain is a real openmed label vocabulary. Unlike NER, we don't pin
+    # info.category (zero-shot models bucket into only a few broad categories, not per-domain).
+    # Registry/label metadata only — no model download, no gliner extra needed.
+    import openmed
+    from openmed.ner import available_domains
+
+    from openmed_studio.engine import ZERO_SHOT_MODELS
+
+    catalog = openmed.get_all_models()  # dict[alias -> ModelInfo]
+    label_domains = set(available_domains())
+    for domain, model in ZERO_SHOT_MODELS.items():
+        info = catalog.get(model.alias)
+        assert info is not None, (
+            f"zero-shot alias {model.alias!r} is not in openmed's registry"
+        )
+        # Pin the one registry field the runtime path actually reads: extract_zero_shot
+        # resolves alias -> info.model_id to build the infer request. Without this, an
+        # openmed rename of .model_id would pass CI and only fail under --run-model.
+        assert info.model_id, f"{model.alias!r} has no model_id in openmed's registry"
+        assert info.recommended_confidence == model.recommended_confidence, (
+            f"{model.alias!r} recommended_confidence drifted: registry "
+            f"{info.recommended_confidence} != baked {model.recommended_confidence}"
+        )
+        assert set(info.entity_types) == set(model.entity_types), (
+            f"{model.alias!r} entity_types drifted: registry {sorted(info.entity_types)} "
+            f"!= baked {sorted(model.entity_types)}"
+        )
+        assert model.label_domain in label_domains, (
+            f"{domain!r} label_domain {model.label_domain!r} is not an openmed label "
+            f"vocabulary (available: {sorted(label_domains)})"
         )

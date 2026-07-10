@@ -9,8 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 library itself (that lives at `github.com/maziyarpanahi/openmed`). The aim is to surface OpenMed's
 full capability set (clinical NER, PII/PHI de-identification, anonymization, zero-shot extraction).
 **Today it implements PII/PHI de-identification — including surrogate anonymization (the `Anonymize`
-tab over `deidentify(method="replace")`) — plus clinical NER (token-classification).** Deeper
-anonymization (OpenMed's `Anonymizer`/`policy` machinery) and zero-shot extraction are the roadmap.
+tab over `deidentify(method="replace")`) — clinical NER (token-classification), and zero-shot
+(GLiNER) extraction (the `Zero-shot` tab over `openmed.ner.infer`, behind the optional `gliner`
+extra).** Deeper anonymization (OpenMed's `Anonymizer`/`policy` machinery) is the roadmap.
 It's a [Streamlit](https://streamlit.io/) app (`streamlit_app.py`) running the model **in-process**
 through a framework-free `PIIEngine` behind a thin service seam (`openmed_studio/service.py`) — no
 separate web service. (It was a FastAPI service + HTTP client; that boundary was removed — see "What
@@ -34,6 +35,12 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run streamlit run streamlit_app.py
 
 # Swap the portable Torch/Transformers backend for Apple's native MLX backend (Apple Silicon).
 uv sync --extra mlx
+
+# Enable the Zero-shot (GLiNER) tab. gliner pins transformers<5.7, so this extra CONFLICTS with
+# the marker `hf-latest` extra (declared in [tool.uv] conflicts) — uv forks the lock so the
+# default install/CI stay on the latest transformers and only this opt-in downgrades. Combines
+# with --extra mlx. Until installed, the Zero-shot tab shows install instructions, not the form.
+uv sync --extra gliner
 # Force a backend (default unset = openmed auto-detects: MLX on Apple Silicon when the mlx extra
 # is installed, else HuggingFace). "mlx" fails loudly if MLX is unavailable.
 OPENMED_STUDIO_BACKEND=mlx uv run streamlit run streamlit_app.py
@@ -67,7 +74,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
 | `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` path, the `ServiceError` taxonomy (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable"), and batch per-note isolation |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI), and the openmed-sync guards |
-| `test_engine.py` | `PIIEngine` lazy-load + backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), that `deidentify`/`analyze` forward to openmed (monkeypatched, no model), and the one-pass `reidentify` (see "Known gotchas") |
+| `test_engine.py` | `PIIEngine` lazy-load + backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — the zero-shot test also pins that it builds the in-memory index with `family="gliner"` and leaves `is_loaded` False), and the one-pass `reidentify` (see "Known gotchas") |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub) |
 
@@ -76,6 +83,9 @@ Named guards worth knowing — each **fails CI when openmed drifts**:
 `test_validation_lang_subset_of_openmed` (`Lang`⊆`SUPPORTED_LANGUAGES`),
 `test_validation_ner_models_resolve_in_openmed` (`NER_MODELS`↔registry, incl. baked
 `recommended_confidence`/`entity_types`),
+`test_zero_shot_models_resolve_in_openmed` (`ZERO_SHOT_MODELS`↔registry, incl. baked
+`recommended_confidence`/`entity_types` and each `label_domain`⊆`openmed.ner.available_domains()`;
+registry/label metadata only — no download, so it runs in CI without the `gliner` extra),
 `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (introspects
 `inspect.signature(openmed.deidentify)`, pinning the forwarded-vs-excluded split from "OpenMed API"),
 and `test_shift_dates_actually_shifts_dates` (see "Known gotchas").
@@ -83,7 +93,10 @@ and `test_shift_dates_actually_shifts_dates` (see "Known gotchas").
 Model tests (`test_pii_model.py` + the `@pytest.mark.model` tests in `test_engine.py`) are
 **skipped by default** and drive the real engine via the shared `loader` fixture; `--run-model` opts
 in, wired in `tests/conftest.py` (`pytest_addoption` + `pytest_collection_modifyitems`, plus the
-session-scoped `loader` and a `note` fixture).
+session-scoped `loader` and a `note` fixture). The zero-shot model test
+(`test_engine_extract_zero_shot_detects_user_labels`) is **doubly gated** — `@pytest.mark.model`
+*and* `pytest.importorskip("gliner")` — so CI (neither flag nor extra) never downloads it; it also
+skips the `loader` fixture, since the GLiNER path bypasses the shared loader.
 
 Note: `ty` targets Python 3.10 (the minimum). openmed ships inline type hints — `deidentify(method=…)`
 expects the `Literal` of the five method names — so the `DeidMethod` alias (in `engine.py`,
@@ -133,37 +146,63 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       per domain; an absent one silently falls back to openmed's disease-only default). `analyze_text`
       returns a `PredictionResult` *object* (its `output_format="dict"` is a misnomer), so `_entities`
       unwraps `.entities`; no `lang` (analyze_text has none).
+    - *Zero-shot (GLiNER):* `extract_zero_shot(text, *, model_name, labels, confidence_threshold=0.6)`
+      delegates to `openmed.ner.infer` (NOT `analyze_text`). It resolves the registry alias to the HF
+      repo id (`get_all_models()[model_name].model_id`), fabricates a **one-entry in-memory**
+      `ModelIndex(ModelRecord(id=repo_id, family="gliner"), generated_at=_ZERO_SHOT_INDEX_EPOCH,
+      source_dir=Path())` — because `infer`'s default on-disk index isn't shipped — and returns
+      `NerResponse.entities` (unwrapped by `_entities`). This path **deliberately bypasses the shared
+      loader** (openmed's GLiNER inference has its own cache and is torch-only; it doesn't need the
+      DeBERTa-v2 eager pin because the `gliner` fork runs on transformers <5.13), so `is_loaded` stays
+      False after a zero-shot call and the UI tracks loaded domains itself. Two static helpers back the
+      tab without a UI-side openmed import: `zero_shot_available()` (→ `is_gliner_available()`, so the
+      tab can show install instructions instead of failing) and `default_labels(label_domain)` (→
+      `get_default_labels`, seeding the label picker live). See "Known gotchas" for the `.score` field.
     - *Registry:* defines the `DeidMethod`/`Backend` `Literal`s, `DEFAULT_PII_MODEL`,
       `DEFAULT_NER_MODEL`, the `NerModel` `NamedTuple`, and `NER_MODELS` — a curated
       `dict[domain → NerModel]` of one ~141M "superclinical" model per category (`Medical` = the
       broader 434M `clinicalner`). Each `NerModel` bakes registry metadata (`alias`, `display_name`,
       `recommended_confidence`, `entity_types`, `params`) so the UI needs **no runtime openmed
-      import**; the drift guard pins it to the live registry.
-  - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`,
+      import**; the drift guard pins it to the live registry. Zero-shot has its own parallel
+      `ZeroShotModel` `NamedTuple` + `ZERO_SHOT_MODELS` (10 domains, one Small/166M GLiNER checkpoint
+      each, mirroring the NER domain names minus `Medical`) + `DEFAULT_ZERO_SHOT_MODEL`. `ZeroShotModel`
+      adds a `label_domain` field (an `openmed.ner.available_domains()` key used to seed the label
+      picker) and, unlike `NerModel`, its `entity_types` are the checkpoint's *training focus* (a
+      "tuned for" hint), **not** the output vocabulary — zero-shot's output labels are whatever the
+      user types. Its drift guard pins alias/`recommended_confidence`/`entity_types`/`label_domain` but
+      **not** `info.category` (zero-shot models bucket into only a few broad categories, not per-domain).
+  - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`, `ZeroShotRequest`,
     `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, all `extra="forbid"`) plus
     the bound primitives: `ClinicalText`/`MAX_TEXT_CHARS` (from `OPENMED_STUDIO_MAX_TEXT_LENGTH` via
     `_max_text_chars` at import), `MAX_BATCH_ITEMS`, `MAX_MAPPING_ENTRIES`, `Lang`,
-    `_check_model_name`, `RequiredModelName` (the non-optional model id `NerRequest` requires), and
-    `_check_locale` (a format guard on the optional `replace` `locale`). Imports only
-    `pydantic`/`os`/`re` — no web framework — so it doubles as the in-process validation layer.
-    Re-exports `DeidMethod`.
+    `_check_model_name`, `RequiredModelName` (the non-optional model id `NerRequest`/`ZeroShotRequest`
+    require), and `_check_locale` (a format guard on the optional `replace` `locale`). `ZeroShotRequest`
+    adds `labels` — a `ZeroShotLabels` type whose `_check_zero_shot_labels` `AfterValidator` strips,
+    drops blanks, bounds each label to `MAX_ZERO_SHOT_LABEL_CHARS` (80), dedups case-insensitively
+    (harmless duplicates collapse; unknown *fields* still fail via `extra="forbid"`), and caps the set
+    at `MAX_ZERO_SHOT_LABELS` (30) — all with errors that name the cap, never a label value (PHI-safe).
+    Imports only `pydantic`/`os`/`re` — no web framework — so it doubles as the in-process validation
+    layer. Re-exports `DeidMethod`.
   - `service.py` — the single in-process chokepoint (framework-free); every UI engine call funnels
     through it, so nothing bypasses validation:
     - `resolve_backend()` (reads `OPENMED_STUDIO_BACKEND`) and `build_engine()` (the `PIIEngine`
       factory the UI caches).
     - `_validate()` — `model_validate()`, raising a **PHI-safe** `ServiceError` from only `loc`/`msg`
       (never Pydantic's `input`).
-    - `_run()` — translates `ValueError`→bad-options and `RuntimeError`/`OSError`→backend-unavailable
-      into `ServiceError` (the old 400/503 split, now capability-neutral since NER flows through it).
+    - `_run()` — translates `ValueError`→bad-options, `RuntimeError`/`OSError`→backend-unavailable,
+      and `ImportError`→pass-the-message (openmed's `MissingDependencyError` subclasses `ImportError`;
+      the zero-shot tab surfaces its "run `uv sync --extra gliner`" hint through this branch) into
+      `ServiceError` (the old 400/503 split, now capability-neutral since NER/zero-shot flow through it).
     - the dict adapters (`_entity_dict`, `_deidentify_dict`) and the entry points
-      `extract`/`analyze`/`deidentify`/`deidentify_batch`/`reidentify`, which validate → call the
-      engine → adapt to plain dicts. `analyze` reuses `_validate`/`_run`/`_entity_dict` verbatim
-      (NER's `EntityPrediction` exposes the same fields the adapter reads).
+      `extract`/`analyze`/`extract_zero_shot`/`deidentify`/`deidentify_batch`/`reidentify`, which
+      validate → call the engine → adapt to plain dicts. `analyze` and `extract_zero_shot` reuse
+      `_validate`/`_run`/`_entity_dict` verbatim; `_entity_dict` falls back to `.score` when there's no
+      `.confidence`, so it handles openmed's zero-shot `Entity` (which exposes `.score`) unchanged.
     - `deidentify_batch` isolates each note: a per-note `ValueError` becomes an `{"ok": False}` row
       so one bad note doesn't abort the batch, while a backend `RuntimeError`/`OSError` propagates
       through `_run` and aborts the whole batch.
-  - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`, `NER_MODELS`,
-    `PIIEngine`, and `__version__`.
+  - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`, `DEFAULT_ZERO_SHOT_MODEL`,
+    `NER_MODELS`, `ZERO_SHOT_MODELS`, `PIIEngine`, and `__version__`.
 
   It stays a uv **non-package** project, so pytest imports `openmed_studio` via the repo root on
   `sys.path` (`pythonpath = ["."]`; Streamlit adds the app's directory).
@@ -171,14 +210,15 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   Streamlit-free render helpers live in `ui_helpers.py` so they unit-test without a browser.
   - *App + tabs:* `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call`
     runs a `service.*` function in a spinner and renders any `ServiceError`. `main()` titles the
-    page/heading "OpenMed Studio" and lays out the six tabs (`Detect`→`service.extract`,
-    `Clinical NER`→`service.analyze`, `Single note`/`Batch`→`service.deidentify[_batch]`,
+    page/heading "OpenMed Studio" and lays out the seven tabs (`Detect`→`service.extract`,
+    `Clinical NER`→`service.analyze`, `Zero-shot`→`service.extract_zero_shot`,
+    `Single note`/`Batch`→`service.deidentify[_batch]`,
     `Anonymize`→`service.deidentify` (`method=replace`), `Re-identify`→`service.reidentify`), guarded
     by `if __name__ == "__main__"` so importing for tests has no side effects.
-  - *Fragments + handoff:* `Detect`/`Clinical NER`/`Batch`/`Re-identify` renderers are `@st.fragment`
-    so an in-tab interaction reruns only that tab; `Single note` and `Anonymize` are **intentionally
-    not**, because their form submit must trigger a full rerun to hand `last_deidentified`/
-    `last_mapping` (via `st.session_state`, not widget keys) to `Re-identify`. `_set_handoff` sets the
+  - *Fragments + handoff:* `Detect`/`Clinical NER`/`Zero-shot`/`Batch`/`Re-identify` renderers are
+    `@st.fragment` so an in-tab interaction reruns only that tab; `Single note` and `Anonymize` are
+    **intentionally not**, because their form submit must trigger a full rerun to hand
+    `last_deidentified`/`last_mapping` (via `st.session_state`, not widget keys) to `Re-identify`. `_set_handoff` sets the
     two together once per submit — the single security-relevant copy of "so a stale mapping can't
     linger" — *not* on re-render.
   - *Result persistence:* all four de-identifying surfaces persist their latest result in
@@ -207,9 +247,21 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     has loaded, the per-domain download wait-hint is driven by a `st.session_state` set of analyzed
     domains (passed to `_call(..., needs_load=...)`), so switching to a not-yet-downloaded domain
     still warns.
-  - *Rendering:* `_render_highlight(text, entities)` (shared by `Detect`, `Single`, `Anonymize`, and
-    `Clinical NER`) renders the highlighted text plus its legend, label-agnostic so it handles NER's
-    UPPERCASE labels unchanged. `ui_helpers.py`'s `render_highlighted`/`render_legend` are
+  - *Zero-shot controls* (`_render_zero_shot`, `@st.fragment`): first gate on
+    `engine.zero_shot_available()` — when the `gliner` extra isn't installed, render the
+    `uv sync --extra gliner` install hint (an `st.code`) and **return before the form**, so the tab
+    degrades instead of failing. Otherwise a domain picker (`st.selectbox` over `ZERO_SHOT_MODELS`,
+    default `Disease`) sits **outside** the form (reactive preview + per-domain confidence default like
+    NER); inside the form, an `st.multiselect(accept_new_options=True, max_selections=…)` **seeded from
+    `engine.default_labels(model.label_domain)`** lets the user edit the suggested labels or add their
+    own free-text ones. `model_name` resolves via `ZERO_SHOT_MODELS[domain].alias`; because the
+    zero-shot path bypasses the shared loader entirely (so `is_loaded` is *always* blind to it), a
+    per-domain `st.session_state` set (`zs_analyzed_domains`) drives the wait-hint. The keys are
+    `zs_`-scoped so they don't collide with the NER tab's identically-labelled widgets.
+  - *Rendering:* `_render_highlight(text, entities)` (shared by `Detect`, `Single`, `Anonymize`,
+    `Clinical NER`, and `Zero-shot`) renders the highlighted text plus its legend, label-agnostic so it
+    handles NER's UPPERCASE labels and zero-shot's arbitrary user-typed labels unchanged (every label
+    is HTML-escaped, so a user-supplied label can't inject markup). `ui_helpers.py`'s `render_highlighted`/`render_legend` are
     **theme-agnostic**: a translucent per-label tint from `PALETTE`/`color_for` plus `color: inherit`,
     so the marks read on light or dark with no runtime theme detection (`render_plain`/
     `build_base_opts`/`build_batch_table` are kept separate for browserless unit tests). The
@@ -299,6 +351,20 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `tests/test_engine.py::test_analyze_forwards_every_openmed_param_or_allowlists_it` pins that split
   (it matters more here than for `deidentify`: `analyze_text` declares `**pipeline_kwargs`, so a
   drifted forwarded param would be silently swallowed rather than raising).
+- **Zero-shot (GLiNER)** lives in the `openmed.ner` subpackage, **not** the top-level API, and behind
+  the optional `gliner` extra: `from openmed.ner import infer, NerRequest, ModelIndex, ModelRecord,
+  Entity, is_gliner_available, get_default_labels, available_domains`.
+  `infer(NerRequest(model_id=<HF repo id>, text, labels=[...], threshold=0.5), *, index=<ModelIndex>,
+  config=None, loader=None)` → `NerResponse(entities=[Entity(text, start, end, label, **score**, group,
+  extras)], meta={...})`. Four things the app works around: (1) `Entity` exposes `.score`, **not**
+  `.confidence` — the service adapter's `.score` fallback handles it. (2) `infer`'s default index is a
+  file (`<site-packages>/models/index.json`) openmed **doesn't ship**, so a caller must pass an
+  in-memory `ModelIndex` (the engine fabricates a one-entry one; `ModelRecord.id` must be the **HF repo
+  id**, resolved from the registry alias via `get_all_models()[alias].model_id`). (3) the GLiNER branch
+  **ignores `loader=`** and caches models itself (`lru_cache` in `openmed.ner.families.gliner`), and is
+  torch-only (no MLX) — `load_gliner_handle` is not publicly re-exported, so `infer` is the only clean
+  route. (4) it raises `MissingDependencyError` (an `ImportError` subclass) when `gliner` isn't
+  installed, which `service._run` maps to a pass-through `ServiceError` install hint.
 
 ## Known gotchas
 
@@ -327,6 +393,20 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   impl these models ran under all along, so this is behavior-preserving; the
   `OPENMED_TORCH_ATTENTION_BACKEND` env var still overrides it. Verify model loading end-to-end
   (not just the fast suite) after any torch/transformers/openmed bump.
+- **The `gliner` extra forks the transformers version, on purpose.** `gliner` pins
+  `transformers<5.7`, but the rest of the stack targets the latest (and the eager pin above only
+  *matters* on transformers ≥5.13). uv builds one universal lock, so **merely declaring** a bare
+  `gliner` extra would pin `transformers==5.6.2` for *every* install — including CI and the PII/NER
+  tabs. `pyproject.toml` avoids that with a `[tool.uv] conflicts` between the `gliner` extra and a
+  marker `hf-latest = ["transformers>=5.7"]` extra: the conflict is genuine, so uv **forks** the lock —
+  the default resolution (and `--extra mlx`) stays on the latest transformers, and only
+  `--extra gliner` (which combines with `--extra mlx`) downgrades. The `hf-latest` extra has no runtime
+  purpose; don't "clean it up" or the fork collapses. On the older transformers the GLiNER DeBERTa-v2
+  models load fine *without* the eager pin (SDPA silently degrades to eager pre-5.13), so the zero-shot
+  path doesn't need it. Depend on **bare `gliner`**, not `openmed[gliner]` (the latter's
+  `gliner[tokenizers]` drags in mecab/stanza/spacy — 137 packages vs 74 — for tokenizers this app
+  never uses). Verify the fork after any dependency bump: `uv export --extra gliner | grep transformers`
+  should show `5.6.x`, and `uv export` (no extras) the latest.
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
   literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.

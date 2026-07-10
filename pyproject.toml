@@ -30,10 +30,38 @@ mlx = [
     "openmed[mlx]>=1.8.0",
 ]
 
+# Zero-shot (GLiNER) extraction — the Clinical NER tab's arbitrary-label sibling. Install with:
+#   uv sync --extra gliner
+# We depend on the bare `gliner` package rather than openmed's `gliner` extra: openmed
+# declares `gliner[tokenizers]`, which drags in python-mecab-ko/camel-tools/stanza/spacy
+# (137 packages vs 74) for language tokenizers this clinical app never uses. openmed's
+# zero-shot path only needs `import gliner` (it lazy-imports it in openmed.ner.families).
+#
+# gliner pins `transformers<5.7`, but the rest of the stack (and the DeBERTa-v2 eager pin
+# in engine.py) targets the latest transformers. uv builds ONE universal lock, so merely
+# declaring this extra would pin transformers==5.6.2 for EVERY install — including CI and
+# the PII/NER tabs. The conflict below (against the marker extra `hf-latest`) forks the
+# lock instead: default installs + CI stay on the latest transformers, and only
+# `uv sync --extra gliner` downgrades. `--extra mlx --extra gliner` still combine.
+gliner = [
+    "gliner>=0.2.0",
+]
+
+# A marker extra that exists solely to make the `gliner` conflict below TRUE: gliner caps
+# `transformers<5.7`, so an extra requiring `>=5.7` genuinely cannot co-resolve with it.
+# Declaring the conflict is what makes uv fork the lock (keeping the default resolution on
+# the latest transformers). It has no runtime purpose; you never need to install it.
+hf-latest = [
+    "transformers>=5.7",
+]
+
 # This project runs as an application (a Streamlit app), not an importable package,
 # so uv installs the dependencies without building a wheel for it.
 [tool.uv]
 package = false
+# Fork the resolution so `--extra gliner` (transformers<5.7) doesn't drag the default
+# install off the latest transformers. See the `gliner`/`hf-latest` extras above.
+conflicts = [[{ extra = "gliner" }, { extra = "hf-latest" }]]
 
 [dependency-groups]
 dev = [

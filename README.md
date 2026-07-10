@@ -4,8 +4,8 @@
 
 The goal is an app over OpenMed's full toolkit — clinical NER, PII/PHI de-identification,
 anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification —
-including surrogate anonymization — and clinical NER** (deeper anonymization and zero-shot
-extraction are on the roadmap), shipped as a [Streamlit](https://streamlit.io/) app.
+including surrogate anonymization — clinical NER, and zero-shot (GLiNER) extraction** (deeper
+anonymization is on the roadmap), shipped as a [Streamlit](https://streamlit.io/) app.
 
 ## Quickstart
 
@@ -27,7 +27,7 @@ framework-free [`PIIEngine`](openmed_studio/engine.py) (one shared `ModelLoader`
 in-process seam in [`openmed_studio/service.py`](openmed_studio/service.py), which validates each
 request and adapts OpenMed's results for the UI. There is no separate service to start.
 
-It opens with six tabs:
+It opens with seven tabs:
 
 - **Detect** — detect PII entities and highlight them (with a color legend) plus an entity table,
   without redacting — for auditing what the model finds before choosing a method.
@@ -37,6 +37,12 @@ It opens with six tabs:
   Medical); a preview shows the model's name, size, and what it detects before you commit to a
   download, the confidence slider defaults to that model's recommended threshold, and each domain
   loads its specialized model on first use. Highlights and tables the entities like Detect.
+- **Zero-shot** — extract **any** entity types you name, with no fine-tuned model per label, using
+  OpenMed's [GLiNER](https://github.com/urchade/GLiNER) zero-shot models. Pick a domain to choose
+  the backbone, then edit the suggested labels or type your own (e.g. “chemotherapy regimen”,
+  “biopsy site”); each runs as its own detection pass. Highlights and tables the entities like
+  Detect. Needs the optional **gliner** backend (`uv sync --extra gliner`); until it's installed the
+  tab shows install instructions instead of the form.
 - **Single note** — de-identify one note; shows the original with detected PII highlighted
   side-by-side with the redacted text (with a **download** button), plus an entity table and a
   **Show re-identification key** button that reveals the mapping in a dialog (when Keep mapping is on).
@@ -119,6 +125,21 @@ first run and caches the result under `~/.cache/openmed/mlx/`. A pre-converted `
 pass it as a **local directory** via `extract_pii(..., model_name=...)` /
 `deidentify(..., model_name=...)`. See the [MLX backend docs](https://openmed.life/docs/mlx-backend/).
 
+## Zero-shot extraction (GLiNER)
+
+The **Zero-shot** tab needs OpenMed's optional GLiNER backend, installed as its own extra:
+
+```bash
+uv sync --extra gliner
+```
+
+GLiNER pins an older `transformers` than the rest of the stack, so the extra is deliberately kept
+**separate from the default install**: `pyproject.toml` declares a conflict between `gliner` and a
+marker `hf-latest` extra, which makes uv fork the lock. The default install (and CI, and the PII /
+Clinical NER tabs) stay on the latest `transformers`; only `uv sync --extra gliner` resolves to the
+older one. `--extra mlx --extra gliner` still combine on Apple Silicon. Until the extra is installed,
+the Zero-shot tab shows install instructions rather than the form, and the other tabs are unaffected.
+
 ## Tests
 
 ```bash
@@ -132,13 +153,18 @@ paths) with a stub engine,
 `test_validation.py` pins the surviving input guarantees (caps, enums, format checks, the text-cap
 knob, the `DeidMethod`/`Lang`↔openmed and curated-`NER_MODELS`↔openmed-registry sync, and PHI-non-echo),
 `test_engine.py` checks `PIIEngine`'s lazy-loading contract, that `deidentify` forwards every method
-(including `shift_dates`) to OpenMed, and that `analyze` delegates to `analyze_text`,
+(including `shift_dates`) to OpenMed, that `analyze` delegates to `analyze_text`, and that
+`extract_zero_shot` builds openmed's in-memory index without touching the shared loader,
 `test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
 the pure rendering/payload helpers. `test_ui_app.py` drives `streamlit_app.py` via Streamlit's
 `AppTest` with the engine stubbed in-process (covering the theme-aware highlighting, the fragmented
-tabs, the Clinical NER tab + domain picker, and the Anonymize tab). The `--run-model` tests — `test_pii_model.py` plus the
-`@pytest.mark.model` tests in `test_engine.py` — load real models to verify PII detection, masking,
-deterministic replacement, round-trips, and clinical-NER detection.
+tabs, the Clinical NER and Zero-shot tabs + their domain pickers — including the "gliner not
+installed" state — and the Anonymize tab). The zero-shot catalog is pinned to openmed's live registry
+by `test_zero_shot_models_resolve_in_openmed` (registry metadata only — no download, no gliner extra).
+The `--run-model` tests — `test_pii_model.py` plus the `@pytest.mark.model` tests in `test_engine.py`
+— load real models to verify PII detection, masking, deterministic replacement, round-trips, and
+clinical-NER detection; the zero-shot model test is additionally gated on the `gliner` extra being
+installed, so CI never downloads it.
 
 Lint, format, and type-check with the project-pinned tools:
 

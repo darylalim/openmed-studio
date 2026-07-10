@@ -50,6 +50,15 @@ class _StubEngine:
             )
         ]
 
+    def extract_zero_shot(self, _text, **_):
+        # openmed's zero-shot Entity exposes .score (not .confidence) — the adapter must
+        # normalize it. No .confidence attribute here, on purpose.
+        return [
+            SimpleNamespace(
+                label="Problem", text="diabetes", start=0, end=8, score=0.88
+            )
+        ]
+
     def reidentify(self, deidentified_text, mapping):
         for key, value in mapping.items():
             deidentified_text = deidentified_text.replace(key, value)
@@ -69,6 +78,9 @@ class _RaisingEngine(_StubEngine):
         raise self._exc
 
     def analyze(self, _text, **_):
+        raise self._exc
+
+    def extract_zero_shot(self, _text, **_):
         raise self._exc
 
     def reidentify(self, deidentified_text, mapping):
@@ -94,7 +106,7 @@ def _capturing(method: str = "deidentify") -> tuple[PIIEngine, dict[str, object]
     captured: dict[str, object] = {}
     canned = (
         []
-        if method == "analyze"
+        if method in ("analyze", "extract_zero_shot")
         else SimpleNamespace(deidentified_text="ok", pii_entities=[], mapping=None)
     )
 
@@ -306,6 +318,67 @@ def test_analyze_backend_failure_does_not_leak() -> None:
             _raising(RuntimeError("ner model exploded")),
             "x",
             model_name="disease_detection_superclinical_141m",
+        )
+    message = str(excinfo.value)
+    assert "exploded" not in message
+    assert "unavailable" in message.lower()
+
+
+def test_zero_shot_returns_entity_dicts_with_score_as_confidence() -> None:
+    # Zero-shot flows through _entity_dict, whose .score fallback maps openmed.ner.Entity's
+    # .score (it has no .confidence) into the UI's confidence field.
+    result = service.extract_zero_shot(
+        _stub(),
+        "Has diabetes.",
+        model_name="zeroshot_disease_small_166m",
+        labels=["Problem"],
+    )
+    assert result["entities"] == [
+        {
+            "label": "Problem",
+            "text": "diabetes",
+            "start": 0,
+            "end": 8,
+            "confidence": 0.88,  # came from .score, not .confidence
+        }
+    ]
+
+
+def test_zero_shot_forwards_options_to_engine() -> None:
+    engine, captured = _capturing("extract_zero_shot")
+    service.extract_zero_shot(
+        engine,
+        "x",
+        model_name="zeroshot_anatomy_small_166m",
+        labels=["Organ", "Organ", " organ "],  # deduped by validation before the engine
+        confidence_threshold=0.4,
+    )
+    assert captured["model_name"] == "zeroshot_anatomy_small_166m"
+    assert captured["labels"] == ["Organ"]  # normalized/deduped upstream of the engine
+    assert captured["confidence_threshold"] == 0.4
+
+
+def test_zero_shot_missing_gliner_maps_to_actionable_service_error() -> None:
+    # openmed raises an ImportError subclass (MissingDependencyError) when the gliner extra
+    # isn't installed; _run passes its message through so the UI can show the install hint.
+    hint = "Optional dependency 'gliner' is required. Run `uv sync --extra gliner`."
+    with pytest.raises(ServiceError, match="gliner") as excinfo:
+        service.extract_zero_shot(
+            _raising(ImportError(hint)),
+            "x",
+            model_name="zeroshot_disease_small_166m",
+            labels=["Problem"],
+        )
+    assert "uv sync --extra gliner" in str(excinfo.value)
+
+
+def test_zero_shot_backend_failure_does_not_leak() -> None:
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract_zero_shot(
+            _raising(RuntimeError("gliner model exploded")),
+            "x",
+            model_name="zeroshot_disease_small_166m",
+            labels=["Problem"],
         )
     message = str(excinfo.value)
     assert "exploded" not in message

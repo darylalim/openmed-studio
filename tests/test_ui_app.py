@@ -66,6 +66,20 @@ class _StubEngine:
             )
         ]
 
+    def zero_shot_available(self):
+        return True
+
+    def default_labels(self, _label_domain):
+        return ["Problem", "Treatment"]
+
+    def extract_zero_shot(self, _text, **_):
+        # .score (not .confidence) + a sentinel a real model would never emit.
+        return [
+            SimpleNamespace(
+                label="Problem", text="[[STUB-ZERO-SHOT]]", start=8, end=16, score=0.93
+            )
+        ]
+
     def reidentify(self, _deidentified_text, _mapping):
         return "[[STUB-RESTORED]]"
 
@@ -114,8 +128,8 @@ def test_app_renders(monkeypatch):
     at = AppTest.from_file(APP).run(timeout=30)
     assert not at.exception
     assert at.title[0].value == "OpenMed Studio"
-    # Detect, Clinical NER, Single note, Batch, Anonymize, Re-identify
-    assert len(at.tabs) == 6
+    # Detect, Clinical NER, Zero-shot, Single note, Batch, Anonymize, Re-identify
+    assert len(at.tabs) == 7
     # The sentinel model name can only appear if the stub (not a live model) was used.
     assert any("STUB/sentinel-model" in c.value for c in at.sidebar.caption)
     assert any("model loaded" in c.value for c in at.sidebar.caption)
@@ -350,6 +364,87 @@ def test_ner_tab_forwards_selected_domain_model(monkeypatch):
     assert (
         NER_MODELS["Anatomy"].alias != NER_MODELS["Disease"].alias
     )  # the picked domain
+
+
+# --- zero-shot ---------------------------------------------------------------
+def _by_key(elements, key):
+    # The NER and Zero-shot tabs share widget LABELS ("Entity domain", "Clinical note to
+    # analyze"), so zero-shot tests disambiguate by the per-tab widget key.
+    return next(e for e in elements if e.key == key)
+
+
+def test_zero_shot_renders_entities(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    # The text area defaults to the example note and the labels are pre-seeded, so the
+    # default form is submittable as-is; "Extract" is unique to this tab.
+    _click(at, "Extract")
+
+    assert not at.exception
+    assert any(m.label == "Entities found" and str(m.value) == "1" for m in at.metric)
+    assert "<mark" in _html(at)  # the entity was highlighted in the note
+    # The sentinel text (which a real model would never emit) proves the entity table was
+    # rendered from the stub. It lives in the entity dataframe, not the highlight (which
+    # shows the note's own span text), so assert against the dataframe.
+    assert any("[[STUB-ZERO-SHOT]]" in str(d.value) for d in at.dataframe)
+
+
+def test_zero_shot_model_picker_lists_curated_domains(monkeypatch):
+    from openmed_studio import ZERO_SHOT_MODELS
+
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    picker = _by_key(at.selectbox, "zs_domain")
+    assert list(picker.options) == list(ZERO_SHOT_MODELS)
+    assert picker.value == "Disease"  # default = first domain
+
+
+def test_zero_shot_seeds_labels_from_engine_default_labels(monkeypatch):
+    # The label picker is seeded (and defaulted) from engine.default_labels — the stub's
+    # ["Problem", "Treatment"] — so the user starts from a live suggestion, not a blank box.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    labels = _by_key(at.multiselect, "zs_labels_Disease")
+    assert list(labels.value) == ["Problem", "Treatment"]
+
+
+def test_zero_shot_forwards_domain_and_labels_to_engine(monkeypatch):
+    # Picking a non-default domain resolves to that domain's alias, and the (deduped) labels
+    # reach the engine — guards the `model_name = ZERO_SHOT_MODELS[domain].alias` resolution.
+    from openmed_studio import ZERO_SHOT_MODELS
+
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def extract_zero_shot(self, _text, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    # The domain picker lives outside the form, so set it (and rerun) before submitting.
+    _by_key(at.selectbox, "zs_domain").set_value("Anatomy").run(timeout=30)
+    _click(at, "Extract")
+
+    assert not at.exception
+    assert captured["model_name"] == ZERO_SHOT_MODELS["Anatomy"].alias
+    assert captured["labels"] == ["Problem", "Treatment"]  # the seeded defaults
+
+
+def test_zero_shot_unavailable_shows_install_hint(monkeypatch):
+    # When the gliner extra isn't installed, the tab shows install instructions instead of
+    # the form (no Extract button), so the user isn't left to hit a runtime failure.
+    class _NoGliner(_StubEngine):
+        def zero_shot_available(self):
+            return False
+
+    _use_engine(monkeypatch, _NoGliner())
+    at = AppTest.from_file(APP).run(timeout=30)
+
+    assert not at.exception
+    assert any("uv sync --extra gliner" in (c.value or "") for c in at.code)
+    # The form (and its Extract button) is not rendered in the unavailable state.
+    assert not any(b.label == "Extract" for b in at.button)
 
 
 def test_ner_confidence_defaults_to_model_recommendation(monkeypatch):
