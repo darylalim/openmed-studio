@@ -34,6 +34,7 @@ models/
 /deidentified.txt
 /deidentified_batch.json
 /anonymized.txt
+/policy_anonymized.txt
 /reidentified.txt
 
 # Streamlit local secrets — never commit (.streamlit/config.toml is tracked; secrets are not)
