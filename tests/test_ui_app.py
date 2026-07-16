@@ -128,8 +128,8 @@ def test_app_renders(monkeypatch):
     at = AppTest.from_file(APP).run(timeout=30)
     assert not at.exception
     assert at.title[0].value == "OpenMed Studio"
-    # Detect, Clinical NER, Zero-shot, Single note, Batch, Anonymize, Re-identify
-    assert len(at.tabs) == 7
+    # Detect, Clinical NER, Zero-shot, Single note, Batch, Anonymize, Policy de-ID, Re-identify
+    assert len(at.tabs) == 8
     # The sentinel model name can only appear if the stub (not a live model) was used.
     assert any("STUB/sentinel-model" in c.value for c in at.sidebar.caption)
     assert any("model loaded" in c.value for c in at.sidebar.caption)
@@ -641,6 +641,163 @@ def test_anonymize_omits_seed_when_not_deterministic(monkeypatch):
     assert captured.get("seed") is None
 
 
+# --- policy de-id ------------------------------------------------------------
+def test_policy_anon_renders_output_and_metrics(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    metrics = {m.label: str(m.value) for m in at.metric}
+    assert metrics.get("Entities found") == "2"  # stub returns 2 pii_entities
+    assert metrics.get("Policy") == "HIPAA Safe Harbor"  # default policy
+    body = _html(at)
+    assert "[[STUB-DEID-OUTPUT]]" in body  # anonymized text rendered
+    assert "<mark" in body  # original highlighted
+
+
+def test_policy_anon_picker_lists_curated_policies(monkeypatch):
+    from openmed_studio import POLICY_MODELS
+
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    picker = next(s for s in at.selectbox if s.key == "policy_pick")
+    assert list(picker.options) == list(POLICY_MODELS)
+    assert picker.value == "HIPAA Safe Harbor"  # default = first policy
+
+
+def test_policy_anon_forwards_selected_policy(monkeypatch):
+    # Picking a non-default policy resolves to its canonical name and reaches the engine. The seam
+    # does NOT force keep_mapping — reversibility is the policy's call (openmed ORs its own flag).
+    from openmed_studio import POLICY_MODELS
+
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, *, keep_mapping=False, **kwargs):
+            captured.update(kwargs)
+            captured["keep_mapping"] = keep_mapping
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    # The policy picker lives outside the form, so set it (and rerun) before submitting.
+    next(s for s in at.selectbox if s.key == "policy_pick").set_value(
+        "GDPR Pseudonymization"
+    ).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    assert captured["policy"] == POLICY_MODELS["GDPR Pseudonymization"].name
+    assert (
+        captured["keep_mapping"] is False
+    )  # policy decides reversibility, not a forced True
+    assert "method" not in captured  # the policy overrides method; none is sent
+
+
+def test_policy_anon_feeds_reidentify_handoff(monkeypatch):
+    # A reversible policy makes openmed return a mapping even though the seam passes
+    # keep_mapping=False (modeled by a stub that maps regardless). Policy de-ID is intentionally
+    # NOT a fragment, so its submit triggers a full rerun that re-runs the Re-identify fragment
+    # and prefills it — the reversible round trip.
+    class _Reversible(_StubEngine):
+        def deidentify(self, _text, **_):
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]",
+                pii_entities=[],
+                mapping={"PERSON_1": "John"},
+            )
+
+    _use_engine(monkeypatch, _Reversible())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    assert at.session_state["last_deidentified"] == "[[STUB-DEID-OUTPUT]]"
+    assert at.session_state["last_mapping"] == {"PERSON_1": "John"}
+    reid = next(t for t in at.text_area if t.label == "De-identified text")
+    assert (
+        reid.value == "[[STUB-DEID-OUTPUT]]"
+    )  # handed off across the fragment boundary
+
+
+def test_policy_anon_empty_note_warns_and_skips(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize under a policy", "   ")  # whitespace only
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    assert any("Enter some text" in w.value for w in at.warning)
+    assert not at.metric  # no result rendered
+
+
+def test_policy_anon_error_renders_message(monkeypatch):
+    # A ServiceError from the engine surfaces via st.error in the tab (parity with the other
+    # de-identifying tabs), and no result panel renders.
+    _use_engine(monkeypatch, _RaisingEngine(ValueError("policy boom")))
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    assert any("policy boom" in e.value for e in at.error)
+    assert not at.metric
+
+
+def test_policy_anon_forwards_consistent_seed_and_locale(monkeypatch):
+    # The Advanced expander's surrogate knobs reach the engine: "Deterministic surrogates" defaults
+    # on, so the in-tab seed forwards, and a non-blank locale flows through build_policy_opts.
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(n for n in at.number_input if n.key == "policy_seed").set_value(7)
+    next(t for t in at.text_input if t.key == "policy_locale").set_value("pt_BR")
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    assert captured.get("consistent") is True
+    assert captured.get("seed") == 7
+    assert captured.get("locale") == "pt_BR"
+
+
+def test_policy_anon_omits_seed_when_not_deterministic(monkeypatch):
+    # With "Deterministic surrogates" off, seed is omitted (build_policy_opts drops it), so the
+    # service forwards seed=None and openmed uses fresh per-call surrogates.
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(t for t in at.toggle if t.key == "policy_consistent").set_value(False)
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    assert captured.get("consistent") is False
+    assert captured.get("seed") is None
+
+
 # --- re-identify -------------------------------------------------------------
 def test_reidentify_renders_text(monkeypatch):
     _use_engine(monkeypatch, _StubEngine())
@@ -712,6 +869,9 @@ def test_no_duplicate_widget_keys_across_tabs(monkeypatch):
     assert not at.exception
     _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
     _click(at, "Anonymize")
+    assert not at.exception
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
     assert not at.exception
 
 

@@ -157,6 +157,39 @@ def build_base_opts(
     return opts
 
 
+def build_policy_opts(
+    *,
+    policy: str,
+    confidence_threshold: float,
+    lang: str,
+    consistent: bool,
+    seed: int,
+    locale: str | None = None,
+    use_safety_sweep: bool,
+) -> dict[str, Any]:
+    """Build the policy-anonymize request body from the Policy de-ID tab's controls.
+
+    The policy sibling of :func:`build_base_opts`, with two deliberate omissions: no ``method``
+    (the policy selects the per-label action, so a method would be silently overridden) and no
+    ``keep_mapping`` (the policy decides reversibility; the service always requests it). ``seed``
+    is included only when ``consistent`` is on, and ``locale`` only when non-empty — both apply to
+    the surrogate (``replace``-based) policies and are ignored by the masking ones. ``text`` is not
+    in the payload (the caller passes it positionally to ``service.anonymize_policy``).
+    """
+    opts: dict[str, Any] = {
+        "policy": policy,
+        "confidence_threshold": confidence_threshold,
+        "lang": lang,
+        "consistent": consistent,
+        "use_safety_sweep": use_safety_sweep,
+    }
+    if consistent:
+        opts["seed"] = int(seed)
+    if locale and locale.strip():
+        opts["locale"] = locale.strip()
+    return opts
+
+
 def build_batch_table(
     notes: list[str], results: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:

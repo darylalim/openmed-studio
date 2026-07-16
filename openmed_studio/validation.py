@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from .engine import DeidMethod
+from .engine import DeidMethod, Policy
 
 
 def _max_text_chars() -> int:
@@ -182,6 +182,32 @@ class ZeroShotRequest(_Strict):
     confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
 
+class AnonymizePolicyRequest(_Strict):
+    """Policy-driven anonymization: a named regulatory profile picks the per-label action.
+
+    Distinct from :class:`DeidentifyRequest` in two deliberate ways. It has **no ``method``**:
+    a ``policy`` overrides the flat method (openmed assigns a per-label action from the profile),
+    so exposing a method here would be a control the policy silently ignores. And it has **no
+    ``keep_mapping``**: reversibility is the policy's decision (surrogate profiles keep a mapping,
+    masking ones don't), so the seam always requests it and surfaces whatever the policy yields.
+    ``policy`` is a required closed :data:`~openmed_studio.engine.Policy` Literal (mirroring
+    ``RequiredModelName``'s "make the caller choose" rationale), so an unknown/typo'd policy is
+    rejected here — with a PHI-safe message — before the engine. The surrogate knobs
+    ``consistent``/``seed``/``locale`` apply to the ``replace``-based (reversible) policies.
+    """
+
+    text: ClinicalText
+    policy: Policy
+    confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    use_smart_merging: bool = True
+    lang: Lang = "en"
+    model_name: ModelName = None
+    consistent: bool = False
+    seed: int | None = None
+    locale: LocaleName = None
+    use_safety_sweep: bool = True
+
+
 class _DeidentifyOptions(_Strict):
     """Shared de-identification options (single + batch requests)."""
 
@@ -223,12 +249,14 @@ class ReidentifyRequest(_Strict):
 
 
 __all__ = [
+    "AnonymizePolicyRequest",
     "DeidMethod",
     "DeidentifyBatchRequest",
     "DeidentifyRequest",
     "ExtractRequest",
     "Lang",
     "NerRequest",
+    "Policy",
     "ReidentifyRequest",
     "ZeroShotRequest",
 ]

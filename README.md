@@ -3,8 +3,9 @@
 A clinical-NLP app built on [OpenMed](https://openmed.life/docs/).
 
 It surfaces OpenMed's toolkit through a [Streamlit](https://streamlit.io/) UI. Today it does
-PII/PHI de-identification (including surrogate anonymization), clinical NER, and zero-shot (GLiNER)
-extraction; deeper anonymization is on the roadmap.
+PII/PHI de-identification (including surrogate anonymization and **policy-driven anonymization** under
+regulatory compliance profiles like HIPAA Safe Harbor and GDPR), clinical NER, and zero-shot (GLiNER)
+extraction; deeper policy tooling (custom policies, cross-document consistency) is on the roadmap.
 
 ## Quickstart
 
@@ -21,7 +22,7 @@ Hugging Face Hub and caches it under `~/.cache/openmed`, so later runs are fast 
 
 ## What it does
 
-The app opens with seven tabs:
+The app opens with eight tabs:
 
 | Tab | What it does |
 | --- | --- |
@@ -31,10 +32,11 @@ The app opens with seven tabs:
 | **Single note** | De-identify one note — original (PII highlighted) beside the redacted text, with a download and a re-identification key. |
 | **Batch** | De-identify up to 100 notes at once — a results table with per-note entity counts; a failing note is isolated as a `Failed` row instead of aborting the batch. |
 | **Anonymize** | Replace *detected* PII/PHI with realistic *fake* surrogates rather than masks; round-trips through Re-identify. |
-| **Re-identify** | Restore originals from a kept mapping (auto-filled from the last Single note or Anonymize run). |
+| **Policy de-ID** | Anonymize under a **regulatory policy** (HIPAA Safe Harbor, GDPR pseudonymization, PIPEDA, UK ICO, …) — the policy decides, per entity type, whether to mask, redact, or surrogate. Masking policies are irreversible; surrogate policies keep a re-identification key. |
+| **Re-identify** | Restore originals from a kept mapping (auto-filled from the last Single note, Anonymize, or Policy de-ID run). |
 
-Detect, Clinical NER, Zero-shot, and Single note render matched entities as highlighted text with a
-color legend, plus an entity table. A few more things worth knowing:
+Detect, Clinical NER, Zero-shot, Single note, and Policy de-ID render matched entities as highlighted
+text with a color legend, plus an entity table. A few more things worth knowing:
 
 - Clinical NER and Zero-shot each pick a domain (Disease, Pharmaceutical, Chemical, Anatomy,
   Genomics, Protein, Oncology, Species, Pathology, Hematology — plus a broad Medical model for NER).
@@ -44,11 +46,17 @@ color legend, plus an entity table. A few more things worth knowing:
   "biopsy site"); all labels are extracted together in one pass. It needs the optional `gliner`
   backend — see [Zero-shot (GLiNER)](#zero-shot-gliner).
 - Anonymize leaves anything the model misses in place, so review the output before sharing.
+- Policy de-ID picks a compliance profile instead of a method: the policy decides each entity type's
+  action, so the same note anonymizes differently under each. A live preview shows the policy's default
+  action, whether it is reversible, and whether it enforces the safety sweep. Masking policies (HIPAA
+  Safe Harbor) are irreversible; surrogate policies (GDPR pseudonymization, PIPEDA, UK ICO) keep a
+  re-identification key that round-trips through Re-identify.
 
 ### Controls
 
 - The sidebar reports the engine's model / backend / load state and holds the one global filter: the
-  detection language (12 supported), which applies to Detect, Single note, Batch, and Anonymize.
+  detection language (12 supported), which applies to Detect, Single note, Batch, Anonymize, and
+  Policy de-ID.
 - **Single note** and **Batch** each expose the de-identification method (`mask` / `remove` /
   `replace` / `hash` / `shift_dates` / `format_preserve`), a confidence slider, `keep_mapping`, and
   an Advanced expander whose knobs follow the chosen method:

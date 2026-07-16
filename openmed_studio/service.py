@@ -226,6 +226,43 @@ def deidentify(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
     return _deidentify_dict(result, method=req.method, keep_mapping=req.keep_mapping)
 
 
+def anonymize_policy(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any]:
+    """Anonymize one note under a named regulatory policy; returns the de-identify dict shape.
+
+    Wraps ``engine.deidentify(policy=...)`` (the policy overrides the flat method, assigning a
+    per-label action from that compliance profile — so no ``method`` is sent). ``keep_mapping`` is
+    not a request field: **reversibility is the policy's decision.** The seam passes
+    ``keep_mapping=False`` and lets openmed OR in the profile's own flag — so the reversible
+    surrogate policies (GDPR/PIPEDA/UK ICO) keep a re-identification key while the masking policies
+    (HIPAA Safe Harbor, strict-no-leak) stay irreversible. Forcing ``True`` here would wrongly make
+    a masking policy reversible, contradicting its posture (and the tab's "irreversible" preview).
+    The dict adapter is then asked to **surface** whatever mapping the policy produced (``None`` for
+    a masking one). Reuses ``_validate``/``_run``/``_deidentify_dict`` verbatim; an unknown policy is
+    rejected by validation (the closed :data:`~openmed_studio.engine.Policy` Literal) before the
+    engine, with a PHI-safe message. The returned ``method`` field carries the policy name.
+    """
+    req = _validate(validation.AnonymizePolicyRequest, {"text": text, **opts})
+    result = _run(
+        lambda: engine.deidentify(
+            req.text,
+            policy=req.policy,
+            confidence_threshold=req.confidence_threshold,
+            use_smart_merging=req.use_smart_merging,
+            lang=req.lang,
+            model_name=req.model_name,
+            # The policy's own reversibility decides (openmed ORs it); don't force it on.
+            keep_mapping=False,
+            consistent=req.consistent,
+            seed=req.seed,
+            locale=req.locale,
+            use_safety_sweep=req.use_safety_sweep,
+        )
+    )
+    # Surface whatever mapping the policy produced (present for reversible policies, None for
+    # masking ones) — this ``keep_mapping`` is "include the mapping in the dict", not a request.
+    return _deidentify_dict(result, method=req.policy, keep_mapping=True)
+
+
 def deidentify_batch(
     engine: PIIEngine, items: list[str], **opts: Any
 ) -> dict[str, Any]:

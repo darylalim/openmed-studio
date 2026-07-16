@@ -225,6 +225,89 @@ def test_deidentify_forwards_use_smart_merging_to_engine() -> None:
     assert captured["use_smart_merging"] is False
 
 
+# --- policy-driven anonymization (stub engine) ------------------------------
+
+
+def test_anonymize_policy_returns_deidentify_dict() -> None:
+    # Flows through engine.deidentify + _deidentify_dict (Option A), so it yields the same
+    # {deidentified_text, method, entities, mapping} shape — with the policy name in `method`.
+    result = service.anonymize_policy(
+        _stub(), "Patient John.", policy="hipaa_safe_harbor"
+    )
+    assert result["deidentified_text"] == "[first_name] A. Doe"
+    assert (
+        result["method"] == "hipaa_safe_harbor"
+    )  # the policy name rides the method slot
+    assert result["entities"] == [
+        {
+            "label": "first_name",
+            "text": "John",
+            "start": 0,
+            "end": 4,
+            "confidence": 0.99,
+        }
+    ]
+
+
+def test_anonymize_policy_forwards_policy_and_lets_policy_decide_mapping() -> None:
+    # The seam forwards the validated policy but does NOT force keep_mapping: reversibility is the
+    # policy's call (openmed ORs the profile's own flag), so masking policies stay irreversible.
+    # It sends NO method (the policy overrides it).
+    engine, captured = _capturing()  # captures engine.deidentify kwargs
+    service.anonymize_policy(
+        engine, "x", policy="gdpr_pseudonymization", consistent=True, seed=7
+    )
+    assert captured["policy"] == "gdpr_pseudonymization"
+    assert captured["keep_mapping"] is False  # not forced on — the policy decides
+    assert captured["consistent"] is True
+    assert captured["seed"] == 7
+    assert "method" not in captured  # policy overrides method; none is sent
+
+
+def test_anonymize_policy_surfaces_a_policy_forced_mapping() -> None:
+    # A reversible policy makes openmed return a mapping even though the seam passes
+    # keep_mapping=False; the dict adapter surfaces it to the UI. Modeled with a stub whose
+    # deidentify returns a mapping regardless (as a reversible profile does).
+    class _Reversible(_StubEngine):
+        def deidentify(self, _text, **_):
+            return SimpleNamespace(
+                deidentified_text="ok", pii_entities=[], mapping={"Wong": "John"}
+            )
+
+    engine = cast("PIIEngine", _Reversible())
+    result = service.anonymize_policy(engine, "x", policy="gdpr_pseudonymization")
+    assert result["mapping"] == {"Wong": "John"}
+
+
+def test_anonymize_policy_masking_policy_yields_no_mapping() -> None:
+    # A masking policy leaves the seam's keep_mapping=False in effect, so openmed returns no
+    # mapping and the adapter surfaces None (the default _StubEngine gives mapping only when
+    # keep_mapping is requested — which the policy path does not).
+    result = service.anonymize_policy(
+        _stub(), "Patient John.", policy="hipaa_safe_harbor"
+    )
+    assert result["mapping"] is None
+
+
+def test_anonymize_policy_value_error_maps_to_service_error() -> None:
+    with pytest.raises(ServiceError, match="bad option"):
+        service.anonymize_policy(
+            _raising(ValueError("bad option")), "x", policy="hipaa_safe_harbor"
+        )
+
+
+def test_anonymize_policy_backend_failure_does_not_leak() -> None:
+    with pytest.raises(ServiceError) as excinfo:
+        service.anonymize_policy(
+            _raising(RuntimeError("policy model exploded")),
+            "x",
+            policy="hipaa_safe_harbor",
+        )
+    message = str(excinfo.value)
+    assert "exploded" not in message
+    assert "unavailable" in message.lower()
+
+
 def test_deidentify_batch_returns_per_item_results() -> None:
     result = service.deidentify_batch(
         _stub(), ["Patient John.", "Patient Jane."], method="mask"

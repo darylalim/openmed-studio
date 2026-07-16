@@ -213,6 +213,64 @@ def test_zero_shot_default_confidence_is_0_6() -> None:
     assert req.confidence_threshold == 0.6
 
 
+# --- policy-driven anonymization request guards -----------------------------
+
+
+def test_anonymize_policy_accepts_valid_request() -> None:
+    result = service.anonymize_policy(ENGINE, "x", policy="hipaa_safe_harbor")
+    assert result["deidentified_text"] == "ok"
+    assert (
+        result["method"] == "hipaa_safe_harbor"
+    )  # the policy name rides the method slot
+
+
+def test_anonymize_policy_rejects_missing_policy() -> None:
+    # policy is a REQUIRED closed Literal — an absent one must be rejected, not defaulted.
+    with pytest.raises(ServiceError):
+        service.anonymize_policy(ENGINE, "x")
+
+
+def test_anonymize_policy_rejects_unknown_policy() -> None:
+    # An unknown/typo'd policy is caught by the Policy Literal before the engine.
+    with pytest.raises(ServiceError):
+        service.anonymize_policy(ENGINE, "x", policy="not_a_real_policy")
+
+
+def test_anonymize_policy_rejects_method_field() -> None:
+    # There is deliberately no `method` on the request (the policy overrides it), so passing one
+    # is an unknown field that extra="forbid" rejects — not a silently-ignored control.
+    with pytest.raises(ServiceError):
+        service.anonymize_policy(ENGINE, "x", policy="hipaa_safe_harbor", method="mask")
+
+
+def test_anonymize_policy_rejects_keep_mapping_field() -> None:
+    # keep_mapping isn't a request field either (the policy decides reversibility), so it's a
+    # forbidden unknown field, not a user toggle.
+    with pytest.raises(ServiceError):
+        service.anonymize_policy(
+            ENGINE, "x", policy="hipaa_safe_harbor", keep_mapping=False
+        )
+
+
+def test_anonymize_policy_rejects_out_of_range_confidence() -> None:
+    with pytest.raises(ServiceError):
+        service.anonymize_policy(
+            ENGINE, "x", policy="hipaa_safe_harbor", confidence_threshold=1.5
+        )
+
+
+def test_anonymize_policy_rejects_bad_lang() -> None:
+    with pytest.raises(ServiceError):
+        service.anonymize_policy(ENGINE, "x", policy="hipaa_safe_harbor", lang="zz")
+
+
+def test_anonymize_policy_rejects_malformed_locale() -> None:
+    with pytest.raises(ServiceError):
+        service.anonymize_policy(
+            ENGINE, "x", policy="gdpr_pseudonymization", locale="not a locale!"
+        )
+
+
 def test_batch_rejects_empty_items() -> None:
     with pytest.raises(ServiceError):
         service.deidentify_batch(ENGINE, [])
@@ -363,4 +421,44 @@ def test_zero_shot_models_resolve_in_openmed() -> None:
         assert model.label_domain in label_domains, (
             f"{domain!r} label_domain {model.label_domain!r} is not an openmed label "
             f"vocabulary (available: {sorted(label_domains)})"
+        )
+
+
+def test_validation_policy_matches_openmed() -> None:
+    # Keep the app's Policy enum in sync with openmed's canonical policy set — the policy analogue
+    # of test_validation_deidmethod_matches_openmed (registry metadata only, no model load).
+    from openmed.core.policy import PolicyName
+
+    assert set(typing.get_args(validation.Policy)) == {p.value for p in PolicyName}
+
+
+def test_policy_models_resolve_in_openmed() -> None:
+    # Pin the curated policy catalog against openmed's live registry the way the NER/zero-shot
+    # guards do: every POLICY_MODELS entry names a real policy, and the behavioral flags baked for
+    # the UI preview (default_action/keep_mapping/reversible_id/safety_sweep_mandatory) still match
+    # openmed's loaded PolicyProfile — so a policy-schema change fails CI rather than leaving the
+    # preview stale. Registry/profile metadata only — no model download.
+    from openmed.core.policy import list_policies, load_policy
+
+    from openmed_studio.engine import POLICY_MODELS
+
+    available = set(list_policies())
+    for label, model in POLICY_MODELS.items():
+        assert model.name in available, (
+            f"policy {model.name!r} ({label!r}) is not in openmed's registry"
+        )
+        profile = load_policy(model.name)
+        # default_action is a str today but compare by value in case openmed makes it an enum.
+        assert (
+            getattr(profile.default_action, "value", profile.default_action)
+            == model.default_action
+        ), f"{model.name!r} default_action drifted"
+        assert profile.keep_mapping == model.keep_mapping, (
+            f"{model.name!r} keep_mapping drifted"
+        )
+        assert profile.reversible_id == model.reversible_id, (
+            f"{model.name!r} reversible_id drifted"
+        )
+        assert profile.safety_sweep_mandatory == model.safety_sweep_mandatory, (
+            f"{model.name!r} safety_sweep_mandatory drifted"
         )

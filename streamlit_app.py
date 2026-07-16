@@ -28,6 +28,7 @@ import streamlit as st
 from openmed_studio import (
     DEFAULT_PII_MODEL,
     NER_MODELS,
+    POLICY_MODELS,
     ZERO_SHOT_MODELS,
     __version__,
     service,
@@ -37,6 +38,7 @@ from openmed_studio.validation import MAX_BATCH_ITEMS, MAX_ZERO_SHOT_LABELS, Lan
 from ui_helpers import (
     build_base_opts,
     build_batch_table,
+    build_policy_opts,
     render_highlighted,
     render_legend,
     render_plain,
@@ -140,22 +142,26 @@ def _submit_deidentify(
     action: str,
     empty_warning: str,
     extra: dict[str, Any] | None = None,
+    call: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Run a de-identify submit and persist its result; return the stored panel state.
 
-    Shared by the Single note + Anonymize tabs — the load-bearing submit→call→persist→handoff
-    sequence in one place so the two can't drift. On submit it warns on empty text, else calls
-    the service; on success it persists ``{text, result, **extra}`` under ``store_key`` and sets
-    the Re-identify handoff via :func:`_set_handoff` — **only here**, never on the panel's
-    re-render, so the handoff can't drift. Returns the stored dict (this run's or a prior run's),
-    so the caller renders the panel from it on every rerun and a failed/empty re-submit warns
-    without blanking the last good panel.
+    Shared by the Single note, Anonymize, and Policy de-ID tabs — the load-bearing
+    submit→call→persist→handoff sequence in one place so they can't drift. On submit it warns on
+    empty text, else calls ``call`` (defaults to :func:`service.deidentify`; the Policy tab passes
+    :func:`service.anonymize_policy`); on success it persists ``{text, result, **extra}`` under
+    ``store_key`` and sets the Re-identify handoff via :func:`_set_handoff` — **only here**, never
+    on the panel's re-render, so the handoff can't drift. All three surfaces return a result of the
+    same ``{deidentified_text, method, entities, mapping}`` shape, so the persist/handoff is
+    identical regardless of ``call``. Returns the stored dict (this run's or a prior run's), so the
+    caller renders the panel from it on every rerun and a failed/empty re-submit warns without
+    blanking the last good panel.
     """
     if submitted:
         if not text.strip():
             st.warning(empty_warning)
         else:
-            result = _call(service.deidentify, text, action=action, **opts)
+            result = _call(call or service.deidentify, text, action=action, **opts)
             if result is not None:
                 st.session_state[store_key] = {
                     "text": text,
@@ -190,7 +196,7 @@ def _render_deid_result(
     export_caveat: str | None = None,
     show_entities: bool = False,
 ) -> None:
-    """Shared result panel for the Single note + Anonymize tabs.
+    """Shared result panel for the Single note, Anonymize, and Policy de-ID tabs.
 
     Renders the original-vs-output columns + Download (with an optional ``export_caveat``
     beside the button), optionally the entity table, and a button that reveals the
@@ -541,6 +547,144 @@ def _render_anonymize(lang: str) -> None:
     )
 
 
+def _render_policy_anon(lang: str) -> None:
+    """Anonymize under a named regulatory policy (openmed's ``deidentify(policy=...)``).
+
+    A distinct capability from the Anonymize tab's flat ``method="replace"``: a compliance policy
+    (HIPAA Safe Harbor, GDPR, …) assigns a per-label ACTION — mask, redact, surrogate, or keep —
+    encoding that legal standard, so the same note anonymizes differently under each. The policy
+    picks the action, so there is deliberately **no Method control**. Like ``_render_anonymize``
+    it is intentionally **not** an ``@st.fragment``: the reversible policies (the GDPR/PIPEDA/ICO
+    surrogate profiles) keep a mapping, and the form submit must trigger a full rerun so the
+    Re-identify fragment re-reads the ``last_deidentified``/``last_mapping`` handed off here.
+    """
+    st.caption(
+        "Anonymize under a regulatory **policy** — a compliance profile that decides, per entity "
+        "type, whether to mask, redact, replace with a surrogate, or keep it, so the same note "
+        "anonymizes differently under each. Masking policies are irreversible; the surrogate "
+        "policies (GDPR, PIPEDA, UK ICO) keep a re-identification key that round-trips through the "
+        "Re-identify tab. As with all model-based de-identification, anything the model misses is "
+        "left in place — review before sharing."
+    )
+    # The policy picker + preview live OUTSIDE the form, so choosing a policy reruns and refreshes
+    # the preview (this tab is a full rerun, like Single note, whose method picker also sits
+    # outside its form). model_name resolves via POLICY_MODELS[policy_label].name.
+    policy_label = st.selectbox("Policy", list(POLICY_MODELS), key="policy_pick")
+    model = POLICY_MODELS[policy_label]
+    reversibility = "reversible with a key" if model.keep_mapping else "irreversible"
+    sweep = (
+        "safety sweep enforced"
+        if model.safety_sweep_mandatory
+        else "safety sweep optional"
+    )
+    st.caption(
+        f"**{policy_label}** (`{model.name}`) · default action: {model.default_action} · "
+        f"{reversibility} · {sweep}"
+    )
+    st.caption(model.description)
+
+    with st.form("policy_anon"):
+        text = st.text_area(
+            "Clinical note to anonymize under a policy",
+            value=EXAMPLE_NOTE,
+            height=200,
+            key="policy_text",
+        )
+        confidence = st.slider(
+            "Confidence threshold",
+            0.0,
+            1.0,
+            0.5,
+            0.05,
+            key="policy_conf",
+            help="Lower keeps more entities (higher PHI recall); the policy then decides each "
+            "entity's action.",
+        )
+        # seed needs a default: it is assigned only under `if consistent`. consistent/locale/
+        # use_safety_sweep are assigned unconditionally in the expander body (which always runs).
+        seed = 0
+        with st.expander("Advanced", icon=":material/tune:"):
+            st.caption(
+                "Surrogate options apply to the replace-based policies (GDPR, PIPEDA, UK ICO, "
+                "Australia); the masking policies ignore them."
+            )
+            consistent = st.toggle(
+                "Deterministic surrogates",
+                value=True,
+                key="policy_consistent",
+                help="Same input → same surrogate, so repeated mentions resolve to one identity.",
+            )
+            if consistent:
+                seed = st.number_input(
+                    "Seed",
+                    value=42,
+                    step=1,
+                    key="policy_seed",
+                    help="Reproducible surrogates across runs.",
+                )
+            locale = st.text_input(
+                "Surrogate locale",
+                value="",
+                placeholder="e.g. en_US, pt_BR",
+                key="policy_locale",
+                help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the "
+                "language.",
+            )
+            use_safety_sweep = st.toggle(
+                "Safety sweep",
+                value=True,
+                key="policy_sweep",
+                help="Run a deterministic structured-identifier sweep after model detection. "
+                "Some policies enforce it regardless.",
+            )
+        submitted = st.form_submit_button(
+            "Anonymize under policy", type="primary", icon=":material/policy:"
+        )
+
+    opts = build_policy_opts(
+        policy=model.name,
+        confidence_threshold=confidence,
+        lang=lang,
+        consistent=consistent,
+        seed=int(seed),
+        locale=locale,
+        use_safety_sweep=use_safety_sweep,
+    )
+    stored = _submit_deidentify(
+        submitted=submitted,
+        text=text,
+        opts=opts,
+        store_key="policy_result",
+        action=f"Anonymizing under {policy_label}",
+        empty_warning="Enter some text to anonymize.",
+        extra={"policy_label": policy_label, "reversible": model.keep_mapping},
+        call=service.anonymize_policy,
+    )
+    if not stored:
+        return
+    text, result = stored["text"], stored["result"]
+    entities = result["entities"]
+    m1, m2 = st.columns(2)
+    m1.metric("Entities found", len(entities), border=True)
+    m2.metric("Policy", stored["policy_label"], border=True)
+    _render_deid_result(
+        text,
+        result,
+        out_caption=(
+            f"Anonymized under {stored['policy_label']} · "
+            + (
+                "reversible — a key is kept"
+                if stored.get("reversible")
+                else "irreversible"
+            )
+        ),
+        out_filename="policy_anonymized.txt",
+        dl_key="dl_policy",
+        export_caveat="May still contain any PII the model missed — review before sharing.",
+        show_entities=True,
+    )
+
+
 @st.fragment
 def _render_reidentify() -> None:
     st.caption(
@@ -817,10 +961,11 @@ def _render_sidebar() -> str:
 
     Per Streamlit layout guidance the sidebar holds only app-level state: the engine
     readout and the one cross-cutting filter — ``lang``, which selects the per-language
-    detection model/locale for the Detect, Single note, Batch, and Anonymize tabs. The
-    de-identification *method* and its dependent knobs live in the tabs that perform
-    de-identification (Single note + Batch, via :func:`_render_deid_controls`), so tabs
-    that don't de-identify (Clinical NER, Re-identify) show no stray controls.
+    detection model/locale for the Detect, Single note, Batch, Anonymize, and Policy de-ID
+    tabs. The de-identification *method* and its dependent knobs live in the tabs that perform
+    de-identification (Single note + Batch, via :func:`_render_deid_controls`; Anonymize and
+    Policy de-ID carry their own), so tabs that don't de-identify (Clinical NER, Re-identify)
+    show no stray controls.
     """
     with st.sidebar:
         st.subheader("Engine")
@@ -837,9 +982,9 @@ def _render_sidebar() -> str:
             "Language",
             LANGS,
             index=0,
-            help="Detection language for the Detect, Single note, Batch, and Anonymize "
-            "tabs (selects the per-language model/locale). Clinical NER and Re-identify "
-            "don't use it.",
+            help="Detection language for the Detect, Single note, Batch, Anonymize, and "
+            "Policy de-ID tabs (selects the per-language model/locale). Clinical NER and "
+            "Re-identify don't use it.",
         )
     return lang
 
@@ -858,12 +1003,21 @@ def main() -> None:
     st.title("OpenMed Studio")
     st.caption(
         "Detect PII, run clinical NER, extract any entity type zero-shot, or de-identify "
-        "clinical text with OpenMed, review the entities, and round-trip with "
-        "re-identification. The model runs in-process; pick the de-identification method in "
-        "the Single note and Batch tabs."
+        "clinical text with OpenMed — by method (Single note / Batch), surrogate replacement "
+        "(Anonymize), or a regulatory policy (Policy de-ID) — review the entities, and "
+        "round-trip with re-identification. The model runs in-process."
     )
 
-    tab_detect, tab_ner, tab_zero, tab_single, tab_batch, tab_anon, tab_reid = st.tabs(
+    (
+        tab_detect,
+        tab_ner,
+        tab_zero,
+        tab_single,
+        tab_batch,
+        tab_anon,
+        tab_policy,
+        tab_reid,
+    ) = st.tabs(
         [
             ":material/search: Detect",
             ":material/biotech: Clinical NER",
@@ -871,6 +1025,7 @@ def main() -> None:
             ":material/description: Single note",
             ":material/stacks: Batch",
             ":material/masks: Anonymize",
+            ":material/policy: Policy de-ID",
             ":material/lock_open: Re-identify",
         ]
     )
@@ -886,6 +1041,8 @@ def main() -> None:
         _render_batch(lang)
     with tab_anon:
         _render_anonymize(lang)
+    with tab_policy:
+        _render_policy_anon(lang)
     with tab_reid:
         _render_reidentify()
 

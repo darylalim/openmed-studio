@@ -331,6 +331,148 @@ DeidMethod = Literal[
     "mask", "remove", "replace", "hash", "shift_dates", "format_preserve"
 ]
 
+# The regulatory anonymization policies openmed's deidentify(policy=...) accepts. Mirrors
+# openmed.core.policy.PolicyName; test_validation_policy_matches_openmed enforces they stay in
+# sync. A policy is a per-entity-label ACTION rulebook (a compliance profile) that OVERRIDES
+# ``method`` when set — it assigns mask/redact/replace/keep per label per that legal standard,
+# and can force reversibility (a kept mapping) and the safety sweep. See POLICY_MODELS.
+Policy = Literal[
+    "hipaa_safe_harbor",
+    "hipaa_expert_review_assist",
+    "gdpr_pseudonymization",
+    "gdpr_art9_health",
+    "research_limited_dataset",
+    "strict_no_leak",
+    "clinical_minimal_redaction",
+    "canada_pipeda",
+    "uk_ico_anonymisation",
+    "australia_privacy_act",
+]
+
+
+class PolicyModel(NamedTuple):
+    """A curated regulatory anonymization policy plus its openmed ``PolicyProfile`` metadata.
+
+    Unlike :class:`NerModel`/:class:`ZeroShotModel` a policy loads **no model of its own** — it
+    reuses the shared PII model and only changes the per-label ACTION assignment (a compliance
+    profile). The behavioral flags below are baked at authoring time so the UI can preview a
+    policy with **no runtime openmed import**; the drift guard
+    ``tests/test_validation.py::test_policy_models_resolve_in_openmed`` pins them against
+    openmed's live ``PolicyProfile`` (``load_policy``), so a policy-schema change fails CI rather
+    than leaving this table stale. ``description`` is the one hand-authored field — openmed ships
+    no per-policy description (only a ``name``/``posture`` slug).
+    """
+
+    # canonical policy name passed to deidentify(policy=...); a Policy Literal value
+    name: str
+    # one-line, hand-authored summary of what the policy does (openmed ships none)
+    description: str
+    # the profile's fallback action (mask/redact/replace/keep) — pinned against load_policy
+    default_action: str
+    # whether the policy keeps a surrogate->original mapping (i.e. is reversible) — pinned
+    keep_mapping: bool
+    # whether entities get a stable reversible id — pinned
+    reversible_id: bool
+    # whether the policy forces the deterministic structured-identifier safety sweep — pinned
+    safety_sweep_mandatory: bool
+
+
+# openmed's 10 built-in compliance profiles, keyed by a friendly display name (the picker shows
+# the key). Each maps to a canonical policy that, passed as deidentify(policy=...), OVERRIDES the
+# flat method and assigns a per-label action encoding that legal standard — masking (irreversible)
+# or surrogate replacement (reversible with a key), per the profile. Ordered from the most widely
+# used (HIPAA Safe Harbor) outward.
+POLICY_MODELS: dict[str, PolicyModel] = {
+    "HIPAA Safe Harbor": PolicyModel(
+        "hipaa_safe_harbor",
+        "Mask all 18 HIPAA identifiers; irreversible (US HIPAA §164.514(b)).",
+        "mask",
+        False,
+        False,
+        True,
+    ),
+    "HIPAA Expert Review": PolicyModel(
+        "hipaa_expert_review_assist",
+        "Redact direct identifiers but keep clinical detail — a review-assist posture, "
+        "not full de-identification.",
+        "redact",
+        False,
+        False,
+        False,
+    ),
+    "GDPR Pseudonymization": PolicyModel(
+        "gdpr_pseudonymization",
+        "Replace identifiers with realistic surrogates and keep clinical terms; reversible "
+        "with a key (EU GDPR Art. 4(5)).",
+        "replace",
+        True,
+        True,
+        True,
+    ),
+    "GDPR Art. 9 Health": PolicyModel(
+        "gdpr_art9_health",
+        "Special-category health data: surrogate identifiers with high-recall detection; "
+        "reversible (EU GDPR Art. 9).",
+        "replace",
+        True,
+        True,
+        True,
+    ),
+    "Research Limited Dataset": PolicyModel(
+        "research_limited_dataset",
+        "Mask direct identifiers but keep dates, ages and locations for research "
+        "(HIPAA limited dataset).",
+        "mask",
+        False,
+        False,
+        True,
+    ),
+    "Strict No-Leak": PolicyModel(
+        "strict_no_leak",
+        "Maximum-recall detection, mask everything — the most aggressive profile.",
+        "mask",
+        False,
+        False,
+        True,
+    ),
+    "Clinical Minimal Redaction": PolicyModel(
+        "clinical_minimal_redaction",
+        "Mask only direct identifiers; keep quasi-identifiers and clinical detail "
+        "(most readable, least safe).",
+        "mask",
+        False,
+        False,
+        False,
+    ),
+    "Canada PIPEDA": PolicyModel(
+        "canada_pipeda",
+        "Surrogate identifiers per Canada's PIPEDA; reversible with a key.",
+        "replace",
+        True,
+        True,
+        True,
+    ),
+    "UK ICO Anonymisation": PolicyModel(
+        "uk_ico_anonymisation",
+        "Surrogate quasi-identifiers per the UK ICO anonymisation code; reversible with a key.",
+        "replace",
+        True,
+        True,
+        True,
+    ),
+    "Australia Privacy Act": PolicyModel(
+        "australia_privacy_act",
+        "Surrogate identifiers per the Australian Privacy Act APPs.",
+        "replace",
+        False,
+        False,
+        True,
+    ),
+}
+
+# The default policy: HIPAA Safe Harbor (the most widely used de-identification standard).
+DEFAULT_POLICY_MODEL = POLICY_MODELS["HIPAA Safe Harbor"].name
+
 
 def _entities(result: Any) -> list[Any]:
     """``extract_pii`` may return a list or an object exposing the entities."""
@@ -559,6 +701,7 @@ class PIIEngine:
         date_shift_days: int | None = None,
         keep_year: bool = True,
         use_safety_sweep: bool = True,
+        policy: str | None = None,
     ) -> Any:
         """Rewrite ``text`` with PII redacted via ``method``.
 
@@ -583,6 +726,14 @@ class PIIEngine:
         ``"date"``) rather than the literal ``"DATE"``, so ``shift_dates`` no
         longer falls back to masking. (Earlier versions masked dates instead;
         ``tests/test_pii_model.py`` verifies the shift now happens.)
+
+        ``policy`` (a compliance-profile name, e.g. ``"hipaa_safe_harbor"`` — a value
+        of :data:`Policy`) is forwarded to openmed unchanged. When set it **overrides**
+        ``method``: openmed assigns a per-label action (mask/redact/replace/keep) from
+        that profile and may force ``keep_mapping``/the safety sweep. The method-driven
+        tabs leave it ``None`` (no policy); the ``Policy de-ID`` tab sets it via
+        :data:`POLICY_MODELS`. ``None`` is forwarded too — openmed treats it as "no
+        policy override", so the default de-identification path is unaffected.
         """
         from openmed import deidentify
 
@@ -598,6 +749,7 @@ class PIIEngine:
             date_shift_days=date_shift_days,
             keep_year=keep_year,
             use_safety_sweep=use_safety_sweep,
+            policy=policy,
             **self._model_kwargs(lang=lang, model_name=model_name),
         )
 

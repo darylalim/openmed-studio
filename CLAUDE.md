@@ -9,9 +9,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 library itself (that lives at `github.com/maziyarpanahi/openmed`). The aim is to surface OpenMed's
 full capability set (clinical NER, PII/PHI de-identification, anonymization, zero-shot extraction).
 **Today it implements PII/PHI de-identification — including surrogate anonymization (the `Anonymize`
-tab over `deidentify(method="replace")`) — clinical NER (token-classification), and zero-shot
-(GLiNER) extraction (the `Zero-shot` tab over `openmed.ner.infer`, behind the optional `gliner`
-extra).** Deeper anonymization (OpenMed's `Anonymizer`/`policy` machinery) is the roadmap.
+tab over `deidentify(method="replace")`) and **policy-driven anonymization** (the `Policy de-ID` tab
+over `deidentify(policy=…)` — OpenMed's regulatory compliance profiles: HIPAA Safe Harbor, GDPR
+pseudonymization, etc.) — clinical NER (token-classification), and zero-shot (GLiNER) extraction (the
+`Zero-shot` tab over `openmed.ner.infer`, behind the optional `gliner` extra).** Deeper policy tooling
+(user-authored custom policies, cross-document `SurrogateVault` consistency) is the roadmap.
 It's a [Streamlit](https://streamlit.io/) app (`streamlit_app.py`) running the model **in-process**
 through a framework-free `PIIEngine` behind a thin service seam (`openmed_studio/service.py`) — no
 separate web service. (It was a FastAPI service + HTTP client; that boundary was removed — see "What
@@ -72,9 +74,9 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | File | Pins |
 |------|------|
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
-| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` path, the `ServiceError` taxonomy (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable"), and batch per-note isolation |
+| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable"), and batch per-note isolation |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI), and the openmed-sync guards |
-| `test_engine.py` | `PIIEngine` lazy-load + backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — the zero-shot test also pins that it builds the in-memory index with `family="gliner"` and leaves `is_loaded` False), and the one-pass `reidentify` (see "Known gotchas") |
+| `test_engine.py` | `PIIEngine` lazy-load + backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), and a `--run-model` policy test (masking vs reversible-surrogate) |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub) |
 
@@ -86,9 +88,13 @@ Named guards worth knowing — each **fails CI when openmed drifts**:
 `test_zero_shot_models_resolve_in_openmed` (`ZERO_SHOT_MODELS`↔registry, incl. baked
 `recommended_confidence`/`entity_types` and each `label_domain`⊆`openmed.ner.available_domains()`;
 registry/label metadata only — no download, so it runs in CI without the `gliner` extra),
-`test_deidentify_forwards_every_openmed_param_or_allowlists_it` (introspects
-`inspect.signature(openmed.deidentify)`, pinning the forwarded-vs-excluded split from "OpenMed API"),
-and `test_shift_dates_actually_shifts_dates` (see "Known gotchas").
+`test_validation_policy_matches_openmed` (`Policy`↔`openmed.core.policy.PolicyName`),
+`test_policy_models_resolve_in_openmed` (`POLICY_MODELS`↔`list_policies()`/`load_policy()`, incl. baked
+`default_action`/`keep_mapping`/`reversible_id`/`safety_sweep_mandatory`; profile metadata only — no
+download), `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (introspects
+`inspect.signature(openmed.deidentify)`, pinning the forwarded-vs-excluded split from "OpenMed API" —
+`policy` is now **forwarded**, not excluded), and `test_shift_dates_actually_shifts_dates` (see "Known
+gotchas").
 
 Model tests (`test_pii_model.py` + the `@pytest.mark.model` tests in `test_engine.py`) are
 **skipped by default** and drive the real engine via the shared `loader` fixture; `--run-model` opts
@@ -141,6 +147,13 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       `extract_pii` (no sweep) misses — the `Detect` caption flags this. `use_smart_merging`
       (default on) is forwarded too. Every method delegates straight to openmed (see "Known gotchas"
       for the `shift_dates` fix).
+    - *Policy anonymization:* `deidentify` also forwards a `policy` param (a compliance-profile name,
+      e.g. `"hipaa_safe_harbor"` — a `Policy` `Literal` value; `None` by default = no policy). When
+      set it **overrides `method`**: openmed assigns a per-label action (mask/redact/replace/keep) from
+      that profile, so the `Policy de-ID` tab sends **no** method. Reversibility is the policy's call —
+      the engine passes `keep_mapping=False` and openmed **ORs** the profile's own `keep_mapping` flag,
+      so the surrogate policies (GDPR/PIPEDA/UK ICO) return a re-identification mapping while the
+      masking policies (HIPAA Safe Harbor, strict-no-leak) stay irreversible (see "Known gotchas").
     - *Clinical NER:* `analyze(text, *, model_name, confidence_threshold=0.0, aggregation_strategy,
       group_entities)` delegates to `analyze_text`. `model_name` is **required** (NER is one model
       per domain; an absent one silently falls back to openmed's disease-only default). `analyze_text`
@@ -171,8 +184,17 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       "tuned for" hint), **not** the output vocabulary — zero-shot's output labels are whatever the
       user types. Its drift guard pins alias/`recommended_confidence`/`entity_types`/`label_domain` but
       **not** `info.category` (zero-shot models bucket into only a few broad categories, not per-domain).
+      Policy anonymization has its own parallel `Policy` `Literal` (the 10 canonical policy names,
+      mirroring `openmed.core.policy.PolicyName`) + `PolicyModel` `NamedTuple` + `POLICY_MODELS`
+      (`dict[friendly display name → PolicyModel]`, 10 entries) + `DEFAULT_POLICY_MODEL`. Unlike
+      `NerModel`/`ZeroShotModel` a policy loads **no model of its own** — it reuses the shared PII model
+      and only changes the per-label action — so `PolicyModel` bakes *behavioral* flags
+      (`default_action`/`keep_mapping`/`reversible_id`/`safety_sweep_mandatory`, pinned against the live
+      `PolicyProfile` by the drift guard) plus a hand-authored `description` (openmed ships none), not
+      model-identity fields.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`, `ZeroShotRequest`,
-    `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, all `extra="forbid"`) plus
+    `AnonymizePolicyRequest`, `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, all
+    `extra="forbid"`) plus
     the bound primitives: `ClinicalText`/`MAX_TEXT_CHARS` (from `OPENMED_STUDIO_MAX_TEXT_LENGTH` via
     `_max_text_chars` at import), `MAX_BATCH_ITEMS`, `MAX_MAPPING_ENTRIES`, `Lang`,
     `_check_model_name`, `RequiredModelName` (the non-optional model id `NerRequest`/`ZeroShotRequest`
@@ -181,8 +203,12 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     drops blanks, bounds each label to `MAX_ZERO_SHOT_LABEL_CHARS` (80), dedups case-insensitively
     (harmless duplicates collapse; unknown *fields* still fail via `extra="forbid"`), and caps the set
     at `MAX_ZERO_SHOT_LABELS` (30) — all with errors that name the cap, never a label value (PHI-safe).
-    Imports only `pydantic`/`os`/`re` — no web framework — so it doubles as the in-process validation
-    layer. Re-exports `DeidMethod`.
+    `AnonymizePolicyRequest` requires a `policy` field (the closed `Policy` `Literal`, imported from
+    `engine.py`, so Pydantic rejects a typo/unknown policy PHI-safely *before* the engine) and, unlike
+    `DeidentifyRequest`, carries **no `method`** (the policy overrides it) and **no `keep_mapping`** (the
+    policy decides reversibility) — passing either is a forbidden extra field. Imports only
+    `pydantic`/`os`/`re` — no web framework — so it doubles as the in-process validation layer.
+    Re-exports `DeidMethod` and `Policy`.
   - `service.py` — the single in-process chokepoint (framework-free); every UI engine call funnels
     through it, so nothing bypasses validation:
     - `resolve_backend()` (reads `OPENMED_STUDIO_BACKEND`) and `build_engine()` (the `PIIEngine`
@@ -194,15 +220,22 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       the zero-shot tab surfaces its "run `uv sync --extra gliner`" hint through this branch) into
       `ServiceError` (the old 400/503 split, now capability-neutral since NER/zero-shot flow through it).
     - the dict adapters (`_entity_dict`, `_deidentify_dict`) and the entry points
-      `extract`/`analyze`/`extract_zero_shot`/`deidentify`/`deidentify_batch`/`reidentify`, which
-      validate → call the engine → adapt to plain dicts. `analyze` and `extract_zero_shot` reuse
-      `_validate`/`_run`/`_entity_dict` verbatim; `_entity_dict` falls back to `.score` when there's no
-      `.confidence`, so it handles openmed's zero-shot `Entity` (which exposes `.score`) unchanged.
+      `extract`/`analyze`/`extract_zero_shot`/`deidentify`/`anonymize_policy`/`deidentify_batch`/
+      `reidentify`, which validate → call the engine → adapt to plain dicts. `analyze` and
+      `extract_zero_shot` reuse `_validate`/`_run`/`_entity_dict` verbatim; `_entity_dict` falls back to
+      `.score` when there's no `.confidence`, so it handles openmed's zero-shot `Entity` (which exposes
+      `.score`) unchanged. `anonymize_policy` reuses `deidentify`'s path (Option A): it validates an
+      `AnonymizePolicyRequest`, calls `engine.deidentify(policy=…, keep_mapping=False)` (**no** method —
+      the policy overrides it; **not** forced-`keep_mapping` — the policy decides), and reuses
+      `_deidentify_dict` verbatim (asked to *surface* whatever mapping the policy produced, with the
+      policy name in the `method` slot). Because it routes through `engine.deidentify`, **no test stub
+      needs a new method**.
     - `deidentify_batch` isolates each note: a per-note `ValueError` becomes an `{"ok": False}` row
       so one bad note doesn't abort the batch, while a backend `RuntimeError`/`OSError` propagates
       through `_run` and aborts the whole batch.
   - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`, `DEFAULT_ZERO_SHOT_MODEL`,
-    `NER_MODELS`, `ZERO_SHOT_MODELS`, `PIIEngine`, and `__version__`.
+    `DEFAULT_POLICY_MODEL`, `NER_MODELS`, `ZERO_SHOT_MODELS`, `POLICY_MODELS`, `PIIEngine`, and
+    `__version__`.
 
   It stays a uv **non-package** project, so pytest imports `openmed_studio` via the repo root on
   `sys.path` (`pythonpath = ["."]`; Streamlit adds the app's directory).
@@ -210,21 +243,26 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   Streamlit-free render helpers live in `ui_helpers.py` so they unit-test without a browser.
   - *App + tabs:* `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call`
     runs a `service.*` function in a spinner and renders any `ServiceError`. `main()` titles the
-    page/heading "OpenMed Studio" and lays out the seven tabs (`Detect`→`service.extract`,
+    page/heading "OpenMed Studio" and lays out the eight tabs (`Detect`→`service.extract`,
     `Clinical NER`→`service.analyze`, `Zero-shot`→`service.extract_zero_shot`,
     `Single note`/`Batch`→`service.deidentify[_batch]`,
-    `Anonymize`→`service.deidentify` (`method=replace`), `Re-identify`→`service.reidentify`), guarded
+    `Anonymize`→`service.deidentify` (`method=replace`), `Policy de-ID`→`service.anonymize_policy`
+    (`deidentify(policy=…)`), `Re-identify`→`service.reidentify`), guarded
     by `if __name__ == "__main__"` so importing for tests has no side effects.
   - *Fragments + handoff:* `Detect`/`Clinical NER`/`Zero-shot`/`Batch`/`Re-identify` renderers are
-    `@st.fragment` so an in-tab interaction reruns only that tab; `Single note` and `Anonymize` are
-    **intentionally not**, because their form submit must trigger a full rerun to hand
-    `last_deidentified`/`last_mapping` (via `st.session_state`, not widget keys) to `Re-identify`. `_set_handoff` sets the
-    two together once per submit — the single security-relevant copy of "so a stale mapping can't
-    linger" — *not* on re-render.
-  - *Result persistence:* all four de-identifying surfaces persist their latest result in
-    `st.session_state` (`single_result`/`anon_result` via the shared `_submit_deidentify` helper,
-    which centralizes submit→call→persist→handoff so Single/Anonymize can't drift; plus
-    `batch_result` and `reid_result`) and render from there, so post-submit reruns (a Download, a
+    `@st.fragment` so an in-tab interaction reruns only that tab; `Single note`, `Anonymize`, and
+    `Policy de-ID` are **intentionally not**, because their form submit must trigger a full rerun to
+    hand `last_deidentified`/`last_mapping` (via `st.session_state`, not widget keys) to `Re-identify`
+    (a reversible policy — GDPR/PIPEDA/UK ICO — round-trips this way). `_set_handoff` sets the two
+    together once per submit — the single security-relevant copy of "so a stale mapping can't
+    linger" — *not* on re-render. The shared `_submit_deidentify` helper takes an optional `call=`
+    (defaulting to `service.deidentify`; `Policy de-ID` passes `service.anonymize_policy`) so all three
+    surfaces share the one submit→call→persist→handoff sequence.
+  - *Result persistence:* all five de-identifying surfaces persist their latest result in
+    `st.session_state` (`single_result`/`anon_result`/`policy_result` via the shared
+    `_submit_deidentify` helper, which centralizes submit→call→persist→handoff so
+    Single/Anonymize/Policy can't drift; plus `batch_result` and `reid_result`) and render from there,
+    so post-submit reruns (a Download, a
     control tweak, the "Show re-identification key" click) don't blank the panel and a failed/empty
     re-submit warns without losing the last good result (a snapshot caption flags this). The mapping
     is revealed in an `@st.dialog` (`_show_mapping_dialog`) behind a button, not an always-open
@@ -258,8 +296,19 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     zero-shot path bypasses the shared loader entirely (so `is_loaded` is *always* blind to it), a
     per-domain `st.session_state` set (`zs_analyzed_domains`) drives the wait-hint. The keys are
     `zs_`-scoped so they don't collide with the NER tab's identically-labelled widgets.
+  - *Policy anonymization controls* (`_render_policy_anon`, **not** a fragment — it feeds the
+    Re-identify handoff like `Anonymize`): a policy picker (`st.selectbox` over `POLICY_MODELS`, default
+    `HIPAA Safe Harbor`) sits **outside** the form (reactive preview: `display name`/`description`/
+    `default_action`/reversible?/safety-sweep, refreshed on pick — a full rerun like `Single note`'s
+    method picker). There is **no Method control** (the policy selects the action). Inside the form:
+    text area, confidence slider, and an `Advanced` expander with the surrogate knobs
+    (consistent/seed/locale — they apply to the `replace`-based policies) + the safety-sweep toggle.
+    `build_policy_opts` shapes the payload (no `method`, no `keep_mapping`); the tab submits via
+    `_submit_deidentify(call=service.anonymize_policy)` and renders through the shared
+    `_render_deid_result`. All widget keys are `policy_`-scoped; the text-area label is distinct
+    ("Clinical note to anonymize under a policy") so it doesn't collide with `Anonymize`'s.
   - *Rendering:* `_render_highlight(text, entities)` (shared by `Detect`, `Single`, `Anonymize`,
-    `Clinical NER`, and `Zero-shot`) renders the highlighted text plus its legend, label-agnostic so it
+    `Policy de-ID`, `Clinical NER`, and `Zero-shot`) renders the highlighted text plus its legend, label-agnostic so it
     handles NER's UPPERCASE labels and zero-shot's arbitrary user-typed labels unchanged (every label
     is HTML-escaped, so a user-supplied label can't inject markup). `ui_helpers.py`'s `render_highlighted`/`render_legend` are
     **theme-agnostic**: a translucent per-label tint from `PALETTE`/`color_for` plus `color: inherit`,
@@ -318,12 +367,24 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   as `Any`, never sets `audit`, and `tests/test_pii_model.py` casts it back to
   `DeidentificationResult`).
   The app's engine forwards `method`/`confidence_threshold`/`use_smart_merging`/`keep_mapping`/
-  `consistent`/`seed`/`locale`/`date_shift_days`/`keep_year`/`use_safety_sweep` plus
+  `consistent`/`seed`/`locale`/`date_shift_days`/`keep_year`/`use_safety_sweep`/`policy` plus
   `lang`/`model_name`/`loader`; it deliberately does **not** forward `audit` (would flip the
   return type), `config` (the engine owns loading via `loader=`), or the advanced
-  `shift_dates`/`normalize_accents`/`policy`/`calibration_thresholds_path` and the 1.7.0
+  `shift_dates`/`normalize_accents`/`calibration_thresholds_path` and the 1.7.0
   `patient_key`/`date_shift_max_days`/`date_shift_secret`/`surrogate_vault`/`custom_recognizer`/
   `cache_results`/`max_cache_entries` knobs.
+  `policy` (an `Optional[str]` — a canonical name from `openmed.core.policy.list_policies()`, default
+  `None`) selects a **regulatory compliance profile** that assigns a per-label action; the `Policy
+  de-ID` tab drives it. The policy machinery lives in `openmed.core.policy` (**not** top-level
+  exported — `from openmed.core.policy import PolicyName, list_policies, load_policy`), which ships 10
+  built-ins (`hipaa_safe_harbor`, `hipaa_expert_review_assist`, `gdpr_pseudonymization`,
+  `gdpr_art9_health`, `research_limited_dataset`, `strict_no_leak`, `clinical_minimal_redaction`,
+  `canada_pipeda`, `uk_ico_anonymisation`, `australia_privacy_act`) + 5 aliases; `load_policy(name)`
+  returns a frozen `PolicyProfile` (`default_action`/`keep_mapping`/`reversible_id`/
+  `safety_sweep_mandatory`/…) the app bakes into `POLICY_MODELS`. (Custom policies can't ride the
+  public `deidentify(policy=str)` API — the name must be canonical — so they're out of scope; the
+  `Anonymizer`/`AnonymizerConfig` classes are the low-level Faker surrogate generator `method=replace`
+  already uses internally, **not** a policy engine.)
   `tests/test_engine.py::test_deidentify_forwards_every_openmed_param_or_allowlists_it`
   introspects this real signature and pins the forwarded-vs-excluded split so it can't drift.
   `use_safety_sweep=True` runs a post-detection structured-identifier sweep `extract_pii` has no
@@ -375,6 +436,16 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   (`openmed/core/pii.py:_is_date_entity` normalizes the model's `"date"`), so `shift_dates` now
   shifts dates on the default model. `tests/test_pii_model.py::test_shift_dates_actually_shifts_dates`
   asserts this (it was a `strict` xfail before the upgrade).
+- **A `policy` overrides `method`, and `keep_mapping` is ORed with the policy's own flag.** When
+  `deidentify(policy=…)` is set, openmed's pipeline assigns each span's action from the profile and
+  **ignores the flat `method`** (verified: `method="replace"` + `policy="hipaa_safe_harbor"` still
+  masks). And the effective mapping is `explicit_keep_mapping OR profile.keep_mapping` — so passing
+  `keep_mapping=True` alongside a *masking* policy (HIPAA Safe Harbor) wrongly makes it **reversible**
+  (openmed returns a mask-token→original mapping), contradicting the policy's irreversible posture.
+  `service.anonymize_policy` therefore passes `keep_mapping=False` and lets the profile decide: the
+  surrogate policies (GDPR/PIPEDA/UK ICO — `keep_mapping=True`) return a re-identification key, the
+  masking ones don't. This only surfaces under `--run-model` (a stub can't model openmed's OR), so
+  `tests/test_engine.py::test_engine_deidentify_policy_masks_and_pseudonymizes` pins both branches.
 - **openmed's `reidentify()` mis-restores overlapping mapping keys; the app fixes it.**
   openmed applies `str.replace` per entry, so a key that is a prefix/substring of another
   (e.g. `ALIAS_1` vs `ALIAS_10`, or unbracketed `hash`/`replace` surrogates) corrupts the

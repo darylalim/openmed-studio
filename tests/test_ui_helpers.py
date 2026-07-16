@@ -12,6 +12,7 @@ from ui_helpers import (
     PALETTE,
     build_base_opts,
     build_batch_table,
+    build_policy_opts,
     color_for,
     render_highlighted,
     render_legend,
@@ -395,6 +396,100 @@ def test_build_base_opts_carries_use_safety_sweep():
             seed=0,
             date_shift_days=0,
             keep_year=True,
+            use_safety_sweep=use_safety_sweep,
+        )
+
+    assert _opts(use_safety_sweep=True)["use_safety_sweep"] is True
+    assert _opts(use_safety_sweep=False)["use_safety_sweep"] is False
+
+
+# --- build_policy_opts --------------------------------------------------------
+def test_build_policy_opts_base_fields_and_no_method_or_keep_mapping():
+    # The policy payload carries policy/confidence/lang/consistent/use_safety_sweep and, crucially,
+    # NEITHER method (the policy overrides it) NOR keep_mapping (the policy decides reversibility) —
+    # both would be rejected by AnonymizePolicyRequest's extra="forbid".
+    opts = build_policy_opts(
+        policy="hipaa_safe_harbor",
+        confidence_threshold=0.5,
+        lang="en",
+        consistent=False,
+        seed=7,
+        use_safety_sweep=True,
+    )
+    assert opts == {
+        "policy": "hipaa_safe_harbor",
+        "confidence_threshold": 0.5,
+        "lang": "en",
+        "consistent": False,
+        "use_safety_sweep": True,
+    }
+    # seed omitted (consistent off); and none of the forbidden/irrelevant keys leak in.
+    for absent in (
+        "method",
+        "keep_mapping",
+        "text",
+        "seed",
+        "locale",
+        "date_shift_days",
+    ):
+        assert absent not in opts
+
+
+def test_build_policy_opts_includes_seed_only_when_consistent():
+    with_seed = build_policy_opts(
+        policy="gdpr_pseudonymization",
+        confidence_threshold=0.6,
+        lang="fr",
+        consistent=True,
+        seed=42,
+        use_safety_sweep=True,
+    )
+    assert with_seed["seed"] == 42
+    without_seed = build_policy_opts(
+        policy="gdpr_pseudonymization",
+        confidence_threshold=0.6,
+        lang="fr",
+        consistent=False,
+        seed=42,
+        use_safety_sweep=True,
+    )
+    assert "seed" not in without_seed
+
+
+def test_build_policy_opts_locale_stripped_when_set_omitted_when_blank():
+    # locale is a surrogate knob (used by the replace-based policies): stripped when present,
+    # omitted when blank/whitespace/None so openmed derives it from the language.
+    opts = build_policy_opts(
+        policy="gdpr_pseudonymization",
+        confidence_threshold=0.5,
+        lang="pt",
+        consistent=True,
+        seed=1,
+        locale="  pt_BR  ",
+        use_safety_sweep=True,
+    )
+    assert opts["locale"] == "pt_BR"
+    for blank in ("", "   ", None):
+        opts = build_policy_opts(
+            policy="gdpr_pseudonymization",
+            confidence_threshold=0.5,
+            lang="en",
+            consistent=False,
+            seed=0,
+            locale=blank,
+            use_safety_sweep=True,
+        )
+        assert "locale" not in opts
+
+
+def test_build_policy_opts_carries_use_safety_sweep():
+    def _opts(*, use_safety_sweep: bool) -> dict:
+        return build_policy_opts(
+            policy="strict_no_leak",
+            confidence_threshold=0.5,
+            lang="en",
+            consistent=False,
+            seed=0,
             use_safety_sweep=use_safety_sweep,
         )
 

@@ -157,6 +157,29 @@ def test_deidentify_forwards_locale_to_openmed(monkeypatch) -> None:
     assert captured["locale"] == "pt_BR"
 
 
+def test_deidentify_forwards_policy_to_openmed(monkeypatch) -> None:
+    # The policy profile name must reach openmed.deidentify unchanged (this is the whole
+    # Policy de-ID feature). Left None by the method-driven tabs, and openmed treats None as
+    # "no policy override", so forwarding it unconditionally is safe.
+    import openmed
+
+    captured: dict[str, object] = {}
+
+    def fake_deidentify(_text, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(deidentified_text="ok", pii_entities=[], mapping=None)
+
+    monkeypatch.setattr(openmed, "deidentify", fake_deidentify)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    engine.deidentify("x", policy="hipaa_safe_harbor")
+    assert captured["policy"] == "hipaa_safe_harbor"
+    # And it defaults to None (no policy) when the caller doesn't set it — the method-driven
+    # de-identify path must be unaffected by this new param.
+    captured.clear()
+    engine.deidentify("x", method="mask")
+    assert captured["policy"] is None
+
+
 def test_deidentify_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -> None:
     """Drift guard: every ``openmed.deidentify`` parameter is either forwarded by the
     engine or on an explicit, documented exclusion list.
@@ -191,7 +214,7 @@ def test_deidentify_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -
         # until each is consciously exposed (then move it out of this set):
         "shift_dates",  # legacy bool toggle, distinct from method="shift_dates"
         "normalize_accents",
-        "policy",
+        # ("policy" is now forwarded — see below — so it's no longer excluded.)
         "calibration_thresholds_path",
         # openmed 1.7.0 additions — advanced date-shift / surrogate / recognizer plumbing
         # and result caching the engine deliberately doesn't thread (yet):
@@ -477,6 +500,32 @@ def test_engine_round_trips_with_kept_mapping(loader, note) -> None:
     assert result.deidentified_text != note  # PII was actually replaced
     assert result.mapping  # non-empty mapping
     assert PIIEngine.reidentify(result.deidentified_text, result.mapping) == note
+
+
+@pytest.mark.model
+def test_engine_deidentify_policy_masks_and_pseudonymizes(loader, note) -> None:
+    # Real policy-driven anonymization proves two things the service path relies on: the policy
+    # (not the flat method) drives the per-label action, AND reversibility is the policy's call.
+    # Both calls pass keep_mapping=False (what service.anonymize_policy sends) and leave method at
+    # its default — the policy overrides it. HIPAA Safe Harbor masks the SSN irreversibly (no
+    # mapping); GDPR pseudonymization replaces it with a surrogate and FORCES a mapping (openmed
+    # ORs the profile's own keep_mapping) that round-trips.
+    engine = PIIEngine(loader=loader)
+
+    masked = engine.deidentify(note, policy="hipaa_safe_harbor", keep_mapping=False)
+    assert "123-45-6789" not in masked.deidentified_text  # SSN redacted
+    assert (
+        not masked.mapping
+    )  # Safe Harbor is irreversible — the policy keeps no mapping
+
+    pseudo = engine.deidentify(note, policy="gdpr_pseudonymization", keep_mapping=False)
+    assert "123-45-6789" not in pseudo.deidentified_text  # replaced by a surrogate
+    assert (
+        pseudo.mapping
+    )  # reversible: the policy forces a key despite keep_mapping=False
+    # The kept mapping round-trips: re-identifying restores the original SSN.
+    restored = PIIEngine.reidentify(pseudo.deidentified_text, pseudo.mapping)
+    assert "123-45-6789" in restored
 
 
 @pytest.mark.model
