@@ -1,170 +1,126 @@
 # OpenMed Studio
 
-**A clinical-NLP application built on [OpenMed](https://openmed.life/docs/).**
+A clinical-NLP app built on [OpenMed](https://openmed.life/docs/).
 
-The goal is an app over OpenMed's full toolkit — clinical NER, PII/PHI de-identification,
-anonymization, and zero-shot extraction. **Today it implements PII/PHI de-identification —
-including surrogate anonymization — clinical NER, and zero-shot (GLiNER) extraction** (deeper
-anonymization is on the roadmap), shipped as a [Streamlit](https://streamlit.io/) app.
+It surfaces OpenMed's toolkit through a [Streamlit](https://streamlit.io/) UI. Today it does
+PII/PHI de-identification (including surrogate anonymization), clinical NER, and zero-shot (GLiNER)
+extraction; deeper anonymization is on the roadmap.
 
 ## Quickstart
 
-Requires [uv](https://docs.astral.sh/uv/) and Python ≥ 3.10 (verified on 3.11).
+Requires [uv](https://docs.astral.sh/uv/) and Python ≥ 3.10.
 
 ```bash
 uv run streamlit run streamlit_app.py
 ```
 
-`uv` reads [`pyproject.toml`](pyproject.toml), creates a `.venv`, installs the dependencies,
-and opens the app at `http://localhost:8501`. The first de-identification downloads a small
-(~44M-parameter) clinical PII model — `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1` — from
-the Hugging Face Hub and caches it under `~/.cache/openmed`, so later runs are fast and offline.
+`uv` reads [`pyproject.toml`](pyproject.toml), creates a `.venv`, installs the dependencies, and
+opens the app at `http://localhost:8501`. The first de-identification downloads a small
+(~44M-parameter) clinical PII model — `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1` — from the
+Hugging Face Hub and caches it under `~/.cache/openmed`, so later runs are fast and offline.
 
-## The app
+## What it does
 
-The model runs **in-process**: [`streamlit_app.py`](streamlit_app.py) calls a reusable,
-framework-free [`PIIEngine`](openmed_studio/engine.py) (one shared `ModelLoader`) through the
-in-process seam in [`openmed_studio/service.py`](openmed_studio/service.py), which validates each
-request and adapts OpenMed's results for the UI. There is no separate service to start.
+The app opens with seven tabs:
 
-It opens with seven tabs:
+| Tab | What it does |
+| --- | --- |
+| **Detect** | Find and highlight PII/PHI without redacting — audit what the model sees before choosing a method. |
+| **Clinical NER** | Extract clinical entities (diseases, drugs, anatomy, genes, …) with a curated token-classification model per domain. |
+| **Zero-shot** | Extract *any* entity types you name, with no fine-tuned model per label, via OpenMed's [GLiNER](https://github.com/urchade/GLiNER) models. |
+| **Single note** | De-identify one note — original (PII highlighted) beside the redacted text, with a download and a re-identification key. |
+| **Batch** | De-identify up to 100 notes at once — a results table with per-note entity counts; a failing note is isolated as a `Failed` row instead of aborting the batch. |
+| **Anonymize** | Replace *detected* PII/PHI with realistic *fake* surrogates rather than masks; round-trips through Re-identify. |
+| **Re-identify** | Restore originals from a kept mapping (auto-filled from the last Single note or Anonymize run). |
 
-- **Detect** — detect PII entities and highlight them (with a color legend) plus an entity table,
-  without redacting — for auditing what the model finds before choosing a method.
-- **Clinical NER** — detect clinical entities (diseases, drugs, anatomy, genes, …) with OpenMed's
-  token-classification models. Pick an entity **domain** (one curated model per domain — Disease,
-  Pharmaceutical, Chemical, Anatomy, Genomics, Protein, Oncology, Species, Pathology, Hematology,
-  Medical); a preview shows the model's name, size, and what it detects before you commit to a
-  download, the confidence slider defaults to that model's recommended threshold, and each domain
-  loads its specialized model on first use. Highlights and tables the entities like Detect.
-- **Zero-shot** — extract **any** entity types you name, with no fine-tuned model per label, using
-  OpenMed's [GLiNER](https://github.com/urchade/GLiNER) zero-shot models. Pick a domain to choose
-  the backbone, then edit the suggested labels or type your own (e.g. “chemotherapy regimen”,
-  “biopsy site”); each runs as its own detection pass. Highlights and tables the entities like
-  Detect. Needs the optional **gliner** backend (`uv sync --extra gliner`); until it's installed the
-  tab shows install instructions instead of the form.
-- **Single note** — de-identify one note; shows the original with detected PII highlighted
-  side-by-side with the redacted text (with a **download** button), plus an entity table and a
-  **Show re-identification key** button that reveals the mapping in a dialog (when Keep mapping is on).
-- **Batch** — edit a table of notes (up to 100) and de-identify them in one go; each note is
-  isolated, so a note that fails shows as a `Failed` row (with a summary warning) instead of
-  aborting the whole batch.
-- **Anonymize** — replace *detected* PII/PHI with realistic *fake* surrogates rather than masking
-  (review the output before sharing — anything the model misses is left in place); shows the original
-  (highlighted) beside the anonymized text with a **download** button, and keeps the mapping so the
-  result round-trips through Re-identify.
-- **Re-identify** — restore originals from a kept mapping (auto-filled from the last Single note or
-  Anonymize run).
+Detect, Clinical NER, Zero-shot, and Single note render matched entities as highlighted text with a
+color legend, plus an entity table. A few more things worth knowing:
 
-The sidebar reports the engine's model/backend/load state and holds the one global filter — the
-detection **language** (12 supported), which feeds the Detect, Single note, Batch, and Anonymize
-tabs. The de-identification controls live in the tabs that use them: **Single note** and **Batch**
-each show the method (`mask` / `remove` / `replace` / `hash` / `shift_dates` / `format_preserve`),
-confidence, `keep_mapping`, and an **Advanced** expander whose knobs follow the chosen method (the
-surrogate methods `replace`/`format_preserve` — the latter keeps each identifier's format, e.g. a
-phone stays phone-shaped — share the deterministic toggle, `seed`, and surrogate `locale`; the
-`shift_dates` controls; the safety sweep). The confidence slider defaults to **0.5** for higher PHI recall — note the de-identify
-default is `0.7`. The model loads on the first request, so the first call shows a spinner and is
-slower than the rest.
+- Clinical NER and Zero-shot each pick a domain (Disease, Pharmaceutical, Chemical, Anatomy,
+  Genomics, Protein, Oncology, Species, Pathology, Hematology — plus a broad Medical model for NER).
+  A live preview shows the model's name, size, and what it detects, and the confidence slider seeds
+  from that model's recommended threshold.
+- Zero-shot lets you edit the suggested labels or type your own (e.g. "chemotherapy regimen",
+  "biopsy site"); all labels are extracted together in one pass. It needs the optional `gliner`
+  backend — see [Zero-shot (GLiNER)](#zero-shot-gliner).
+- Anonymize leaves anything the model misses in place, so review the output before sharing.
 
-### How it works
+### Controls
 
-- **Validation is in-process.** The Pydantic models in
-  [`openmed_studio/validation.py`](openmed_studio/validation.py) are reused as a validation layer:
-  every request is checked before it reaches the model, so the per-request **text cap** (50k chars,
-  override with `OPENMED_STUDIO_MAX_TEXT_LENGTH`), the **batch** (≤100) and **mapping** (≤5,000)
-  bounds, the language/method enums, and the confidence range all still apply. Invalid input is
-  surfaced as an error in the UI with the offending text stripped (so PHI isn't echoed back).
+- The sidebar reports the engine's model / backend / load state and holds the one global filter: the
+  detection language (12 supported), which applies to Detect, Single note, Batch, and Anonymize.
+- **Single note** and **Batch** each expose the de-identification method (`mask` / `remove` /
+  `replace` / `hash` / `shift_dates` / `format_preserve`), a confidence slider, `keep_mapping`, and
+  an Advanced expander whose knobs follow the chosen method:
+  - `replace` / `format_preserve` (surrogates; `format_preserve` keeps each identifier's shape, so a
+    phone stays phone-shaped) — a determinism toggle, `seed`, and surrogate `locale`.
+  - `shift_dates` — `date_shift_days` and `keep_year`.
+  - the safety sweep (any method).
+- The confidence slider defaults to `0.5` for higher PHI recall (the `deidentify` default is `0.7`).
+  The model loads on the first request, so that call shows a spinner and is slower than the rest.
+
+## How it works
+
+The model runs in-process — there is no separate service to start.
+[`streamlit_app.py`](streamlit_app.py) calls a reusable, framework-free
+[`PIIEngine`](openmed_studio/engine.py) (one shared `ModelLoader`) through the in-process seam in
+[`openmed_studio/service.py`](openmed_studio/service.py), which validates each request and adapts
+OpenMed's results for the UI.
+
+- **Validation.** The Pydantic models in [`openmed_studio/validation.py`](openmed_studio/validation.py)
+  gate every request before it reaches the model: the per-request text cap (50k chars, override with
+  `OPENMED_STUDIO_MAX_TEXT_LENGTH`), the batch (≤100) and mapping (≤5,000) bounds, the language/method
+  enums, and the confidence range. On a rejection the service seam builds the error from only the
+  field's location and message — never Pydantic's echoed input — so the offending text (PHI) isn't
+  shown.
 - **Backend.** Inference is auto-detected: MLX on Apple Silicon when the `mlx` extra is installed,
-  else Hugging Face/PyTorch (runs everywhere — CPU, CUDA, Apple MPS). Pin it with
-  `OPENMED_STUDIO_BACKEND=hf|mlx` (an explicit `mlx` pin *raises* on a non-MLX host).
+  else Hugging Face / PyTorch (CPU, CUDA, Apple MPS). Pin it with `OPENMED_STUDIO_BACKEND=hf|mlx` —
+  an explicit `mlx` pin *raises* on a non-MLX host rather than falling back. See
+  [Apple Silicon (MLX)](#apple-silicon-mlx).
 - **Model reuse.** Streamlit caches the engine (`st.cache_resource`), so the PII model loads at most
-  once per process and is reused across every tab and request. The shared loader dispatches by model
-  name, so the **Clinical NER** tab loads a per-domain NER model into the same loader on first use of
-  that domain (switching domains loads another).
-- **Theme-aware.** The entity highlights and legend adapt to light or dark mode automatically — they
-  use a translucent tint plus `color: inherit`, so they read correctly on either with no runtime
-  theme detection (both modes are defined in `.streamlit/config.toml`).
-- **Isolated reruns.** The Detect/Clinical NER/Batch/Re-identify tabs are `st.fragment`s, so an
-  interaction in one doesn't rerun the others; Single note and Anonymize stay full reruns so they can
-  hand their result to Re-identify.
+  once per process and is reused across every tab. The shared loader dispatches by model name, so the
+  Clinical NER tab loads a per-domain model into the same loader on first use of that domain.
+- **Theme-aware.** The highlights and legend adapt to light or dark mode automatically (a translucent
+  tint plus `color: inherit`, no runtime theme detection; both modes live in `.streamlit/config.toml`).
+- **Isolated reruns.** The Detect / Clinical NER / Zero-shot / Batch / Re-identify tabs are
+  `st.fragment`s, so an interaction in one doesn't rerun the others; Single note and Anonymize stay
+  full reruns so they can hand their result to Re-identify.
 
-### What we dropped vs the old service
+## Optional extras
 
-openmed-studio used to be a FastAPI service with the UI as a thin HTTP client. Collapsing to a
-single local Streamlit app intentionally drops the guarantees that only existed because of the
-HTTP boundary:
+Both extras are opt-in via `uv sync --extra …` and combine with each other.
 
-- **API-key auth** (`OPENMED_STUDIO_API_KEY` / `X-API-Key`) — there is no network endpoint to
-  protect. This app is meant to run **locally for a single trusted user**; put it behind your own
-  auth or a reverse proxy before exposing it, and don't run it on a network with real PHI as-is.
-- **The JSON error envelope** and the OpenMed-REST `/compat` surface — there is no API to be
-  compatible with.
+### Apple Silicon (MLX)
 
-The protections that guard the *model* regardless of transport — the text/batch/mapping caps, the
-value checks, backend pinning, and not echoing input on a validation error — are **kept**, enforced
-in-process by the service seam. Treat any returned `mapping` as re-identification material: it is as
-sensitive as the raw PHI.
-
-## Native Apple Silicon (MLX)
-
-On M-series Macs you can swap the portable Torch/Transformers backend for Apple's native
+On M-series Macs, swap the portable Torch/Transformers backend for Apple's native
 [MLX](https://github.com/ml-explore/mlx) backend:
 
 ```bash
 uv sync --extra mlx
 ```
 
-With the backend unset, openmed auto-detects MLX on Apple Silicon and falls back to
-Hugging Face/PyTorch when it's unavailable. Pin it with `OPENMED_STUDIO_BACKEND=mlx` — but note an
-explicit `mlx` pin *raises* on a non-MLX host rather than falling back.
-
-The default model runs on MLX directly: it isn't pre-packaged, so openmed converts it on the fly on
-first run and caches the result under `~/.cache/openmed/mlx/`. A pre-converted `-mlx` repo (e.g.
+The default model isn't pre-packaged for MLX, so OpenMed converts it on the fly on first run and
+caches the result under `~/.cache/openmed/mlx/`. A pre-converted `-mlx` repo (e.g.
 `OpenMed/OpenMed-PII-ClinicalE5-Small-33M-v1-mlx`) is an optional shortcut that skips conversion —
-pass it as a **local directory** via `extract_pii(..., model_name=...)` /
-`deidentify(..., model_name=...)`. See the [MLX backend docs](https://openmed.life/docs/mlx-backend/).
+pass it as a local directory via `model_name=…`. See the
+[MLX backend docs](https://openmed.life/docs/mlx-backend/).
 
-## Zero-shot extraction (GLiNER)
+### Zero-shot (GLiNER)
 
-The **Zero-shot** tab needs OpenMed's optional GLiNER backend, installed as its own extra:
+The Zero-shot tab needs OpenMed's optional GLiNER backend:
 
 ```bash
 uv sync --extra gliner
 ```
 
-GLiNER pins an older `transformers` than the rest of the stack, so the extra is deliberately kept
-**separate from the default install**: `pyproject.toml` declares a conflict between `gliner` and a
-marker `hf-latest` extra, which makes uv fork the lock. The default install (and CI, and the PII /
-Clinical NER tabs) stay on the latest `transformers`; only `uv sync --extra gliner` resolves to the
-older one. `--extra mlx --extra gliner` still combine on Apple Silicon. Until the extra is installed,
-the Zero-shot tab shows install instructions rather than the form, and the other tabs are unaffected.
+GLiNER pins an older `transformers` than the rest of the stack, so this extra is kept separate from
+the default install: `pyproject.toml` declares a conflict between `gliner` and a marker `hf-latest`
+extra, which makes uv fork the lock. The default install (and CI, and the PII / Clinical NER tabs)
+stay on the latest `transformers`; only `uv sync --extra gliner` resolves to the older one. Until the
+extra is installed, the tab shows install instructions rather than the form, and the other tabs are
+unaffected.
 
-## Tests
-
-```bash
-uv run pytest                # fast tests only (model-loading tests are skipped)
-uv run pytest --run-model    # also run tests that load the OpenMed PII model
-```
-
-Tests live in [`tests/`](tests/). The fast tests need no model: `test_service.py` covers the
-in-process seam (backend resolution, the dict adapters, the error taxonomy, the PII and clinical-NER
-paths) with a stub engine,
-`test_validation.py` pins the surviving input guarantees (caps, enums, format checks, the text-cap
-knob, the `DeidMethod`/`Lang`↔openmed and curated-`NER_MODELS`↔openmed-registry sync, and PHI-non-echo),
-`test_engine.py` checks `PIIEngine`'s lazy-loading contract, that `deidentify` forwards every method
-(including `shift_dates`) to OpenMed, that `analyze` delegates to `analyze_text`, and that
-`extract_zero_shot` builds openmed's in-memory index without touching the shared loader,
-`test_pii_pure.py` covers OpenMed's pure-Python surface, and `test_ui_helpers.py` unit-tests
-the pure rendering/payload helpers. `test_ui_app.py` drives `streamlit_app.py` via Streamlit's
-`AppTest` with the engine stubbed in-process (covering the theme-aware highlighting, the fragmented
-tabs, the Clinical NER and Zero-shot tabs + their domain pickers — including the "gliner not
-installed" state — and the Anonymize tab). The zero-shot catalog is pinned to openmed's live registry
-by `test_zero_shot_models_resolve_in_openmed` (registry metadata only — no download, no gliner extra).
-The `--run-model` tests — `test_pii_model.py` plus the `@pytest.mark.model` tests in `test_engine.py`
-— load real models to verify PII detection, masking, deterministic replacement, round-trips, and
-clinical-NER detection; the zero-shot model test is additionally gated on the `gliner` extra being
-installed, so CI never downloads it.
+## Development
 
 Lint, format, and type-check with the project-pinned tools:
 
@@ -174,18 +130,43 @@ uv run ruff format .         # format
 uv run ty check              # type-check
 ```
 
-CI (`.github/workflows/ci.yml`) runs these checks and the fast test suite on every push and pull
-request, across Python 3.10 and 3.13.
+Run the tests with pytest:
 
-## Notes
+```bash
+uv run pytest                # fast tests only (model-loading tests are skipped)
+uv run pytest --run-model    # also run tests that load the OpenMed PII model
+```
 
+Tests live in [`tests/`](tests/). The fast tests need no model: they stub the engine and cover the
+in-process service seam, the input guarantees in `validation.py` (caps, enums, format checks, and the
+openmed-registry sync guards), `PIIEngine`'s loading contract, and the Streamlit UI itself (via
+`streamlit.testing.v1.AppTest`). The `--run-model` tests load real models to verify detection,
+masking, deterministic replacement, and round-trips; the zero-shot model test is additionally gated on
+the `gliner` extra, so CI never downloads it.
+
+CI (`.github/workflows/ci.yml`) runs the lint / format / type / test checks on pushes to `main` and
+on every pull request, across Python 3.10 and 3.13.
+
+## Security & notes
+
+**Run it locally.** This is a single-user, local tool — there is no network endpoint to protect, so
+put it behind your own auth or a reverse proxy before exposing it, and don't run it on a network with
+real PHI as-is. Collapsing the old FastAPI service into one Streamlit app changed what's enforced:
+
+- **Dropped** (they only existed for the HTTP boundary): API-key auth, the JSON error envelope, and
+  the OpenMed-REST `/compat` surface.
+- **Kept** (enforced in-process by the service seam): the text / batch / mapping caps, the value
+  checks, backend pinning, and not echoing input on a validation error.
+
+Other things to keep in mind:
+
+- Treat any returned `mapping` as re-identification material — it is as sensitive as the raw PHI.
 - All identifiers in the app's sample note are fabricated.
-- Smart entity merging is on by default (`use_smart_merging=True`) and recombines
-  token-fragmented PII like dates and SSNs into whole spans.
-- De-identification runs a deterministic structured-identifier **safety sweep** after model
-  detection (`use_safety_sweep=True`, toggleable in each de-identifying tab's **Advanced**
-  expander), so it may redact a few identifiers the **Detect** tab (which doesn't run the sweep)
-  doesn't surface.
+- Smart entity merging is on by default (`use_smart_merging=True`), recombining token-fragmented PII
+  like dates and SSNs into whole spans.
+- De-identification runs a deterministic structured-identifier safety sweep after detection
+  (`use_safety_sweep=True`, toggleable per tab), so it may redact a few identifiers the Detect tab
+  (which doesn't run the sweep) doesn't surface.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).

@@ -763,7 +763,7 @@ def _render_zero_shot() -> None:
             # per-domain edit independently (matching the confidence slider below).
             key=f"zs_labels_{domain}",
             help="Type any entity type to extract. Suggestions are seeded from the domain "
-            "but you can add your own; each runs as a separate detection pass.",
+            "but you can add your own; all labels are extracted together in one pass.",
         )
         confidence = st.slider(
             "Confidence threshold",
