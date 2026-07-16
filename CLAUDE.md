@@ -289,7 +289,7 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   not echoing input on a validation error. Only `OPENMED_STUDIO_BACKEND` and
   `OPENMED_STUDIO_MAX_TEXT_LENGTH` remain as env knobs.
 
-## OpenMed API (verified against installed v1.8.0)
+## OpenMed API (verified against installed v1.9.1)
 
 Top-level imports: `from openmed import extract_pii, deidentify, reidentify, analyze_text, ModelLoader, OpenMedConfig`.
 Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict alias→ModelInfo),
@@ -306,7 +306,7 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
 - `deidentify(text, method="mask", model_name=<default>, confidence_threshold=0.7,
   use_smart_merging=True, keep_mapping=False, consistent=False, seed=None, locale=None,
   date_shift_days=None, keep_year=False, lang="en", use_safety_sweep=True, audit=False,
-  loader=None, …)` — the installed v1.8.0 signature (unchanged since 1.7.0) **also** accepts `shift_dates` (a bool,
+  loader=None, …)` — the installed v1.9.1 signature (unchanged since 1.7.0) **also** accepts `shift_dates` (a bool,
   distinct from `method="shift_dates"`), `normalize_accents`, `config`, `policy`,
   `calibration_thresholds_path`, and 1.7.0's `patient_key`/`date_shift_max_days`/
   `date_shift_secret`/`surrogate_vault`/`custom_recognizer`/`cache_results`/`max_cache_entries`.
@@ -355,12 +355,13 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   the optional `gliner` extra: `from openmed.ner import infer, NerRequest, ModelIndex, ModelRecord,
   Entity, is_gliner_available, get_default_labels, available_domains`.
   `infer(NerRequest(model_id=<HF repo id>, text, labels=[...], threshold=0.5), *, index=<ModelIndex>,
-  config=None, loader=None)` → `NerResponse(entities=[Entity(text, start, end, label, **score**, group,
+  index_path=None, config=None, loader=None)` → `NerResponse(entities=[Entity(text, start, end, label, **score**, group,
   extras)], meta={...})`. Four things the app works around: (1) `Entity` exposes `.score`, **not**
   `.confidence` — the service adapter's `.score` fallback handles it. (2) `infer`'s default index is a
   file (`<site-packages>/models/index.json`) openmed **doesn't ship**, so a caller must pass an
   in-memory `ModelIndex` (the engine fabricates a one-entry one; `ModelRecord.id` must be the **HF repo
-  id**, resolved from the registry alias via `get_all_models()[alias].model_id`). (3) the GLiNER branch
+  id**, resolved from the registry alias via `get_all_models()[alias].model_id`) — rather than pointing
+  `index_path=` at an on-disk index the app has none of. (3) the GLiNER branch
   **ignores `loader=`** and caches models itself (`lru_cache` in `openmed.ner.families.gliner`), and is
   torch-only (no MLX) — `load_gliner_handle` is not publicly re-exported, so `infer` is the only clean
   route. (4) it raises `MissingDependencyError` (an `ImportError` subclass) when `gliner` isn't
