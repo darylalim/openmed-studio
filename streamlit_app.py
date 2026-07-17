@@ -142,7 +142,7 @@ def _submit_deidentify(
     action: str,
     empty_warning: str,
     extra: dict[str, Any] | None = None,
-    call: Callable[..., dict[str, Any]] | None = None,
+    call: Callable[..., dict[str, Any]] = service.deidentify,
 ) -> dict[str, Any] | None:
     """Run a de-identify submit and persist its result; return the stored panel state.
 
@@ -161,7 +161,7 @@ def _submit_deidentify(
         if not text.strip():
             st.warning(empty_warning)
         else:
-            result = _call(call or service.deidentify, text, action=action, **opts)
+            result = _call(call, text, action=action, **opts)
             if result is not None:
                 st.session_state[store_key] = {
                     "text": text,
@@ -657,13 +657,16 @@ def _render_policy_anon(lang: str) -> None:
         store_key="policy_result",
         action=f"Anonymizing under {policy_label}",
         empty_warning="Enter some text to anonymize.",
-        extra={"policy_label": policy_label, "reversible": model.keep_mapping},
+        extra={"policy_label": policy_label},
         call=service.anonymize_policy,
     )
     if not stored:
         return
     text, result = stored["text"], stored["result"]
     entities = result["entities"]
+    # Reversibility is a property of the (snapshotted) policy, so derive it from the stored
+    # label rather than storing a second field — POLICY_MODELS is the single source of truth.
+    reversible = POLICY_MODELS[stored["policy_label"]].keep_mapping
     m1, m2 = st.columns(2)
     m1.metric("Entities found", len(entities), border=True)
     m2.metric("Policy", stored["policy_label"], border=True)
@@ -672,11 +675,7 @@ def _render_policy_anon(lang: str) -> None:
         result,
         out_caption=(
             f"Anonymized under {stored['policy_label']} · "
-            + (
-                "reversible — a key is kept"
-                if stored.get("reversible")
-                else "irreversible"
-            )
+            + ("reversible — a key is kept" if reversible else "irreversible")
         ),
         out_filename="policy_anonymized.txt",
         dl_key="dl_policy",

@@ -371,8 +371,6 @@ class PolicyModel(NamedTuple):
     default_action: str
     # whether the policy keeps a surrogate->original mapping (i.e. is reversible) — pinned
     keep_mapping: bool
-    # whether entities get a stable reversible id — pinned
-    reversible_id: bool
     # whether the policy forces the deterministic structured-identifier safety sweep — pinned
     safety_sweep_mandatory: bool
 
@@ -388,7 +386,6 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         "Mask all 18 HIPAA identifiers; irreversible (US HIPAA §164.514(b)).",
         "mask",
         False,
-        False,
         True,
     ),
     "HIPAA Expert Review": PolicyModel(
@@ -396,7 +393,6 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         "Redact direct identifiers but keep clinical detail — a review-assist posture, "
         "not full de-identification.",
         "redact",
-        False,
         False,
         False,
     ),
@@ -407,14 +403,12 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         "replace",
         True,
         True,
-        True,
     ),
     "GDPR Art. 9 Health": PolicyModel(
         "gdpr_art9_health",
         "Special-category health data: surrogate identifiers with high-recall detection; "
         "reversible (EU GDPR Art. 9).",
         "replace",
-        True,
         True,
         True,
     ),
@@ -424,14 +418,12 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         "(HIPAA limited dataset).",
         "mask",
         False,
-        False,
         True,
     ),
     "Strict No-Leak": PolicyModel(
         "strict_no_leak",
         "Maximum-recall detection, mask everything — the most aggressive profile.",
         "mask",
-        False,
         False,
         True,
     ),
@@ -442,13 +434,11 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         "mask",
         False,
         False,
-        False,
     ),
     "Canada PIPEDA": PolicyModel(
         "canada_pipeda",
         "Surrogate identifiers per Canada's PIPEDA; reversible with a key.",
         "replace",
-        True,
         True,
         True,
     ),
@@ -458,13 +448,11 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         "replace",
         True,
         True,
-        True,
     ),
     "Australia Privacy Act": PolicyModel(
         "australia_privacy_act",
         "Surrogate identifiers per the Australian Privacy Act APPs.",
         "replace",
-        False,
         False,
         True,
     ),

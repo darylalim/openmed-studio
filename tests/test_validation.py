@@ -435,9 +435,9 @@ def test_validation_policy_matches_openmed() -> None:
 def test_policy_models_resolve_in_openmed() -> None:
     # Pin the curated policy catalog against openmed's live registry the way the NER/zero-shot
     # guards do: every POLICY_MODELS entry names a real policy, and the behavioral flags baked for
-    # the UI preview (default_action/keep_mapping/reversible_id/safety_sweep_mandatory) still match
-    # openmed's loaded PolicyProfile — so a policy-schema change fails CI rather than leaving the
-    # preview stale. Registry/profile metadata only — no model download.
+    # the UI preview (default_action/keep_mapping/safety_sweep_mandatory) still match openmed's
+    # loaded PolicyProfile — so a policy-schema change fails CI rather than leaving the preview
+    # stale. Registry/profile metadata only — no model download.
     from openmed.core.policy import list_policies, load_policy
 
     from openmed_studio.engine import POLICY_MODELS
@@ -455,9 +455,6 @@ def test_policy_models_resolve_in_openmed() -> None:
         ), f"{model.name!r} default_action drifted"
         assert profile.keep_mapping == model.keep_mapping, (
             f"{model.name!r} keep_mapping drifted"
-        )
-        assert profile.reversible_id == model.reversible_id, (
-            f"{model.name!r} reversible_id drifted"
         )
         assert profile.safety_sweep_mandatory == model.safety_sweep_mandatory, (
             f"{model.name!r} safety_sweep_mandatory drifted"

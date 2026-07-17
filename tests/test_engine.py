@@ -507,12 +507,14 @@ def test_engine_deidentify_policy_masks_and_pseudonymizes(loader, note) -> None:
     # Real policy-driven anonymization proves two things the service path relies on: the policy
     # (not the flat method) drives the per-label action, AND reversibility is the policy's call.
     # Both calls pass keep_mapping=False (what service.anonymize_policy sends) and leave method at
-    # its default — the policy overrides it. HIPAA Safe Harbor masks the SSN irreversibly (no
-    # mapping); GDPR pseudonymization replaces it with a surrogate and FORCES a mapping (openmed
-    # ORs the profile's own keep_mapping) that round-trips.
+    # its default — the policy overrides it. The default policy (HIPAA Safe Harbor) masks the SSN
+    # irreversibly (no mapping); GDPR pseudonymization replaces it with a surrogate and FORCES a
+    # mapping (openmed ORs the profile's own keep_mapping) that round-trips.
+    from openmed_studio.engine import DEFAULT_POLICY_MODEL
+
     engine = PIIEngine(loader=loader)
 
-    masked = engine.deidentify(note, policy="hipaa_safe_harbor", keep_mapping=False)
+    masked = engine.deidentify(note, policy=DEFAULT_POLICY_MODEL, keep_mapping=False)
     assert "123-45-6789" not in masked.deidentified_text  # SSN redacted
     assert (
         not masked.mapping

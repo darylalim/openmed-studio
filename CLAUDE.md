@@ -90,7 +90,7 @@ Named guards worth knowing — each **fails CI when openmed drifts**:
 registry/label metadata only — no download, so it runs in CI without the `gliner` extra),
 `test_validation_policy_matches_openmed` (`Policy`↔`openmed.core.policy.PolicyName`),
 `test_policy_models_resolve_in_openmed` (`POLICY_MODELS`↔`list_policies()`/`load_policy()`, incl. baked
-`default_action`/`keep_mapping`/`reversible_id`/`safety_sweep_mandatory`; profile metadata only — no
+`default_action`/`keep_mapping`/`safety_sweep_mandatory`; profile metadata only — no
 download), `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (introspects
 `inspect.signature(openmed.deidentify)`, pinning the forwarded-vs-excluded split from "OpenMed API" —
 `policy` is now **forwarded**, not excluded), and `test_shift_dates_actually_shifts_dates` (see "Known
@@ -188,10 +188,10 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       mirroring `openmed.core.policy.PolicyName`) + `PolicyModel` `NamedTuple` + `POLICY_MODELS`
       (`dict[friendly display name → PolicyModel]`, 10 entries) + `DEFAULT_POLICY_MODEL`. Unlike
       `NerModel`/`ZeroShotModel` a policy loads **no model of its own** — it reuses the shared PII model
-      and only changes the per-label action — so `PolicyModel` bakes *behavioral* flags
-      (`default_action`/`keep_mapping`/`reversible_id`/`safety_sweep_mandatory`, pinned against the live
-      `PolicyProfile` by the drift guard) plus a hand-authored `description` (openmed ships none), not
-      model-identity fields.
+      and only changes the per-label action — so `PolicyModel` bakes the *behavioral* flags the
+      preview surfaces (`default_action`/`keep_mapping`/`safety_sweep_mandatory`, pinned against the
+      live `PolicyProfile` by the drift guard) plus a hand-authored `description` (openmed ships none),
+      not model-identity fields.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`, `ZeroShotRequest`,
     `AnonymizePolicyRequest`, `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, all
     `extra="forbid"`) plus
