@@ -2,10 +2,12 @@
 
 A clinical-NLP app built on [OpenMed](https://openmed.life/docs/).
 
-It surfaces OpenMed's toolkit through a [Streamlit](https://streamlit.io/) UI. Today it does
-PII/PHI de-identification (including surrogate anonymization and **policy-driven anonymization** under
-regulatory compliance profiles like HIPAA Safe Harbor and GDPR), clinical NER, and zero-shot (GLiNER)
-extraction; deeper policy tooling (custom policies, cross-document consistency) is on the roadmap.
+It surfaces OpenMed's toolkit through two interfaces over one shared in-process core: a
+[Streamlit](https://streamlit.io/) UI and a [FastAPI](https://fastapi.tiangolo.com/) HTTP API. Today it
+does PII/PHI de-identification (including surrogate anonymization and **policy-driven anonymization**
+under regulatory compliance profiles like HIPAA Safe Harbor and GDPR), clinical NER, and zero-shot
+(GLiNER) extraction; deeper policy tooling (custom policies, cross-document consistency) is on the
+roadmap.
 
 ## Quickstart
 
@@ -67,13 +69,66 @@ text with a color legend, plus an entity table. A few more things worth knowing:
 - The confidence slider defaults to `0.5` for higher PHI recall (the `deidentify` default is `0.7`).
   The model loads on the first request, so that call shows a spinner and is slower than the rest.
 
+## HTTP API (FastAPI)
+
+The same capabilities are available over HTTP. The API is a thin layer over the *same* in-process core
+the UI uses (see [How it works](#how-it-works)) — it is not a separate service the UI talks to; the two
+run independently. `fastapi` and `uvicorn` are core dependencies, so nothing extra to install:
+
+```bash
+uv run python -m openmed_studio                       # serve on http://127.0.0.1:8080
+# or, to pass uvicorn flags directly (e.g. --reload):
+uv run uvicorn openmed_studio.main:app --port 8080
+```
+
+Open `http://127.0.0.1:8080/docs` for interactive OpenAPI docs. Endpoints:
+
+| Method & path | Does |
+| --- | --- |
+| `POST /pii/extract` | Detect PII/PHI entities (no redaction). |
+| `POST /ner` | Clinical NER — pass a `model_name` (a `NER_MODELS` alias). |
+| `POST /zero-shot` | Zero-shot extraction — pass `model_name` + `labels` (needs the `gliner` extra). |
+| `POST /pii/deidentify` | De-identify one note (`method`, `keep_mapping`, …). |
+| `POST /pii/deidentify/batch` | De-identify up to 100 notes; a bad note is isolated as `{"ok": false, …}`. |
+| `POST /pii/anonymize-policy` | Anonymize under a regulatory `policy` (the policy picks each action). |
+| `POST /pii/reidentify` | Restore originals from a kept `mapping`. |
+| `GET /health` | Liveness + configured model/backend/limits (always unauthenticated). |
+
+Every non-2xx response uses one envelope: `{"error": {"code", "message", "details"}}`. Validation
+errors are PHI-safe — the offending request text is never echoed back.
+
+### Auth & configuration
+
+Authentication is off by default for local use (the service logs a startup warning). Set
+`OPENMED_STUDIO_API_KEY` to require an `X-API-Key` header on every model route (`/health` stays open):
+
+```bash
+OPENMED_STUDIO_API_KEY=secret uv run python -m openmed_studio
+curl -H "X-API-Key: secret" -H "Content-Type: application/json" \
+  -d '{"text": "Patient John Doe, MRN 1234567."}' http://127.0.0.1:8080/pii/deidentify
+```
+
+| Env var | Effect |
+| --- | --- |
+| `OPENMED_STUDIO_API_KEY` | Require this key via `X-API-Key`. Unset = unauthenticated (local) + a warning. |
+| `OPENMED_STUDIO_HOST` / `OPENMED_STUDIO_PORT` | Bind address for `python -m openmed_studio` (default `127.0.0.1:8080`). |
+| `OPENMED_STUDIO_PRELOAD` | Truthy = warm the model at startup (in a worker thread) so the first request isn't slow. |
+| `OPENMED_STUDIO_COMPAT` | Truthy = mount an opt-in `/compat/pii/{extract,deidentify}` surface matching OpenMed's own REST shape (echoes the original text — off by default). |
+| `OPENMED_STUDIO_BACKEND` / `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Same as for the UI — backend pin and per-request text cap. |
+
+> **Run it locally.** Like the UI, the API is a single-user / small-scale tool. An unset API key means
+> **no auth** — put it behind your own auth, TLS, or reverse proxy before exposing it or processing real
+> PHI. Concurrent requests are serialized on the shared model (one inference at a time).
+
 ## How it works
 
-The model runs in-process — there is no separate service to start.
-[`streamlit_app.py`](streamlit_app.py) calls a reusable, framework-free
-[`PIIEngine`](openmed_studio/engine.py) (one shared `ModelLoader`) through the in-process seam in
-[`openmed_studio/service.py`](openmed_studio/service.py), which validates each request and adapts
-OpenMed's results for the UI.
+The model runs in-process — even the [HTTP API](#http-api-fastapi) loads it in-process rather than
+calling out to a separate service. Both surfaces —
+[`streamlit_app.py`](streamlit_app.py) and [`openmed_studio/main.py`](openmed_studio/main.py) (FastAPI) —
+call a reusable, framework-free [`PIIEngine`](openmed_studio/engine.py) (one shared `ModelLoader`)
+through the in-process seam in [`openmed_studio/service.py`](openmed_studio/service.py), which validates
+each request and adapts OpenMed's results. Because both go through the one seam, they enforce the same
+guards; the API adds only HTTP concerns (routing, auth, status codes) on top.
 
 - **Validation.** The Pydantic models in [`openmed_studio/validation.py`](openmed_studio/validation.py)
   gate every request before it reaches the model: the per-request text cap (50k chars, override with
@@ -147,8 +202,10 @@ uv run pytest --run-model    # also run tests that load the OpenMed PII model
 
 Tests live in [`tests/`](tests/). The fast tests need no model: they stub the engine and cover the
 in-process service seam, the input guarantees in `validation.py` (caps, enums, format checks, and the
-openmed-registry sync guards), `PIIEngine`'s loading contract, and the Streamlit UI itself (via
-`streamlit.testing.v1.AppTest`). The `--run-model` tests load real models to verify detection,
+openmed-registry sync guards), `PIIEngine`'s loading contract, the Streamlit UI (via
+`streamlit.testing.v1.AppTest`), and the FastAPI service (via `fastapi.testclient.TestClient` — auth,
+the error envelope, status mapping, and `/compat`). The `--run-model` tests load real models to verify
+detection,
 masking, deterministic replacement, and round-trips; the zero-shot model test is additionally gated on
 the `gliner` extra, so CI never downloads it.
 
@@ -157,14 +214,19 @@ on every pull request, across Python 3.10 and 3.13.
 
 ## Security & notes
 
-**Run it locally.** This is a single-user, local tool — there is no network endpoint to protect, so
-put it behind your own auth or a reverse proxy before exposing it, and don't run it on a network with
-real PHI as-is. Collapsing the old FastAPI service into one Streamlit app changed what's enforced:
+**Run it locally.** This is a single-user / small-scale tool. The [HTTP API](#http-api-fastapi) *does*
+open a network endpoint, so put it behind your own auth, TLS, or a reverse proxy before exposing it, and
+don't run it on a network with real PHI as-is. The guards that protect the model are enforced in-process
+by the service seam — so **both** the UI and the API inherit them:
 
-- **Dropped** (they only existed for the HTTP boundary): API-key auth, the JSON error envelope, and
-  the OpenMed-REST `/compat` surface.
-- **Kept** (enforced in-process by the service seam): the text / batch / mapping caps, the value
-  checks, backend pinning, and not echoing input on a validation error.
+- The text / batch / mapping caps, the value / enum / format checks, backend pinning, and not echoing
+  request input on a validation error.
+- Concurrent API requests are serialized on the shared model (one inference at a time).
+
+The API layer adds the HTTP-only protections back on top: **`X-API-Key` auth** (via
+`OPENMED_STUDIO_API_KEY` — unset means the service runs **unauthenticated**, with a startup warning), a
+uniform `{"error": {…}}` envelope, PHI-safe 422s, and the opt-in OpenMed-REST `/compat` surface
+(`OPENMED_STUDIO_COMPAT`, which echoes the original text — off by default).
 
 Other things to keep in mind:
 

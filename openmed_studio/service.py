@@ -1,17 +1,19 @@
 """In-process service seam over :class:`PIIEngine`: validate, call, adapt.
 
-This is the single chokepoint the Streamlit app funnels every engine call through.
-It is framework-free — no Streamlit, no HTTP — so it unit-tests without a browser
-or a server. It reuses the Pydantic request models in :mod:`openmed_studio.validation`
-as the in-process validation layer, so the text/batch/mapping caps and value checks
-the old FastAPI service enforced survive the move off HTTP. It then adapts openmed's
-result objects into the plain dicts the UI helpers consume.
+This is the single chokepoint **both** delivery surfaces — the Streamlit app and the
+FastAPI service (:mod:`openmed_studio.main`) — funnel every engine call through, so neither
+reimplements it. It is framework-free — no Streamlit, no HTTP — so it unit-tests without a
+browser or a server. It reuses the Pydantic request models in :mod:`openmed_studio.validation`
+as the validation layer, so the text/batch/mapping caps and value checks apply on both
+surfaces. It then adapts openmed's result objects into the plain dicts the UI helpers and the
+API routes consume.
 
-Errors are normalized to a single :class:`ServiceError` carrying a user-facing,
-PHI-safe message (validation messages never echo the offending input); the caller
-renders it. ``ValueError`` from openmed (bad options) and ``RuntimeError``/``OSError``
-(model download/load failure) map to distinct messages, mirroring the old service's
-400-vs-503 split without the HTTP status codes.
+Errors are normalized to a single :class:`ServiceError` carrying a user-facing, PHI-safe
+message (validation messages never echo the offending input) plus a transport-neutral
+``.kind``: the Streamlit UI renders only the message, while the FastAPI layer maps ``.kind``
+to an HTTP status. ``ValueError`` from openmed (bad options) and ``RuntimeError``/``OSError``
+(model download/load failure) map to distinct kinds/messages — the 400-vs-503 split, carried
+by ``.kind`` here rather than an HTTP status code.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -30,9 +32,28 @@ logger = logging.getLogger("openmed_studio")
 
 BACKEND_ENV = "OPENMED_STUDIO_BACKEND"
 
+# A transport-neutral classification of a failure. The Streamlit UI ignores it (it only
+# renders the message), but the FastAPI surface maps it to an HTTP status — so this stays
+# framework-free (no status codes here) while giving a served caller enough to respond
+# correctly: "validation"/"bad_options" are the caller's fault, "unavailable"/"dependency"
+# are the backend's, and "internal" is an unclassified failure.
+ServiceErrorKind = Literal[
+    "validation", "bad_options", "unavailable", "dependency", "internal"
+]
+
 
 class ServiceError(Exception):
-    """A user-facing failure: invalid input, bad options, or backend unavailable."""
+    """A user-facing failure: invalid input, bad options, or backend unavailable.
+
+    ``kind`` is a transport-neutral classification (see :data:`ServiceErrorKind`) the
+    FastAPI layer maps to an HTTP status; the Streamlit UI ignores it. It defaults to
+    ``"internal"`` so an unclassified failure is treated as the server's fault, not
+    wrongly blamed on the caller.
+    """
+
+    def __init__(self, message: str, *, kind: ServiceErrorKind = "internal") -> None:
+        super().__init__(message)
+        self.kind: ServiceErrorKind = kind
 
 
 def resolve_backend() -> Backend | None:
@@ -81,7 +102,9 @@ def _validate(model: type[BaseModel], data: dict[str, Any]) -> Any:
             loc = ".".join(str(p) for p in err.get("loc", ()) if p != "__root__")
             msg = err.get("msg", "invalid")
             parts.append(f"{loc}: {msg}" if loc else msg)
-        raise ServiceError("Invalid input — " + "; ".join(parts)) from exc
+        raise ServiceError(
+            "Invalid input — " + "; ".join(parts), kind="validation"
+        ) from exc
 
 
 def _run(call: Callable[[], Any]) -> Any:
@@ -89,11 +112,11 @@ def _run(call: Callable[[], Any]) -> Any:
     try:
         return call()
     except ValueError as exc:  # invalid options, e.g. date_shift_days w/o shift_dates
-        raise ServiceError(str(exc)) from exc
+        raise ServiceError(str(exc), kind="bad_options") from exc
     except (RuntimeError, OSError) as exc:  # model download/load failure on first call
         logger.exception("model backend failure")
         raise ServiceError(
-            "Model backend unavailable (the model failed to load)."
+            "Model backend unavailable (the model failed to load).", kind="unavailable"
         ) from exc
     except ImportError as exc:
         # An optional backend isn't installed — e.g. openmed's MissingDependencyError when
@@ -103,13 +126,13 @@ def _run(call: Callable[[], Any]) -> Any:
         # optional dep — would otherwise reach the UI as a bare message with no server-side
         # trail to diagnose the real import regression.
         logger.exception("optional dependency import failure")
-        raise ServiceError(str(exc)) from exc
+        raise ServiceError(str(exc), kind="dependency") from exc
     except Exception as exc:  # any other engine/pipeline error — never surface raw
         # A raw exception would escape to Streamlit, whose default showErrorDetails
         # renders the message in the browser (possible PHI). Normalize to a generic
         # ServiceError; the detail goes to the server log, not the UI.
         logger.exception("unexpected model failure")
-        raise ServiceError("The request failed unexpectedly.") from exc
+        raise ServiceError("The request failed unexpectedly.", kind="internal") from exc
 
 
 def _entity_dict(entity: Any) -> dict[str, Any]:

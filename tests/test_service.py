@@ -533,6 +533,40 @@ def test_unexpected_engine_error_maps_to_service_error() -> None:
     assert "unexpectedly" in message.lower()
 
 
+# --- ServiceError.kind (the transport-neutral classification the API maps) ---
+
+
+def test_service_error_defaults_to_internal_kind() -> None:
+    # An unclassified failure is the server's fault, not the caller's — so the default is
+    # "internal" (500), never "bad_options" (400).
+    assert ServiceError("x").kind == "internal"
+    assert ServiceError("x", kind="bad_options").kind == "bad_options"
+
+
+@pytest.mark.parametrize(
+    ("exc", "kind"),
+    [
+        (ValueError("bad option"), "bad_options"),
+        (RuntimeError("kaboom"), "unavailable"),
+        (OSError("io error"), "unavailable"),
+        (ImportError("run uv sync --extra gliner"), "dependency"),
+        (KeyError("leak-me"), "internal"),
+    ],
+)
+def test_run_classifies_engine_failures_by_kind(exc, kind) -> None:
+    # The kind the FastAPI layer maps to an HTTP status is set from the exception class.
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract(_raising(exc), "x")
+    assert excinfo.value.kind == kind
+
+
+def test_validation_failure_has_validation_kind() -> None:
+    # A pre-engine schema rejection carries kind="validation" (a bad request body).
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract(_stub(), "x", confidence_threshold=5.0)
+    assert excinfo.value.kind == "validation"
+
+
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
 
 

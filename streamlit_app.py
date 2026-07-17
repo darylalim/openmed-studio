@@ -1,12 +1,13 @@
 """Streamlit app for openmed-studio's PII/PHI de-identification.
 
-This is the project's only delivery surface. It calls the OpenMed model
-**in-process** through :mod:`openmed_studio.service` — a framework-free seam that
-validates each request (reusing the Pydantic models in
-:mod:`openmed_studio.validation`, so the text/batch/mapping caps still apply),
-invokes the shared :class:`~openmed_studio.engine.PIIEngine`, and adapts the
-result to plain dicts. There is no HTTP service to run and no API key: this is a
-local, single-user tool (see the README's "What we dropped vs the old service").
+This is one of two delivery surfaces (the other is the FastAPI service in
+:mod:`openmed_studio.main`); both call the OpenMed model **in-process** through
+:mod:`openmed_studio.service` — a framework-free seam that validates each request
+(reusing the Pydantic models in :mod:`openmed_studio.validation`, so the
+text/batch/mapping caps still apply), invokes the shared
+:class:`~openmed_studio.engine.PIIEngine`, and adapts the result to plain dicts.
+This app runs the model in-process — it is *not* a client of the HTTP service — and has
+no auth of its own; it is a local, single-user tool (see the README's "Security & notes").
 
 The pure helpers (HTML rendering, payload building) live in ``ui_helpers`` so they
 stay unit-testable; this module is the Streamlit glue. The UI lives in ``main()``

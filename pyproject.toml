@@ -14,11 +14,17 @@ dependencies = [
     # bundled compliance profiles) — present since 1.8.0 with the same profile flags
     # `engine.POLICY_MODELS` bakes (verified: `test_policy_models_resolve_in_openmed`).
     "openmed[hf]>=1.8.0",
-    # The Streamlit app (`streamlit_app.py`) — the project's only delivery surface.
+    # The Streamlit app (`streamlit_app.py`) — one of the two delivery surfaces.
     # Needs streamlit>=1.58 for the `height="stretch"` flex-layout containers the UI uses.
     "streamlit>=1.58",
+    # The FastAPI service (`openmed_studio/main.py`) — the second delivery surface, a thin
+    # HTTP layer over the same in-process `service.py` seam. Core (not an extra) so every
+    # install can run `python -m openmed_studio`; neither pins transformers, so the
+    # `gliner`/`hf-latest` lock fork is unaffected (verify with `uv export | grep transformers`).
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
     # The in-process validation seam (`openmed_studio/validation.py` +
-    # `service.py`) imports pydantic directly, so pin it (openmed pulls it in too).
+    # `service.py`) imports pydantic directly, so pin it (openmed/fastapi pull it in too).
     "pydantic>=2",
 ]
 
@@ -68,6 +74,8 @@ conflicts = [[{ extra = "gliner" }, { extra = "hf-latest" }]]
 
 [dependency-groups]
 dev = [
+    # httpx backs fastapi.testclient.TestClient used in tests/test_api.py.
+    "httpx>=0.27",
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "ty>=0.0.49",

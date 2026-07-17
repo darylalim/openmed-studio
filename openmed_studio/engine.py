@@ -14,6 +14,7 @@ Torch/Transformers or downloads a model.
 from __future__ import annotations
 
 import re
+import threading
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -478,6 +479,11 @@ class PIIEngine:
     general name is deferred). Models load lazily on first use and are then reused, so
     constructing the engine is cheap; each model downloads only on the first call that
     needs it.
+
+    The engine is process-wide and shared across threads (FastAPI requests, cached
+    Streamlit sessions). An internal lock serializes the model-calling methods
+    (``extract``/``analyze``/``extract_zero_shot``/``deidentify``) so concurrent
+    inference runs one call at a time; ``reidentify`` is lock-free (pure regex).
     """
 
     def __init__(
@@ -492,6 +498,14 @@ class PIIEngine:
         self.model_name = model_name
         self.backend = backend
         self._loader: ModelLoader | None = loader
+        # Serializes model inference across threads. The engine is shared — one instance
+        # per process, handed to concurrent FastAPI requests and (via st.cache_resource)
+        # concurrent Streamlit sessions — but the underlying transformers/GLiNER pipelines
+        # are not guaranteed thread-safe. This lock guards every model-calling method so
+        # inference runs one call at a time (and the first-call model download can't race);
+        # `reidentify` is exempt (pure regex, no model). It trades concurrent throughput
+        # for correctness, which suits this local/small-scale tool.
+        self._lock = threading.Lock()
 
     @property
     def loader(self) -> ModelLoader:
@@ -547,12 +561,13 @@ class PIIEngine:
         """Detect PII entities; each has ``.label``/``.text``/``.start``/``.end``/``.confidence``."""
         from openmed import extract_pii
 
-        result = extract_pii(
-            text,
-            confidence_threshold=confidence_threshold,
-            use_smart_merging=use_smart_merging,
-            **self._model_kwargs(lang=lang, model_name=model_name),
-        )
+        with self._lock:
+            result = extract_pii(
+                text,
+                confidence_threshold=confidence_threshold,
+                use_smart_merging=use_smart_merging,
+                **self._model_kwargs(lang=lang, model_name=model_name),
+            )
         return _entities(result)
 
     def analyze(
@@ -583,15 +598,16 @@ class PIIEngine:
         """
         from openmed import analyze_text
 
-        result = analyze_text(
-            text,
-            model_name=model_name,
-            confidence_threshold=confidence_threshold,
-            aggregation_strategy=aggregation_strategy,
-            group_entities=group_entities,
-            output_format="dict",
-            loader=self.loader,
-        )
+        with self._lock:
+            result = analyze_text(
+                text,
+                model_name=model_name,
+                confidence_threshold=confidence_threshold,
+                aggregation_strategy=aggregation_strategy,
+                group_entities=group_entities,
+                output_format="dict",
+                loader=self.loader,
+            )
         return _entities(result)
 
     @staticmethod
@@ -662,15 +678,16 @@ class PIIEngine:
             generated_at=_ZERO_SHOT_INDEX_EPOCH,
             source_dir=Path(),
         )
-        result = infer(
-            NerRequest(
-                model_id=model_id,
-                text=text,
-                labels=labels,
-                threshold=confidence_threshold,
-            ),
-            index=index,
-        )
+        with self._lock:
+            result = infer(
+                NerRequest(
+                    model_id=model_id,
+                    text=text,
+                    labels=labels,
+                    threshold=confidence_threshold,
+                ),
+                index=index,
+            )
         return _entities(result)
 
     def deidentify(
@@ -725,21 +742,22 @@ class PIIEngine:
         """
         from openmed import deidentify
 
-        return deidentify(
-            text,
-            method=method,
-            confidence_threshold=confidence_threshold,
-            use_smart_merging=use_smart_merging,
-            keep_mapping=keep_mapping,
-            consistent=consistent,
-            seed=seed,
-            locale=locale,
-            date_shift_days=date_shift_days,
-            keep_year=keep_year,
-            use_safety_sweep=use_safety_sweep,
-            policy=policy,
-            **self._model_kwargs(lang=lang, model_name=model_name),
-        )
+        with self._lock:
+            return deidentify(
+                text,
+                method=method,
+                confidence_threshold=confidence_threshold,
+                use_smart_merging=use_smart_merging,
+                keep_mapping=keep_mapping,
+                consistent=consistent,
+                seed=seed,
+                locale=locale,
+                date_shift_days=date_shift_days,
+                keep_year=keep_year,
+                use_safety_sweep=use_safety_sweep,
+                policy=policy,
+                **self._model_kwargs(lang=lang, model_name=model_name),
+            )
 
     @staticmethod
     def reidentify(deidentified_text: str, mapping: dict[str, str]) -> str:

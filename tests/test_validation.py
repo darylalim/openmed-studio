@@ -1,9 +1,9 @@
-"""Tests for the input guarantees that survive the move off HTTP.
+"""Tests for the input guarantees the Pydantic request models enforce.
 
-The old FastAPI service validated requests with Pydantic before calling the
-engine; ``openmed_studio.service`` now does the same in-process, raising
-``ServiceError`` on rejection (validation runs before the stub engine is reached).
-This pins the text/batch/mapping caps, the value/enum/format checks, the
+The request models validate every request in-process via ``openmed_studio.service``
+(and, unchanged, serve as the FastAPI request bodies); the seam raises ``ServiceError``
+on rejection (validation runs before the stub engine is reached). This pins the
+text/batch/mapping caps, the value/enum/format checks, the
 ``OPENMED_STUDIO_MAX_TEXT_LENGTH`` knob, the ``DeidMethod``↔openmed sync, and that
 rejection messages never echo the offending input (possible PHI).
 """

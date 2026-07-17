@@ -1,10 +1,11 @@
-"""Pydantic request models for in-process de-identification.
+"""Pydantic request models for de-identification (and the other capabilities).
 
-These import only ``pydantic``/``os``/``re`` (no web framework), so the Streamlit
-app reuses them as the in-process validation seam (``openmed_studio.service``):
-``model_validate`` enforces the text/batch/mapping caps and value checks before any
-engine call. They were the FastAPI request bodies; the HTTP-only response/error/
-health/compat models were removed with the service.
+These import only ``pydantic``/``os``/``re`` (no web framework), so they serve double duty:
+the in-process seam (``openmed_studio.service``) uses ``model_validate`` to enforce the
+text/batch/mapping caps and value checks before any engine call, and the FastAPI service
+(``openmed_studio.main``) declares them directly as request bodies (free OpenAPI schemas +
+automatic 422s). The HTTP-only *response*/error/health/compat models live in ``main.py``,
+not here, so this module stays framework-free.
 """
 
 from __future__ import annotations

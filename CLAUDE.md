@@ -14,10 +14,13 @@ over `deidentify(policy=…)` — OpenMed's regulatory compliance profiles: HIPA
 pseudonymization, etc.) — clinical NER (token-classification), and zero-shot (GLiNER) extraction (the
 `Zero-shot` tab over `openmed.ner.infer`, behind the optional `gliner` extra).** Deeper policy tooling
 (user-authored custom policies, cross-document `SurrogateVault` consistency) is the roadmap.
-It's a [Streamlit](https://streamlit.io/) app (`streamlit_app.py`) running the model **in-process**
-through a framework-free `PIIEngine` behind a thin service seam (`openmed_studio/service.py`) — no
-separate web service. (It was a FastAPI service + HTTP client; that boundary was removed — see "What
-was dropped".)
+It has **two delivery surfaces over one shared in-process seam** (`openmed_studio/service.py`): a
+[Streamlit](https://streamlit.io/) app (`streamlit_app.py`) and a [FastAPI](https://fastapi.tiangolo.com/)
+service (`openmed_studio/main.py`). Both run the model **in-process** through a framework-free
+`PIIEngine` — the FastAPI service is a *thin HTTP layer over the same seam the UI uses*, not a
+separate service the UI calls. (The app was once FastAPI-only with a Streamlit HTTP *client*; that
+collapsed to Streamlit-only, and the HTTP surface was then re-added as a second, independent surface —
+see "The FastAPI service" and "What is (and isn't) dropped".)
 
 ## Working with Python
 
@@ -46,6 +49,16 @@ uv sync --extra gliner
 # Force a backend (default unset = openmed auto-detects: MLX on Apple Silicon when the mlx extra
 # is installed, else HuggingFace). "mlx" fails loudly if MLX is unavailable.
 OPENMED_STUDIO_BACKEND=mlx uv run streamlit run streamlit_app.py
+
+# Run the FastAPI service (the second delivery surface; open http://127.0.0.1:8080/docs). fastapi
+# and uvicorn are CORE deps, so no extra is needed. Host/port via OPENMED_STUDIO_HOST/PORT.
+uv run python -m openmed_studio
+# or, equivalently, with uvicorn directly (e.g. to add --reload):
+uv run uvicorn openmed_studio.main:app --port 8080
+# Require an API key on every model route (unset = runs unauthenticated + a startup warning).
+OPENMED_STUDIO_API_KEY=secret uv run python -m openmed_studio
+# Warm the model at startup so the first request isn't slow; mount the opt-in /compat surface.
+OPENMED_STUDIO_PRELOAD=1 OPENMED_STUDIO_COMPAT=1 uv run python -m openmed_studio
 ```
 
 Lint, format, and type-check with the project-pinned tools (configured under
@@ -74,11 +87,12 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | File | Pins |
 |------|------|
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
-| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable"), and batch per-note isolation |
+| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), and batch per-note isolation |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI), and the openmed-sync guards |
-| `test_engine.py` | `PIIEngine` lazy-load + backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), and a `--run-model` policy test (masking vs reversible-surrogate) |
+| `test_engine.py` | `PIIEngine` lazy-load + backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and a `--run-model` policy test (masking vs reversible-surrogate) |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub) |
+| `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s, `X-API-Key` auth (401/accept/reject + open `/health`), and the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated) |
 
 Named guards worth knowing — each **fails CI when openmed drifts**:
 `test_validation_deidmethod_matches_openmed` (`DeidMethod`↔openmed),
@@ -131,13 +145,20 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   use of that domain — switching domains loads another model rather than rebuilding the loader.
 - **Python:** `requires-python = ">=3.10"`; verified on 3.11, but uv may pick a
   newer interpreter (e.g. 3.13) for `.venv`.
-- **App structure:** `openmed_studio/` is the framework-free core (no Streamlit, no HTTP):
+- **App structure:** `engine.py`/`service.py`/`validation.py` are the **framework-free core** (no
+  Streamlit, no HTTP); `main.py`/`__main__.py` are the FastAPI/uvicorn HTTP layer *over* that core
+  (the only files that import a web framework), mirroring how `streamlit_app.py`/`ui_helpers.py` are
+  the UI layer over it:
   - `engine.py` — the `PIIEngine` (one shared `ModelLoader`, lazy load) plus the model registry:
     - *Loader + wrappers:* the `ModelLoader` is always built with
       `OpenMedConfig(backend=self.backend, torch_attention_backend="eager")` — `backend` stays
       `None` unless pinned, so openmed still auto-detects it, while `torch_attention_backend="eager"`
       is pinned deliberately (the OpenMed DeBERTa-v2 models have no SDPA kernel — see "Known
-      gotchas"); thin wrappers cover `extract_pii`/`deidentify`/`reidentify`.
+      gotchas"); thin wrappers cover `extract_pii`/`deidentify`/`reidentify`. A `threading.Lock`
+      (`self._lock`) serializes the four model-calling methods
+      (`extract`/`analyze`/`extract_zero_shot`/`deidentify`) so concurrent inference (FastAPI
+      requests, cached Streamlit sessions sharing the one engine) runs one call at a time and the
+      first-call model download can't race; `reidentify` is exempt (pure regex, a `@staticmethod`).
     - *De-identify options* (per-call, surfaced in each de-identifying tab's `Advanced` expander,
       conditioned on the method): `consistent`/`seed`/`locale` are the surrogate-method
       (`replace`/`format_preserve`) determinism knobs
@@ -209,16 +230,22 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     policy decides reversibility) — passing either is a forbidden extra field. Imports only
     `pydantic`/`os`/`re` — no web framework — so it doubles as the in-process validation layer.
     Re-exports `DeidMethod` and `Policy`.
-  - `service.py` — the single in-process chokepoint (framework-free); every UI engine call funnels
-    through it, so nothing bypasses validation:
+  - `service.py` — the single in-process chokepoint (framework-free); **both** surfaces (the Streamlit
+    UI and the FastAPI service) funnel every engine call through it, so nothing bypasses validation:
     - `resolve_backend()` (reads `OPENMED_STUDIO_BACKEND`) and `build_engine()` (the `PIIEngine`
-      factory the UI caches).
-    - `_validate()` — `model_validate()`, raising a **PHI-safe** `ServiceError` from only `loc`/`msg`
-      (never Pydantic's `input`).
-    - `_run()` — translates `ValueError`→bad-options, `RuntimeError`/`OSError`→backend-unavailable,
-      and `ImportError`→pass-the-message (openmed's `MissingDependencyError` subclasses `ImportError`;
-      the zero-shot tab surfaces its "run `uv sync --extra gliner`" hint through this branch) into
-      `ServiceError` (the old 400/503 split, now capability-neutral since NER/zero-shot flow through it).
+      factory both the UI's `st.cache_resource` and the API's `get_engine` wrap).
+    - `ServiceError` carries a transport-neutral `.kind`
+      (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, `ServiceErrorKind`): the
+      Streamlit UI ignores it (renders only the message), while `main.py` maps it to an HTTP status —
+      so the seam stays framework-free (no status codes) yet a served caller gets the right response.
+    - `_validate()` — `model_validate()`, raising a **PHI-safe** `ServiceError` (`kind="validation"`)
+      from only `loc`/`msg` (never Pydantic's `input`).
+    - `_run()` — translates `ValueError`→`kind="bad_options"`, `RuntimeError`/`OSError`→
+      `kind="unavailable"`, `ImportError`→`kind="dependency"`+pass-the-message (openmed's
+      `MissingDependencyError` subclasses `ImportError`; the zero-shot tab/route surfaces its "run
+      `uv sync --extra gliner`" hint through this branch), and any other exception→`kind="internal"`
+      (generic message, detail to the log) into `ServiceError` (the old 400/503 split, now carried by
+      `.kind` and capability-neutral since NER/zero-shot flow through it).
     - the dict adapters (`_entity_dict`, `_deidentify_dict`) and the entry points
       `extract`/`analyze`/`extract_zero_shot`/`deidentify`/`anonymize_policy`/`deidentify_batch`/
       `reidentify`, which validate → call the engine → adapt to plain dicts. `analyze` and
@@ -236,6 +263,34 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`, `DEFAULT_ZERO_SHOT_MODEL`,
     `DEFAULT_POLICY_MODEL`, `NER_MODELS`, `ZERO_SHOT_MODELS`, `POLICY_MODELS`, `PIIEngine`, and
     `__version__`.
+  - `main.py` — the FastAPI service (the only core module that imports a web framework): `create_app()`
+    (and the module-level `app`). Every route is a **thin wrapper over `service.*`** — it declares a
+    `validation.py` request model as the body (free OpenAPI + auto-422) and returns the seam's dict,
+    coerced into a typed response model (`Entity`/`EntitiesResponse`/`DeidentifyResponse`/
+    `BatchItemResult`+`DeidentifyBatchResponse`/`ReidentifyResponse`, all defined here). Seven model
+    routes + `GET /health` (8 mounted; 10 with `/compat`):
+    `POST /pii/extract`→`extract`, `POST /ner`→`analyze`, `POST /zero-shot`→`extract_zero_shot`,
+    `POST /pii/deidentify`→`deidentify`, `POST /pii/deidentify/batch`→`deidentify_batch`,
+    `POST /pii/anonymize-policy`→`anonymize_policy`, `POST /pii/reidentify`→`reidentify`, `GET /health`
+    (unauthenticated, for probes), and the opt-in two-route `/compat` router. A single `@app.exception_handler(
+    ServiceError)` maps `.kind`→status and builds the `{"error":{code,message,details}}` envelope (so
+    routes need no try/except); handlers for `StarletteHTTPException` (401 etc.) and
+    `RequestValidationError` (**PHI-safe** — drops Pydantic's `input`) reuse the same envelope. Auth is
+    `require_api_key` (a no-op unless `OPENMED_STUDIO_API_KEY` is set; `create_app` warns at startup when
+    it's unset); an opt-in `OPENMED_STUDIO_PRELOAD` lifespan warms the model in a threadpool. The
+    `/compat` surface (mounted only when `OPENMED_STUDIO_COMPAT` is truthy) mirrors OpenMed's own REST
+    shape (`pii_entities`/`num_entities_redacted`/`timestamp`/echoed `original_text`, `keep_alive`
+    ignored) for `/compat/pii/{extract,deidentify}` only; it calls the engine directly for the raw
+    entity objects upstream's shape needs (the seam's adapter drops `redacted_text`/`metadata`) but
+    reuses `service._run` for the same error translation. Caveat: this compat shape is **hand-authored
+    against OpenMed's REST spec** and — unlike everything in "OpenMed API (verified against installed
+    v…)" — cannot be pinned by a drift guard (those fields don't exist in the installed `openmed`
+    package), so treat it as best-effort parity, not a verified contract. **FastAPI 0.139 includes
+    routers lazily**, so
+    to introspect routes use `app.openapi()["paths"]`, not `app.routes` (which holds an `_IncludedRouter`
+    wrapper for a mounted router — see "Known gotchas").
+  - `__main__.py` — `python -m openmed_studio` → `uvicorn.run("openmed_studio.main:app", …)` with
+    `OPENMED_STUDIO_HOST`/`OPENMED_STUDIO_PORT` (defaults `127.0.0.1:8080`).
 
   It stays a uv **non-package** project, so pytest imports `openmed_studio` via the repo root on
   `sys.path` (`pythonpath = ["."]`; Streamlit adds the app's directory).
@@ -328,15 +383,24 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     Local secrets go in the gitignored `.streamlit/secrets.toml`, and the download outputs
     (`deidentified.txt`/`anonymized.txt`/`reidentified.txt`/`deidentified_batch.json`) are gitignored
     too, since they can carry PHI or its surrogates.
-- **What was dropped (vs the old FastAPI service):** the HTTP boundary and everything that only
-  existed because of it — API-key auth (`OPENMED_STUDIO_API_KEY` / `X-API-Key`), the `{"error":
-  {...}}` JSON envelope, the `/compat` OpenMed-REST surface (`OPENMED_STUDIO_COMPAT`), the startup
-  preload (`OPENMED_STUDIO_PRELOAD`), and `main.py`/`__main__.py`/uvicorn/fastapi/httpx/requests.
-  This is now a **local, single-user** tool — put it behind your own auth/proxy before exposing it.
-  The guarantees that protect the *model* regardless of transport are **kept**, enforced in-process
-  by `service.py`: the text/batch/mapping caps, the value/enum/format checks, backend pinning, and
-  not echoing input on a validation error. Only `OPENMED_STUDIO_BACKEND` and
-  `OPENMED_STUDIO_MAX_TEXT_LENGTH` remain as env knobs.
+- **The FastAPI service, and what is (and isn't) dropped:** the app was FastAPI-only, then collapsed
+  to Streamlit-only (removing the HTTP boundary), and the HTTP surface has since been **re-added as a
+  second, independent surface over the same `service.py` seam** — *not* by reverting to Streamlit-as-a-
+  client. `main.py`/`__main__.py` and `fastapi`/`uvicorn` (core) + `httpx` (dev, for `TestClient`) are
+  back. **Restored** because they matter for a *served* surface: API-key auth (`OPENMED_STUDIO_API_KEY`
+  / `X-API-Key`), the `{"error":{code,message,details}}` JSON envelope + PHI-safe 422, `/health`, the
+  opt-in `/compat` OpenMed-REST surface (`OPENMED_STUDIO_COMPAT`), and the startup preload
+  (`OPENMED_STUDIO_PRELOAD`). **Still dropped:** the Streamlit-as-HTTP-client architecture and the
+  `requests` dep — the Streamlit app runs the model in-process, and the two surfaces are parallel and
+  independent (both import `service.py`; neither calls the other). Env knobs now:
+  `OPENMED_STUDIO_BACKEND`, `OPENMED_STUDIO_MAX_TEXT_LENGTH`, `OPENMED_STUDIO_API_KEY`,
+  `OPENMED_STUDIO_PRELOAD`, `OPENMED_STUDIO_COMPAT`, and `OPENMED_STUDIO_HOST`/`OPENMED_STUDIO_PORT`.
+  Security posture is unchanged in spirit: still a **local / small-scale** tool — an unset API key runs
+  the service **unauthenticated** (with a loud startup warning), so set the key (and use TLS or your own
+  reverse proxy) before exposing it or processing real PHI. The guarantees that protect the *model*
+  regardless of surface are enforced in-process by `service.py` (text/batch/mapping caps,
+  value/enum/format checks, backend pinning, no input echo on a validation error) plus the engine's
+  concurrency lock — so both the UI and the API inherit them.
 
 ## OpenMed API (verified against installed v1.9.1)
 
@@ -482,4 +546,13 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
   literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.
+- **FastAPI ≥0.139 includes routers lazily.** `app.include_router(...)` no longer eagerly flattens the
+  child routes into `app.routes`; it stores an `_IncludedRouter` wrapper (no `.path`). So the `/compat`
+  routes are absent from `app.routes` even when mounted — if you need to introspect routes, use
+  `app.openapi()["paths"]` instead. Requests route correctly regardless; only `.path`-based
+  introspection is affected. (`test_api.py` sidesteps this entirely — it verifies the `/compat` mount
+  *behaviorally*, e.g. a 404 when unmounted, rather than by listing routes.)
+- **The FastAPI `TestClient` warns about `httpx` vs `httpx2`.** `starlette.testclient` emits a
+  `StarletteDeprecationWarning` ("install `httpx2` instead") on import; it is harmless and `httpx`
+  still works. Don't "fix" it by swapping deps until starlette actually requires it.
 - The `.venv` here is ~1.1 GB (Torch + Transformers) and is gitignored.

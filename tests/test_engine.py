@@ -470,6 +470,80 @@ def test_zero_shot_available_and_default_labels_delegate(monkeypatch) -> None:
     assert PIIEngine.default_labels("clinical") == ["Problem", "Test"]
 
 
+# --- Concurrency: model methods serialize on the engine's internal lock ------
+
+
+@pytest.mark.parametrize("method", ["extract", "analyze", "deidentify"])
+def test_model_methods_hold_lock_during_inference(monkeypatch, method) -> None:
+    # The engine is shared across threads (FastAPI requests, cached Streamlit sessions),
+    # so every model-calling method must run its openmed call while holding self._lock —
+    # concurrent inference serializes. We record the lock state from inside the
+    # monkeypatched openmed call, where the lock should be held.
+    import openmed
+
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    seen: dict[str, bool] = {}
+
+    def record(*_args, **_kwargs):
+        seen["locked"] = engine._lock.locked()
+        return SimpleNamespace(
+            entities=[], deidentified_text="ok", pii_entities=[], mapping=None
+        )
+
+    monkeypatch.setattr(openmed, "extract_pii", record)
+    monkeypatch.setattr(openmed, "analyze_text", record)
+    monkeypatch.setattr(openmed, "deidentify", record)
+
+    if method == "extract":
+        engine.extract("x")
+    elif method == "analyze":
+        engine.analyze("x", model_name="disease_detection_superclinical_141m")
+    else:
+        engine.deidentify("x")
+
+    assert seen["locked"] is True  # the openmed call ran under the lock
+    assert engine._lock.locked() is False  # and the lock was released afterward
+
+
+def test_extract_zero_shot_holds_lock_during_inference(monkeypatch) -> None:
+    # The 4th model-calling method — the GLiNER path that bypasses the shared loader — must
+    # also run its openmed.ner.infer call under self._lock. It needs its own test (not the
+    # parametrize above) because it monkeypatches get_all_models + openmed.ner.infer instead
+    # of a top-level openmed.* function.
+    import openmed
+    import openmed.ner as ner
+
+    repo_id = "OpenMed/OpenMed-ZeroShot-NER-Disease-Small-166M"
+    monkeypatch.setattr(
+        openmed,
+        "get_all_models",
+        lambda: {"zeroshot_disease_small_166m": SimpleNamespace(model_id=repo_id)},
+    )
+
+    engine = PIIEngine()
+    seen: dict[str, bool] = {}
+
+    def fake_infer(_request, *, index):
+        seen["locked"] = engine._lock.locked()
+        return SimpleNamespace(entities=[])
+
+    monkeypatch.setattr(ner, "infer", fake_infer)
+    engine.extract_zero_shot(
+        "x", model_name="zeroshot_disease_small_166m", labels=["Problem"]
+    )
+
+    assert seen["locked"] is True
+    assert engine._lock.locked() is False
+
+
+def test_reidentify_is_lock_free() -> None:
+    # reidentify does no model work, so it must never touch the lock — it returns even
+    # while the lock is held (a lock-acquiring impl would deadlock this very call).
+    engine = PIIEngine()
+    with engine._lock:
+        assert engine.reidentify("[a]", {"[a]": "b"}) == "b"
+
+
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
 
 
