@@ -51,6 +51,17 @@ MAX_ZERO_SHOT_LABEL_CHARS = 80
 # Languages OpenMed ships PII models for (openmed.core.pii_i18n.SUPPORTED_LANGUAGES).
 # A non-"en" value makes openmed auto-select a larger language-specific model.
 # test_validation_lang_subset_of_openmed keeps this from drifting past what openmed supports.
+#
+# This is a deliberately CURATED SUBSET, not a mirror: openmed 2.x took SUPPORTED_LANGUAGES from
+# 12 to 35, but most of the additions route through openmed's privacy-filter family, and that
+# path is incompatible with how this app runs models. `extract_pii`'s `uses_privacy_filter`
+# branch (openmed/core/pii.py) builds its pipeline via `create_privacy_filter_pipeline` and
+# never touches `loader=`, there is no memoization anywhere in `openmed/torch/privacy_filter.py`
+# (so the model is rebuilt from scratch on EVERY call), and it loads with
+# `trust_remote_code=True`. Adding those languages here would silently bypass the shared
+# ModelLoader, the engine's `OpenMedConfig` pins, and `engine.is_loaded`. Widening the list
+# means fixing that first (thread `config=` through and cache the pipeline), not editing the
+# Literal. The guard is `<=` precisely so a curated subset stays legal.
 Lang = Literal["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt", "ar", "ja", "tr"]
 
 # Strip surrounding whitespace, then require 1..MAX_TEXT_CHARS chars — this also

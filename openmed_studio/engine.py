@@ -46,16 +46,18 @@ class NerModel(NamedTuple):
     display_name: str
     # the model's own suggested threshold (the UI slider default)
     recommended_confidence: float
-    # labels it emits (an empty tuple = "not declared", e.g. Medical)
+    # labels it emits (an empty tuple = the registry declares none)
     entity_types: tuple[str, ...]
     # human model size, e.g. "141M"
     params: str
 
 
 # Clinical NER (token-classification) is one model PER domain, not one universal model, so
-# the app curates one representative ~141M "superclinical" model per clinical category
-# (Medical uses the broader 434M ClinicalNER model — its only non-MLX option). Keys are
-# openmed's own category names (openmed.list_model_categories() minus the "Privacy" PII bucket).
+# the app curates one representative ~141M "superclinical" model per clinical category. Keys are
+# openmed's own category names (openmed.list_model_categories() minus the "Privacy" PII bucket
+# and "Medical" — openmed 2.0 dropped the broad 434M ClinicalNER alias the Medical domain used,
+# leaving that category with no plain-PyTorch token-classification model). The 10 domains left
+# mirror ZERO_SHOT_MODELS exactly.
 NER_MODELS: dict[str, NerModel] = {
     "Disease": NerModel(
         "disease_detection_superclinical_141m",
@@ -68,14 +70,14 @@ NER_MODELS: dict[str, NerModel] = {
         "pharma_detection_superclinical_141m",
         "PharmaDetect SuperClinical 141M",
         0.65,
-        ("SIMPLE_CHEMICAL", "CHEM", "DRUG", "MEDICATION"),
+        ("CHEM", "CHEMICAL", "DRUG", "MEDICATION"),
         "141M",
     ),
     "Chemical": NerModel(
         "chemical_detection_superclinical_141m",
         "ChemicalDetect SuperClinical 141M",
         0.6,
-        ("SIMPLE_CHEMICAL", "CHEM", "DRUG", "MEDICATION"),
+        ("SIMPLE_CHEMICAL", "CHEM", "CHEMICAL", "DRUG", "MEDICATION"),
         "141M",
     ),
     "Anatomy": NerModel(
@@ -95,6 +97,7 @@ NER_MODELS: dict[str, NerModel] = {
             "RNA",
             "GENE",
             "PROTEIN",
+            "CELL",
             "CELL_LINE",
             "CELL_TYPE",
         ),
@@ -121,6 +124,7 @@ NER_MODELS: dict[str, NerModel] = {
         (
             "SIMPLE_CHEMICAL",
             "CHEM",
+            "CHEMICAL",
             "CANCER",
             "CELL",
             "GENE_OR_GENE_PRODUCT",
@@ -136,7 +140,9 @@ NER_MODELS: dict[str, NerModel] = {
             "ORGANISM_SUBDIVISION",
             "ORGANISM_SUBSTANCE",
             "TISSUE",
+            "ANATOMY",
             "PATHOLOGICAL_FORMATION",
+            "PATHOLOGY",
         ),
         "141M",
     ),
@@ -158,15 +164,8 @@ NER_MODELS: dict[str, NerModel] = {
         "bloodcancer_detection_superclinical_141m",
         "BloodCancerDetect SuperClinical 141M",
         0.65,
-        ("CANCER", "DISEASE", "CL"),
+        ("CANCER", "CELL", "CL", "DISEASE"),
         "141M",
-    ),
-    "Medical": NerModel(
-        "clinicalner_superclinical_large_434m",
-        "ClinicalNER SuperClinical Large 434M",
-        0.6,
-        (),
-        "434M",
     ),
 }
 
@@ -328,8 +327,21 @@ Backend = Literal["hf", "mlx"]
 # ``format_preserve`` (added in openmed 1.7.0) is a ``replace`` sibling: it swaps
 # structured identifiers for synthetic values of the same shape (a phone stays
 # phone-shaped), falling back to masking for entities it can't format-preserve.
+# ``aadhaar_mask`` (added in openmed 2.0) is India-specific: a value that passes openmed's
+# Aadhaar (Verhoeff) checksum renders as ``XXXX XXXX NNNN`` — the UIDAI display form, which
+# KEEPS the last four digits — and every other entity falls through to the ordinary mask
+# placeholder, so it is byte-identical to ``mask`` on a note with no Aadhaar number. Retaining
+# four digits makes it strictly *weaker* than ``mask``, so it is listed LAST: the guard
+# compares sets, not order, and ``METHODS`` in streamlit_app.py feeds this order straight into
+# the picker — an India-specific niche method should not outrank ``replace``/``hash`` there.
 DeidMethod = Literal[
-    "mask", "remove", "replace", "hash", "shift_dates", "format_preserve"
+    "mask",
+    "remove",
+    "replace",
+    "hash",
+    "shift_dates",
+    "format_preserve",
+    "aadhaar_mask",
 ]
 
 # The regulatory anonymization policies openmed's deidentify(policy=...) accepts. Mirrors
@@ -348,6 +360,16 @@ Policy = Literal[
     "canada_pipeda",
     "uk_ico_anonymisation",
     "australia_privacy_act",
+    # openmed 2.x additions — APAC and African data-protection regimes:
+    "china_pipl",
+    "india_dpdp_act",
+    "africa_malabo_baseline",
+    "za_popia",
+    "ng_ndpa",
+    "ke_dpa",
+    "india_health_id",
+    "eg_pdpl",
+    "ma_law_09_08",
 ]
 
 
@@ -366,9 +388,16 @@ class PolicyModel(NamedTuple):
 
     # canonical policy name passed to deidentify(policy=...); a Policy Literal value
     name: str
-    # one-line, hand-authored summary of what the policy does (openmed ships none)
+    # one-line, hand-authored summary of what the policy does (openmed ships none). This — NOT
+    # `default_action` below — is the honest account of a profile's behavior, so write it from
+    # `load_policy(name).actions` / `.policy_label_actions`, never from `default_action`.
     description: str
-    # the profile's fallback action (mask/redact/replace/keep) — pinned against load_policy
+    # The profile's DECLARED fallback action (mask/redact/replace/keep), pinned against
+    # load_policy. Caveat worth knowing before you surface it as a headline: openmed never
+    # reaches it. `PolicyProfile.action_for` resolves through `actions[normalize_label(label)]`,
+    # `_canonical_actions` requires `actions` to cover all 135 canonical labels exactly, and
+    # `normalize_label` funnels anything unrecognized to OTHER — so the fallback is unreachable
+    # and a profile can declare "replace" while masking 119 of 135 labels (za_popia does).
     default_action: str
     # whether the policy keeps a surrogate->original mapping (i.e. is reversible) — pinned
     keep_mapping: bool
@@ -376,11 +405,12 @@ class PolicyModel(NamedTuple):
     safety_sweep_mandatory: bool
 
 
-# openmed's 10 built-in compliance profiles, keyed by a friendly display name (the picker shows
+# openmed's 19 built-in compliance profiles, keyed by a friendly display name (the picker shows
 # the key). Each maps to a canonical policy that, passed as deidentify(policy=...), OVERRIDES the
-# flat method and assigns a per-label action encoding that legal standard — masking (irreversible)
-# or surrogate replacement (reversible with a key), per the profile. Ordered from the most widely
-# used (HIPAA Safe Harbor) outward.
+# flat method and assigns a per-label action encoding that legal standard. Reversibility is a
+# SEPARATE flag, not implied by the action: masking profiles never keep a mapping, and only some
+# `replace` profiles do (GDPR/PIPEDA/UK ICO/PIPL) — the rest surrogate irreversibly. Ordered from
+# the most widely used (HIPAA Safe Harbor) outward.
 POLICY_MODELS: dict[str, PolicyModel] = {
     "HIPAA Safe Harbor": PolicyModel(
         "hipaa_safe_harbor",
@@ -452,8 +482,91 @@ POLICY_MODELS: dict[str, PolicyModel] = {
     ),
     "Australia Privacy Act": PolicyModel(
         "australia_privacy_act",
-        "Surrogate identifiers per the Australian Privacy Act APPs.",
+        "Surrogate identifiers per the Australian Privacy Act APPs; irreversible (no key kept).",
         "replace",
+        False,
+        True,
+    ),
+    # openmed 2.x additions. Two things to keep straight when editing these descriptions —
+    # both verified against `load_policy(...).actions` (135 canonical labels each), not inferred
+    # from `default_action`, which openmed never actually applies (see PolicyModel's docstring):
+    #   * Reversibility: only China PIPL keeps a mapping. The other `replace` profiles here
+    #     produce IRREVERSIBLE surrogates, so their descriptions must not promise a key.
+    #   * "replace" rarely means "surrogate everything". za_popia replaces 16 of 135 labels and
+    #     masks 119; ng_ndpa replaces 9 and masks 126. Four profiles (Malabo, Kenya DPA, Egypt
+    #     PDPL, Morocco 09-08) are `mask`-everything and behaviorally identical to Strict
+    #     No-Leak — say so rather than implying four distinct regimes.
+    # Eight of the nine also carry threshold_profile="strict_no_leak" (higher recall than the
+    # slider's nominal setting); that is what "high-recall" means below.
+    "China PIPL": PolicyModel(
+        "china_pipl",
+        "Surrogate direct identifiers, mask all else; high-recall, reversible with a key "
+        "(China PIPL).",
+        "replace",
+        True,
+        True,
+    ),
+    "India DPDP Act": PolicyModel(
+        "india_dpdp_act",
+        "Surrogate direct identifiers, mask dates/ages/places, keep clinical detail; "
+        "irreversible (India DPDP 2023).",
+        "replace",
+        False,
+        True,
+    ),
+    "India Health ID": PolicyModel(
+        "india_health_id",
+        "Mask direct identifiers only, with high-recall detection; ages, dates and places "
+        "are KEPT. No ABHA-specific rules.",
+        "mask",
+        False,
+        True,
+    ),
+    "African Union (Malabo)": PolicyModel(
+        "africa_malabo_baseline",
+        "Mask every detected span, clinical terms included, with high-recall detection "
+        "(AU Malabo baseline).",
+        "mask",
+        False,
+        True,
+    ),
+    "South Africa POPIA": PolicyModel(
+        "za_popia",
+        "Surrogate direct and quasi-identifiers, mask sensitive and clinical terms; "
+        "irreversible (South Africa POPIA).",
+        "replace",
+        False,
+        True,
+    ),
+    "Nigeria NDPA": PolicyModel(
+        "ng_ndpa",
+        "Surrogate direct identifiers, mask everything else; high-recall, irreversible "
+        "(Nigeria NDPA 2023).",
+        "replace",
+        False,
+        True,
+    ),
+    "Kenya DPA": PolicyModel(
+        "ke_dpa",
+        "Mask every detected span, clinical terms included, with high-recall detection "
+        "(Kenya DPA 2019).",
+        "mask",
+        False,
+        True,
+    ),
+    "Egypt PDPL": PolicyModel(
+        "eg_pdpl",
+        "Mask every detected span, clinical terms included, with high-recall detection "
+        "(Egypt Law 151/2020).",
+        "mask",
+        False,
+        True,
+    ),
+    "Morocco Law 09-08": PolicyModel(
+        "ma_law_09_08",
+        "Mask every detected span, clinical terms included, with high-recall detection "
+        "(Morocco Law 09-08).",
+        "mask",
         False,
         True,
     ),
@@ -461,6 +574,30 @@ POLICY_MODELS: dict[str, PolicyModel] = {
 
 # The default policy: HIPAA Safe Harbor (the most widely used de-identification standard).
 DEFAULT_POLICY_MODEL = POLICY_MODELS["HIPAA Safe Harbor"].name
+
+
+# openmed 2.x's occurrence-mapping protocol. Mirrors
+# ``openmed.core.pii._OCCURRENCE_MAPPING_PREFIX``, which is private, so it is baked here
+# rather than imported — ``PIIEngine.reidentify`` is a pure, lock-free staticmethod with no
+# openmed import at all. ``tests/test_pii_pure.py::test_occurrence_prefix_matches_openmed``
+# pins it against the real constant, so an upstream rename fails CI.
+_OCCURRENCE_MAPPING_PREFIX = "__openmed_occurrence_v1__:"
+
+
+def _parse_occurrence_key(key: str) -> tuple[int, str] | None:
+    """Split ``__openmed_occurrence_v1__:00000001:[last_name]`` into ``(1, "[last_name]")``.
+
+    Returns ``None`` for a plain mapping key (and for a malformed occurrence key, which is
+    then treated as literal text — the conservative reading for caller-supplied mappings).
+    """
+    if not key.startswith(_OCCURRENCE_MAPPING_PREFIX):
+        return None
+    ordinal_text, separator, surface = key[len(_OCCURRENCE_MAPPING_PREFIX) :].partition(
+        ":"
+    )
+    if not separator or not ordinal_text.isdigit() or not surface:
+        return None
+    return int(ordinal_text), surface
 
 
 def _entities(result: Any) -> list[Any]:
@@ -518,12 +655,16 @@ class PIIEngine:
         host without MLX, so prefer ``None`` for portable auto-fallback.
 
         ``torch_attention_backend="eager"`` is pinned deliberately: the OpenMed models
-        are DeBERTa-v2, which has no SDPA/flash-attention kernel. openmed's default
-        ``"auto"`` requests SDPA, which transformers <=5.12 silently downgraded to eager
-        but 5.13+ rejects outright (``DebertaV2ForTokenClassification does not support
-        ... scaled_dot_product_attention``). eager is the implementation these models run
-        under either way, so pinning it keeps model loading working on the latest
-        transformers. (The ``OPENMED_TORCH_ATTENTION_BACKEND`` env var still overrides it.)
+        are DeBERTa-v2, which has no SDPA kernel, and transformers raises
+        ``DebertaV2ForTokenClassification does not support ... scaled_dot_product_attention``
+        for any caller that requests SDPA *explicitly* (a caller that requests nothing still
+        degrades to eager silently). openmed used to request it on ``"auto"``; as of 2.x it
+        does not — ``openmed/torch/attention.py::select_attn_implementation("auto")`` returns
+        ``None`` precisely so transformers can pick a kernel the architecture supports — so
+        this pin is now belt-and-braces rather than load-bearing. Keep it: eager is the
+        implementation these models run under either way, and pinning it means an openmed
+        regression here cannot silently break every model load. (The
+        ``OPENMED_TORCH_ATTENTION_BACKEND`` env var still overrides it.)
         """
         loader = self._loader
         if loader is None:
@@ -590,8 +731,9 @@ class PIIEngine:
         ``loader=`` (``analyze_text`` dispatches/caches by ``model_name``), so switching
         domains loads another model into the same loader rather than rebuilding it.
 
-        ``analyze_text`` returns a ``PredictionResult`` *object* whose ``.entities`` holds
-        the spans (``output_format="dict"`` is a misnomer — it is not a plain dict), so
+        ``analyze_text`` returns an ``AnalyzeResult`` *object* whose ``.entities`` holds
+        the spans (``output_format="dict"`` is a misnomer — it is not a plain dict; the class
+        was ``PredictionResult`` before openmed 2.0 and exposes the same ``.entities``), so
         ``_entities`` unwraps it via its ``.entities`` attribute, not by iterating it.
         ``lang`` is intentionally not threaded: ``analyze_text`` has no ``lang`` parameter
         (it uses ``sentence_language``, left at its ``"en"`` default).
@@ -763,18 +905,57 @@ class PIIEngine:
     def reidentify(deidentified_text: str, mapping: dict[str, str]) -> str:
         """Restore originals from a kept mapping, in a single correct pass.
 
-        openmed.reidentify applies one ``str.replace`` per entry, which corrupts output
-        two ways: a key that is a substring of another (``ALIAS_1`` vs ``ALIAS_10``, or
-        unbracketed ``hash``/``replace`` surrogates) clobbers the longer one, and a
+        openmed.reidentify applies one ``str.replace`` per *plain* entry, which corrupts
+        output two ways: a key that is a substring of another (``ALIAS_1`` vs ``ALIAS_10``,
+        or unbracketed ``hash``/``replace`` surrogates) clobbers the longer one, and a
         replacement value that contains another key gets re-substituted. We instead match
         every key in one regex pass (longest key first, so the longest match wins at each
-        position) and substitute via the mapping, so a replacement is never re-scanned —
-        eliminating both failure modes. (openmed's raw function keeps the limitation,
-        pinned by the xfail in ``tests/test_pii_pure.py``.)
+        position), so a replacement is never re-scanned — eliminating both failure modes.
+        (openmed's raw function keeps the limitation, pinned by the xfail in
+        ``tests/test_pii_pure.py``.)
+
+        openmed 2.x additionally emits **occurrence-keyed** entries
+        (``__openmed_occurrence_v1__:00000001:<surface>``) whenever one redacted surface
+        stands for several distinct originals — e.g. ``method="aadhaar_mask"``, which is not
+        in openmed's unique-placeholder set, collapses every last name onto ``[last_name]``.
+        Those keys are protocol, not literal text: matching them verbatim finds nothing and
+        silently leaves the placeholders in place. We therefore group them by surface and
+        hand out their originals in ordinal order as the single pass walks the document
+        (ordinals are assigned in entity order upstream, so ordinal order *is* document
+        order), falling back to leaving the surface untouched once a group is exhausted —
+        the same contract openmed's own reader has, minus its substring bug for plain keys.
         """
         if not mapping:
             return deidentified_text
+
+        regular: dict[str, str] = {}
+        occurrences: dict[str, list[tuple[int, str]]] = {}
+        for key, original in mapping.items():
+            parsed = _parse_occurrence_key(key)
+            if parsed is None:
+                regular[key] = original
+            else:
+                ordinal, surface = parsed
+                occurrences.setdefault(surface, []).append((ordinal, original))
+
+        pending = {
+            surface: iter([original for _, original in sorted(items)])
+            for surface, items in occurrences.items()
+        }
+        surfaces = set(regular) | set(pending)
+        if not surfaces:
+            # Every entry was a malformed occurrence key; nothing is safely restorable.
+            return deidentified_text
+
+        def restore(match: re.Match[str]) -> str:
+            surface = match.group(0)
+            remaining = pending.get(surface)
+            if remaining is not None:
+                # Exhausted (more matches than mapped originals) => leave it alone.
+                return next(remaining, surface)
+            return regular[surface]
+
         pattern = re.compile(
-            "|".join(re.escape(key) for key in sorted(mapping, key=len, reverse=True))
+            "|".join(re.escape(key) for key in sorted(surfaces, key=len, reverse=True))
         )
-        return pattern.sub(lambda m: mapping[m.group(0)], deidentified_text)
+        return pattern.sub(restore, deidentified_text)

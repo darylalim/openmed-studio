@@ -26,7 +26,20 @@ def test_known_deidentification_methods() -> None:
         "hash",
         "shift_dates",
         "format_preserve",  # added in openmed 1.7.0
+        "aadhaar_mask",  # added in openmed 2.0 (India Aadhaar last-4 masking)
     }
+
+
+def test_occurrence_prefix_matches_openmed() -> None:
+    # engine.py bakes openmed's occurrence-mapping prefix rather than importing it, because
+    # PIIEngine.reidentify is a pure, lock-free staticmethod with no openmed import at all.
+    # openmed owns the wire format, so pin the copy: an upstream rename must fail CI here,
+    # not silently strand every occurrence-keyed entry as unrestorable literal text.
+    from openmed.core.pii import _OCCURRENCE_MAPPING_PREFIX
+
+    from openmed_studio.engine import _OCCURRENCE_MAPPING_PREFIX as baked
+
+    assert baked == _OCCURRENCE_MAPPING_PREFIX
 
 
 @pytest.mark.parametrize(

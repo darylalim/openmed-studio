@@ -255,6 +255,17 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
         )
         or "mask"
     )
+    if method == "aadhaar_mask":
+        # The one method that leaves part of an identifier behind, so say so where it is
+        # chosen rather than burying it in help text — everything else here fully removes,
+        # masks, or substitutes the span.
+        st.caption(
+            ":material/warning: India-specific. A number passing openmed's Aadhaar checksum "
+            "becomes `XXXX XXXX NNNN` — the UIDAI masked form, which **keeps the last four "
+            "digits**. Every other entity is masked exactly as `mask` does. Because it leaves "
+            "four digits in place it is weaker than `mask`; don't use it where a HIPAA Safe "
+            'Harbor-style "no residual identifier" posture is required.'
+        )
     c1, c2 = st.columns([3, 2])
     confidence = c1.slider(
         "Confidence threshold",
@@ -303,7 +314,10 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
                 placeholder="e.g. en_US, pt_BR",
                 key=f"{key_prefix}_locale",
                 help="Faker locale for the surrogates (e.g. pt_BR for Brazilian-format "
-                "IDs). Blank uses the default for the selected language.",
+                "IDs). Blank uses the default for the selected language. Note: on English "
+                "notes, setting ANY locale also widens the safety sweep from 28 to 35 "
+                "patterns (adding MRZ, USCC and India health-ID detectors), so it affects "
+                "what is detected, not just what replaces it.",
             )
         elif method == "shift_dates":
             date_shift_days = st.number_input(
@@ -555,17 +569,23 @@ def _render_policy_anon(lang: str) -> None:
     (HIPAA Safe Harbor, GDPR, …) assigns a per-label ACTION — mask, redact, surrogate, or keep —
     encoding that legal standard, so the same note anonymizes differently under each. The policy
     picks the action, so there is deliberately **no Method control**. Like ``_render_anonymize``
-    it is intentionally **not** an ``@st.fragment``: the reversible policies (the GDPR/PIPEDA/ICO
-    surrogate profiles) keep a mapping, and the form submit must trigger a full rerun so the
+    it is intentionally **not** an ``@st.fragment``: the reversible policies (those with
+    ``keep_mapping``) keep a mapping, and the form submit must trigger a full rerun so the
     Re-identify fragment re-reads the ``last_deidentified``/``last_mapping`` handed off here.
     """
+    # Derived, not hand-listed: openmed went from 10 policies to 19 in one release and the
+    # reversible set is NOT "the surrogate ones" — five of the eight surrogate-based profiles
+    # keep no key at all. Reading it off keep_mapping means the sentence can't go stale again.
+    reversible = [label for label, m in POLICY_MODELS.items() if m.keep_mapping]
     st.caption(
         "Anonymize under a regulatory **policy** — a compliance profile that decides, per entity "
         "type, whether to mask, redact, replace with a surrogate, or keep it, so the same note "
-        "anonymizes differently under each. Masking policies are irreversible; the surrogate "
-        "policies (GDPR, PIPEDA, UK ICO) keep a re-identification key that round-trips through the "
-        "Re-identify tab. As with all model-based de-identification, anything the model misses is "
-        "left in place — review before sharing."
+        "anonymizes differently under each. Only "
+        + ", ".join(reversible)
+        + " keep a re-identification key that round-trips through the Re-identify tab — every "
+        "other policy is irreversible, **including several that substitute surrogates**. As with "
+        "all model-based de-identification, anything the model misses is left in place — review "
+        "before sharing."
     )
     # The policy picker + preview live OUTSIDE the form, so choosing a policy reruns and refreshes
     # the preview (this tab is a full rerun, like Single note, whose method picker also sits
@@ -578,10 +598,12 @@ def _render_policy_anon(lang: str) -> None:
         if model.safety_sweep_mandatory
         else "safety sweep optional"
     )
-    st.caption(
-        f"**{policy_label}** (`{model.name}`) · default action: {model.default_action} · "
-        f"{reversibility} · {sweep}"
-    )
+    # `model.default_action` is deliberately NOT shown: openmed never reaches a profile's
+    # fallback action (its `actions` map covers all 135 canonical labels), so surfacing it as the
+    # headline misleads — South Africa POPIA declares "replace" while masking 119 of 135. The
+    # hand-authored description below is the honest account; the field stays baked only so the
+    # drift guard keeps pinning it. See PolicyModel.default_action.
+    st.caption(f"**{policy_label}** (`{model.name}`) · {reversibility} · {sweep}")
     st.caption(model.description)
 
     with st.form("policy_anon"):
@@ -605,9 +627,16 @@ def _render_policy_anon(lang: str) -> None:
         # use_safety_sweep are assigned unconditionally in the expander body (which always runs).
         seed = 0
         with st.expander("Advanced", icon=":material/tune:"):
+            # Using default_action here is sound even though openmed never *applies* it: as a
+            # DECLARED posture it lines up exactly with "does this profile replace anything"
+            # (all 8 replace-declaring profiles have replace actions; no mask/redact-declaring
+            # one does). It is only misleading as a per-entity prediction, which is why the
+            # preview above no longer shows it.
             st.caption(
-                "Surrogate options apply to the replace-based policies (GDPR, PIPEDA, UK ICO, "
-                "Australia); the masking policies ignore them."
+                "Surrogate options apply to this policy."
+                if model.default_action == "replace"
+                else f"{policy_label} masks rather than substitutes, so the surrogate "
+                "options below are ignored; the safety sweep still applies."
             )
             consistent = st.toggle(
                 "Deterministic surrogates",
@@ -629,7 +658,8 @@ def _render_policy_anon(lang: str) -> None:
                 placeholder="e.g. en_US, pt_BR",
                 key="policy_locale",
                 help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the "
-                "language.",
+                "language. On English notes, setting ANY locale also widens the safety "
+                "sweep from 28 to 35 patterns, so it affects detection too.",
             )
             use_safety_sweep = st.toggle(
                 "Safety sweep",
@@ -797,14 +827,7 @@ def _render_ner() -> None:
     domain = st.selectbox("Entity domain", list(NER_MODELS), key="ner_domain")
     model = NER_MODELS[domain]
     detects = ", ".join(model.entity_types) if model.entity_types else "not declared"
-    st.caption(
-        f"**{model.display_name}** · {model.params} · detects: {detects}"
-        + (
-            "  ·  broad-coverage model (~3× the others)"
-            if not model.entity_types
-            else ""
-        )
-    )
+    st.caption(f"**{model.display_name}** · {model.params} · detects: {detects}")
     with st.form("ner"):
         text = st.text_area(
             "Clinical note to analyze", value=EXAMPLE_NOTE, height=200, key="ner_text"
@@ -832,7 +855,7 @@ def _render_ner() -> None:
 
     # is_loaded flips True after the FIRST model loads, so it can't tell whether THIS
     # domain's model is resident. Track analyzed domains so the wait hint fires on a fresh
-    # domain (a 141–434MB download) rather than only the very first NER call.
+    # domain (a ~141MB download) rather than only the very first NER call.
     analyzed: set[str] = st.session_state.setdefault("ner_analyzed_domains", set())
     result = _call(
         service.analyze,

@@ -201,6 +201,46 @@ def test_single_note_forwards_replace_locale_to_engine(monkeypatch):
     assert captured.get("locale") == "pt_BR"
 
 
+def test_aadhaar_mask_warns_that_it_retains_digits(monkeypatch):
+    # aadhaar_mask arrived with openmed 2.0 and reaches the picker automatically (METHODS is
+    # derived from DeidMethod). It is the only method that leaves part of an identifier in the
+    # output — the UIDAI masked form keeps the last four digits — so the tab must say so at the
+    # point of choice, and only for that method.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    assert "last four" not in " ".join(c.value for c in at.caption)
+
+    next(s for s in at.segmented_control if s.key == "single_method").set_value(
+        "aadhaar_mask"
+    ).run(timeout=30)
+
+    assert not at.exception
+    captions = " ".join(c.value for c in at.caption)
+    assert "last four" in captions and "weaker than" in captions
+
+
+def test_policy_tab_names_only_the_policies_that_keep_a_key(monkeypatch):
+    # The tab caption is derived from keep_mapping, not hand-listed, because openmed 2.x made
+    # "surrogate policy" and "reversible policy" different sets — South Africa POPIA and Nigeria
+    # NDPA substitute surrogates yet keep NO key. Telling a user otherwise would have them
+    # anonymize believing the originals are recoverable.
+    from openmed_studio.engine import POLICY_MODELS
+
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    captions = " ".join(c.value for c in at.caption)
+
+    for label, model in POLICY_MODELS.items():
+        if model.keep_mapping:
+            assert label in captions, f"{label!r} keeps a key but the caption omits it"
+        elif model.default_action == "replace":
+            # A surrogate policy with no key must NOT be listed among the reversible ones.
+            assert f"{label} keep a re-identification key" not in captions
+            assert (
+                f", {label}," not in captions.split("keep a re-identification key")[0]
+            )
+
+
 def test_single_note_persists_mapping_to_session_state(monkeypatch):
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
@@ -460,25 +500,12 @@ def test_ner_confidence_defaults_to_model_recommendation(monkeypatch):
 
 def test_ner_preview_shows_name_and_entity_types(monkeypatch):
     # The reactive preview surfaces the friendly model name + what it detects (#4), so the
-    # user sees coverage before paying a 141-434MB download.
+    # user sees coverage before paying a ~141MB download.
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
     captions = " ".join(c.value for c in at.caption)
     assert "DiseaseDetect" in captions  # friendly display_name
     assert "DISEASE" in captions and "CONDITION" in captions  # entity-type preview
-
-
-def test_ner_medical_flags_broad_coverage(monkeypatch):
-    # Medical is the 434M broad model with no declared entity types — the preview flags
-    # both rather than presenting it as a peer of the 141M domains (#7).
-    _use_engine(monkeypatch, _StubEngine())
-    at = AppTest.from_file(APP).run(timeout=30)
-    next(s for s in at.selectbox if s.label == "Entity domain").set_value(
-        "Medical"
-    ).run(timeout=30)
-    captions = " ".join(c.value for c in at.caption)
-    assert "broad-coverage" in captions
-    assert "not declared" in captions and "434M" in captions
 
 
 def test_ner_tracks_analyzed_domains_for_load_hint(monkeypatch):

@@ -40,9 +40,10 @@ def test_engine_backend_defaults_to_none() -> None:
 
 def test_engine_default_backend_builds_eager_config(monkeypatch) -> None:
     # backend=None still auto-detects the backend (config backend stays None), but the
-    # loader is always built with OpenMedConfig(torch_attention_backend="eager") so the
-    # DeBERTa-v2 models load on transformers >=5.13 (which rejects the SDPA openmed's
-    # "auto" backend requests). See PIIEngine.loader for the full rationale.
+    # loader is always built with OpenMedConfig(torch_attention_backend="eager") so a request
+    # for the SDPA kernel DeBERTa-v2 lacks can never reach transformers. openmed 2.x's "auto"
+    # no longer requests SDPA, so this is belt-and-braces — pin it anyway, and pin the pin
+    # here, so an openmed regression fails in the fast suite. See PIIEngine.loader.
     import openmed
 
     captured = {}
@@ -225,6 +226,20 @@ def test_deidentify_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -
         "custom_recognizer",  # caller-supplied entity recognizer
         "cache_results",  # openmed-side result memoization
         "max_cache_entries",  # cache size bound (only meaningful with cache_results)
+        # openmed 2.x additions — India/code-mixed i18n plumbing and request accounting.
+        # `code_mixed=False` and the three hook params default to off/None, so omitting them
+        # preserves 1.x behavior. `abdm` does NOT: `abdm=None` means AUTO, not off —
+        # openmed/core/custom_recognizer.py::abdm_mode_enabled turns the India ABDM
+        # recognizers ON whenever policy=="india_dpdp_act", locale ends in "_in", or lang is
+        # hi/te, ALL THREE of which this app forwards. Leaving it unset is a deliberate
+        # choice to let openmed decide per context (forcing False would gut the India DPDP
+        # policy the Policy de-ID tab now offers), not an inert omission:
+        "abdm",  # India ABDM (Ayushman Bharat) health-ID recognizers; None = auto, not off
+        "code_mixed",  # code-mixed (e.g. Hinglish) detection mode
+        "token_language_tags",  # caller-supplied per-token language tags
+        "lid_model",  # caller-supplied language-identification hook
+        "transliterated_name_config",  # transliterated-name matching config
+        "budget",  # RequestBudget accounting object
     }
 
     captured: dict[str, object] = {}
@@ -283,13 +298,62 @@ def test_reidentify_does_not_re_substitute_a_value_containing_another_key() -> N
     assert restored == "see X2 and Bob"
 
 
+def test_reidentify_restores_occurrence_keyed_entries_in_document_order() -> None:
+    # openmed 2.x emits `__openmed_occurrence_v1__:<ordinal>:<surface>` keys when ONE redacted
+    # surface stands for SEVERAL distinct originals (method="aadhaar_mask" does this for every
+    # repeated label). Matching such a key as literal text finds nothing, so a naive restore
+    # silently leaves the placeholder in place. Ordinals are assigned in entity order upstream,
+    # so the nth match of the surface takes the nth original.
+    restored = PIIEngine.reidentify(
+        "Dr [last_name] referred to Dr [last_name].",
+        {
+            "__openmed_occurrence_v1__:00000001:[last_name]": "Doe",
+            "__openmed_occurrence_v1__:00000002:[last_name]": "Roe",
+        },
+    )
+    assert restored == "Dr Doe referred to Dr Roe."
+
+
+def test_reidentify_mixes_occurrence_and_plain_keys_in_one_pass() -> None:
+    # A single mapping carries both kinds (openmed only occurrence-keys the surfaces that
+    # actually collide), and the longest-first single pass must still hold across the union —
+    # "[last_name]" must not be eaten by a shorter overlapping plain key.
+    restored = PIIEngine.reidentify(
+        "[first_name] [last_name] and [first_name] [last_name], MRN [id].",
+        {
+            "[first_name]": "Jane",
+            "[id]": "4827193",
+            "__openmed_occurrence_v1__:00000002:[last_name]": "Roe",
+            "__openmed_occurrence_v1__:00000001:[last_name]": "Doe",
+        },
+    )
+    assert restored == "Jane Doe and Jane Roe, MRN 4827193."
+
+
+def test_reidentify_leaves_surplus_occurrences_untouched() -> None:
+    # More matches in the text than mapped originals: restore what we can and leave the rest
+    # verbatim rather than raising or reusing the last value (openmed's reader does the same).
+    restored = PIIEngine.reidentify(
+        "[last_name], [last_name], [last_name]",
+        {"__openmed_occurrence_v1__:00000001:[last_name]": "Doe"},
+    )
+    assert restored == "Doe, [last_name], [last_name]"
+
+
+def test_reidentify_treats_a_malformed_occurrence_key_as_literal_text() -> None:
+    # A caller can paste any mapping into the Re-identify tab. A key that merely *looks* like
+    # the protocol (no ordinal) is not protocol — restore it literally instead of dropping it.
+    bad = "__openmed_occurrence_v1__:notanordinal:[x]"
+    assert PIIEngine.reidentify(f"see {bad} here", {bad: "Ann"}) == "see Ann here"
+
+
 # --- analyze (clinical NER) delegation (no model) ---------------------------
 
 
 def test_analyze_delegates_to_openmed(monkeypatch) -> None:
     # engine.analyze wraps openmed.analyze_text the way extract wraps extract_pii:
     # forward model_name/confidence/aggregation/group_entities/output_format='dict'/loader,
-    # and unwrap analyze_text's PredictionResult (an OBJECT with .entities, NOT a bare list
+    # and unwrap analyze_text's AnalyzeResult (an OBJECT with .entities, NOT a bare list
     # — _entities reads .entities rather than iterating the object).
     import openmed
 
@@ -322,7 +386,7 @@ def test_analyze_delegates_to_openmed(monkeypatch) -> None:
     assert captured["output_format"] == "dict"  # the object-not-dict path
     assert captured["loader"] is engine.loader  # shared loader threaded through
     assert "lang" not in captured  # analyze_text has no lang param
-    assert [e.label for e in entities] == ["DISEASE"]  # PredictionResult unwrapped
+    assert [e.label for e in entities] == ["DISEASE"]  # AnalyzeResult unwrapped
 
 
 def test_analyze_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -> None:
@@ -367,6 +431,10 @@ def test_analyze_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -> N
         # openmed 1.7.0 additions — openmed-side result caching the engine doesn't thread:
         "cache_results",
         "max_cache_entries",
+        # openmed 2.x additions — sentence-segmenter selection and assertion-status
+        # detection, both tuning knobs the NER tab doesn't expose:
+        "sentence_backend",
+        "assert_context",
     }
 
     captured: dict[str, object] = {}
@@ -545,6 +613,23 @@ def test_reidentify_is_lock_free() -> None:
 
 
 # --- Model-backed tests (real OpenMed engine; need --run-model) -------------
+
+
+@pytest.mark.model
+def test_engine_aadhaar_mask_roundtrips_through_reidentify(loader, note) -> None:
+    # The regression that motivated the occurrence-key support: aadhaar_mask is NOT in
+    # openmed's unique-placeholder set, so every same-label entity collapses onto one
+    # placeholder and the WHOLE mapping comes back occurrence-keyed. Only a real model
+    # produces those keys, so the fast tests above use synthetic ones and this pins the
+    # end-to-end round trip on the method that actually triggers it.
+    engine = PIIEngine(loader=loader)
+    result = engine.deidentify(note, method="aadhaar_mask", keep_mapping=True)
+    mapping = result.mapping or {}
+    assert any(k.startswith("__openmed_occurrence_v1__:") for k in mapping), (
+        "expected occurrence-keyed entries from aadhaar_mask; if openmed changed this, the "
+        "fast occurrence tests still stand but this guard no longer covers the real path"
+    )
+    assert engine.reidentify(result.deidentified_text, mapping) == note
 
 
 @pytest.mark.model

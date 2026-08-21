@@ -41,7 +41,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run streamlit run streamlit_app.py
 # Swap the portable Torch/Transformers backend for Apple's native MLX backend (Apple Silicon).
 uv sync --extra mlx
 
-# Enable the Zero-shot (GLiNER) tab. gliner pins transformers<5.7, so this extra CONFLICTS with
+# Enable the Zero-shot (GLiNER) tab. gliner caps transformers<5.14, so this extra CONFLICTS with
 # the marker `hf-latest` extra (declared in [tool.uv] conflicts) — uv forks the lock so the
 # default install/CI stay on the latest transformers and only this opt-in downgrades. Combines
 # with --extra mlx. Until installed, the Zero-shot tab shows install instructions, not the form.
@@ -119,7 +119,7 @@ session-scoped `loader` and a `note` fixture). The zero-shot model test
 skips the `loader` fixture, since the GLiNER path bypasses the shared loader.
 
 Note: `ty` targets Python 3.10 (the minimum). openmed ships inline type hints — `deidentify(method=…)`
-expects the `Literal` of the five method names — so the `DeidMethod` alias (in `engine.py`,
+expects the `Literal` of the seven method names — so the `DeidMethod` alias (in `engine.py`,
 re-exported by `validation.py`) must stay in sync; the guard above enforces it. Tests pass the
 `PIIEngine` seam a structural stub via `typing.cast` (the repo convention).
 
@@ -141,8 +141,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   `st.cache_resource`, so the PII model loads at most once per process and is reused across every tab
   and request. The engine pattern (construct one `ModelLoader`, pass `loader=` to every call) is the
   documented best practice. The shared loader dispatches/caches by `model_name`, so the `Clinical
-  NER` tab loads a per-domain NER model (~141M each, `Medical` 434M) into the *same* loader on first
-  use of that domain — switching domains loads another model rather than rebuilding the loader.
+  NER` tab loads a per-domain NER model (~141M each) into the *same* loader on first use of that
+  domain — switching domains loads another model rather than rebuilding the loader.
 - **Python:** `requires-python = ">=3.10"`; verified on 3.11, but uv may pick a
   newer interpreter (e.g. 3.13) for `.venv`.
 - **App structure:** `engine.py`/`service.py`/`validation.py` are the **framework-free core** (no
@@ -178,7 +178,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     - *Clinical NER:* `analyze(text, *, model_name, confidence_threshold=0.0, aggregation_strategy,
       group_entities)` delegates to `analyze_text`. `model_name` is **required** (NER is one model
       per domain; an absent one silently falls back to openmed's disease-only default). `analyze_text`
-      returns a `PredictionResult` *object* (its `output_format="dict"` is a misnomer), so `_entities`
+      returns an `AnalyzeResult` *object* (its `output_format="dict"` is a misnomer; it was
+      `PredictionResult` before openmed 2.0), so `_entities`
       unwraps `.entities`; no `lang` (analyze_text has none).
     - *Zero-shot (GLiNER):* `extract_zero_shot(text, *, model_name, labels, confidence_threshold=0.6)`
       delegates to `openmed.ner.infer` (NOT `analyze_text`). It resolves the registry alias to the HF
@@ -187,32 +188,46 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       source_dir=Path())` — because `infer`'s default on-disk index isn't shipped — and returns
       `NerResponse.entities` (unwrapped by `_entities`). This path **deliberately bypasses the shared
       loader** (openmed's GLiNER inference has its own cache and is torch-only; it doesn't need the
-      DeBERTa-v2 eager pin because the `gliner` fork runs on transformers <5.13), so `is_loaded` stays
-      False after a zero-shot call and the UI tracks loaded domains itself. Two static helpers back the
+      DeBERTa-v2 eager pin because neither gliner nor openmed's GLiNER path ever requests SDPA —
+      see "Known gotchas"), so `is_loaded` stays False after a zero-shot call and the UI tracks
+      loaded domains itself. Two static helpers back the
       tab without a UI-side openmed import: `zero_shot_available()` (→ `is_gliner_available()`, so the
       tab can show install instructions instead of failing) and `default_labels(label_domain)` (→
       `get_default_labels`, seeding the label picker live). See "Known gotchas" for the `.score` field.
     - *Registry:* defines the `DeidMethod`/`Backend` `Literal`s, `DEFAULT_PII_MODEL`,
       `DEFAULT_NER_MODEL`, the `NerModel` `NamedTuple`, and `NER_MODELS` — a curated
-      `dict[domain → NerModel]` of one ~141M "superclinical" model per category (`Medical` = the
-      broader 434M `clinicalner`). Each `NerModel` bakes registry metadata (`alias`, `display_name`,
-      `recommended_confidence`, `entity_types`, `params`) so the UI needs **no runtime openmed
+      `dict[domain → NerModel]` of one ~141M "superclinical" model per category. (There is no
+      `Medical` domain: openmed 2.0 dropped the broad 434M `clinicalner` alias it used, leaving that
+      category with no plain-PyTorch token-classification model — only an `_onnx_android` build —
+      so the 10 remaining domains now mirror `ZERO_SHOT_MODELS` exactly.) Each `NerModel` bakes
+      registry metadata (`alias`, `display_name`, `recommended_confidence`, `entity_types`,
+      `params`) so the UI needs **no runtime openmed
       import**; the drift guard pins it to the live registry. Zero-shot has its own parallel
       `ZeroShotModel` `NamedTuple` + `ZERO_SHOT_MODELS` (10 domains, one Small/166M GLiNER checkpoint
-      each, mirroring the NER domain names minus `Medical`) + `DEFAULT_ZERO_SHOT_MODEL`. `ZeroShotModel`
+      each, mirroring the NER domain names one-for-one) + `DEFAULT_ZERO_SHOT_MODEL`. `ZeroShotModel`
       adds a `label_domain` field (an `openmed.ner.available_domains()` key used to seed the label
       picker) and, unlike `NerModel`, its `entity_types` are the checkpoint's *training focus* (a
       "tuned for" hint), **not** the output vocabulary — zero-shot's output labels are whatever the
       user types. Its drift guard pins alias/`recommended_confidence`/`entity_types`/`label_domain` but
       **not** `info.category` (zero-shot models bucket into only a few broad categories, not per-domain).
-      Policy anonymization has its own parallel `Policy` `Literal` (the 10 canonical policy names,
+      Policy anonymization has its own parallel `Policy` `Literal` (the 19 canonical policy names,
       mirroring `openmed.core.policy.PolicyName`) + `PolicyModel` `NamedTuple` + `POLICY_MODELS`
-      (`dict[friendly display name → PolicyModel]`, 10 entries) + `DEFAULT_POLICY_MODEL`. Unlike
+      (`dict[friendly display name → PolicyModel]`, 19 entries) + `DEFAULT_POLICY_MODEL`. Unlike
       `NerModel`/`ZeroShotModel` a policy loads **no model of its own** — it reuses the shared PII model
       and only changes the per-label action — so `PolicyModel` bakes the *behavioral* flags the
       preview surfaces (`default_action`/`keep_mapping`/`safety_sweep_mandatory`, pinned against the
       live `PolicyProfile` by the drift guard) plus a hand-authored `description` (openmed ships none),
-      not model-identity fields.
+      not model-identity fields. **Write a `description` from `load_policy(name).actions` /
+      `.policy_label_actions`, never from `default_action`** — openmed never reaches a profile's
+      fallback (`_canonical_actions` forces `actions` to cover all 135 canonical labels and
+      `normalize_label` funnels unknowns to `OTHER`), so a profile can declare `replace` while masking
+      119 of 135 labels (South Africa POPIA does; Nigeria NDPA masks 126). The `Policy de-ID` preview
+      therefore does **not** render `default_action`; the field stays baked only so the guard keeps
+      pinning it. Two more traps the 2.x catalog added: "surrogate policy" ≠ "reversible policy" (five
+      of the eight `replace`-declaring profiles keep no key — `test_policy_models_resolve_in_openmed`
+      now fails any description that promises "reversible" against `keep_mapping=False`), and four of
+      the nine new profiles (Malabo, Kenya DPA, Egypt PDPL, Morocco 09-08) are `mask`-everything and
+      behaviorally identical to `strict_no_leak`.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`, `ZeroShotRequest`,
     `AnonymizePolicyRequest`, `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, all
     `extra="forbid"`) plus
@@ -334,8 +349,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   - *Clinical NER controls* (`_render_ner`, independent of the de-id controls): a domain picker
     (`st.selectbox` over `NER_MODELS`, default `Disease`) sits **outside** the form so selecting a
     domain reruns the fragment and refreshes both a reactive preview (the model's `display_name`,
-    size, `entity_types` — flagging `Medical` as the broad 434M model) and the confidence slider's
-    default (seeded from the model's `recommended_confidence`, per-domain keyed). `model_name`
+    size, `entity_types`) and the confidence slider's default (seeded from the model's
+    `recommended_confidence`, per-domain keyed). `model_name`
     resolves via `NER_MODELS[domain].alias`. Because `engine.is_loaded` only tracks whether *a* model
     has loaded, the per-domain download wait-hint is driven by a `st.session_state` set of analyzed
     domains (passed to `_call(..., needs_load=...)`), so switching to a not-yet-downloaded domain
@@ -402,27 +417,37 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   value/enum/format checks, backend pinning, no input echo on a validation error) plus the engine's
   concurrency lock — so both the UI and the API inherit them.
 
-## OpenMed API (verified against installed v1.9.1)
+## OpenMed API (verified against installed v2.1.0)
 
 Top-level imports: `from openmed import extract_pii, deidentify, reidentify, analyze_text, ModelLoader, OpenMedConfig`.
 Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict alias→ModelInfo),
 `list_model_categories()`.
 
-- `extract_pii(text, model_name=<default>, confidence_threshold=0.5, config=None, use_smart_merging=True, lang="en", cache_results=False, max_cache_entries=128, normalize_accents=None, *, locale=None, loader=None, custom_recognizer=None)`
+- `extract_pii(text, model_name=<default>, confidence_threshold=0.5, config=None, use_smart_merging=True, lang="en", cache_results=False, max_cache_entries=128, normalize_accents=None, *, preserve_whitespace=False, locale=None, loader=None, batch_size=None, num_workers=None, custom_recognizer=None, abdm=None, code_mixed=False, token_language_tags=None, lid_model=None, transliterated_name_config=None, budget=None)`
   returns a `PredictionResult` object (like `analyze_text`, below) whose `.entities` are PII
   predictions with `.label`/`.text`/`.start`/`.end`/`.confidence` — the engine's `_entities` unwraps
   it. Labels are **lowercase** (`first_name`, `last_name`, `date`, `ssn`, `phone_number`, …). The
   engine forwards `confidence_threshold`/`use_smart_merging`/`lang`/`model_name`/`loader` only (it
-  owns loading, so `config`/`normalize_accents` and 1.8.0's `locale`/`cache_results`/
-  `max_cache_entries`/`custom_recognizer` are not threaded). No drift guard pins this split (unlike
+  owns loading, so `config`/`normalize_accents`, 1.8.0's `locale`/`cache_results`/
+  `max_cache_entries`/`custom_recognizer`, and 2.x's `preserve_whitespace`/`batch_size`/`num_workers`/
+  `abdm`/`code_mixed`/`token_language_tags`/`lid_model`/`transliterated_name_config`/`budget` are not
+  threaded). No drift guard pins this split (unlike
   `deidentify`/`analyze_text`), since the unforwarded params are all optional with safe defaults.
 - `deidentify(text, method="mask", model_name=<default>, confidence_threshold=0.7,
   use_smart_merging=True, keep_mapping=False, consistent=False, seed=None, locale=None,
   date_shift_days=None, keep_year=False, lang="en", use_safety_sweep=True, audit=False,
-  loader=None, …)` — the installed v1.9.1 signature (unchanged since 1.7.0) **also** accepts `shift_dates` (a bool,
+  loader=None, …)` — the installed v2.1.0 signature **also** accepts `shift_dates` (a bool,
   distinct from `method="shift_dates"`), `normalize_accents`, `config`, `policy`,
-  `calibration_thresholds_path`, and 1.7.0's `patient_key`/`date_shift_max_days`/
-  `date_shift_secret`/`surrogate_vault`/`custom_recognizer`/`cache_results`/`max_cache_entries`.
+  `calibration_thresholds_path`, 1.7.0's `patient_key`/`date_shift_max_days`/
+  `date_shift_secret`/`surrogate_vault`/`custom_recognizer`/`cache_results`/`max_cache_entries`,
+  and 2.x's India/code-mixed i18n plumbing `abdm`/`code_mixed`/`token_language_tags`/`lid_model`/
+  `transliterated_name_config` plus the `budget` (`RequestBudget`) accounting object. All are
+  excluded — but note **`abdm=None` means AUTO, not off**:
+  `openmed/core/custom_recognizer.py::abdm_mode_enabled` switches the India ABDM recognizers on
+  whenever `policy == "india_dpdp_act"`, `locale` ends in `_in`, or `lang` is `hi`/`te` — all three of
+  which the app forwards — so leaving it unset is a deliberate "let openmed decide per context"
+  (forcing `False` would gut the India DPDP policy the `Policy de-ID` tab now offers), not an inert
+  omission. The other four and `budget` do default to off/`None`.
   (Note: `keep_year` now defaults to `False` upstream, but the app always passes its own value —
   default `True` in `_DeidentifyOptions`/`PIIEngine.deidentify` — so the flip is inert.)
   It returns a `DeidentificationResult` with
@@ -434,16 +459,19 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `consistent`/`seed`/`locale`/`date_shift_days`/`keep_year`/`use_safety_sweep`/`policy` plus
   `lang`/`model_name`/`loader`; it deliberately does **not** forward `audit` (would flip the
   return type), `config` (the engine owns loading via `loader=`), or the advanced
-  `shift_dates`/`normalize_accents`/`calibration_thresholds_path` and the 1.7.0
+  `shift_dates`/`normalize_accents`/`calibration_thresholds_path`, the 1.7.0
   `patient_key`/`date_shift_max_days`/`date_shift_secret`/`surrogate_vault`/`custom_recognizer`/
-  `cache_results`/`max_cache_entries` knobs.
+  `cache_results`/`max_cache_entries` knobs, or the 2.x
+  `abdm`/`code_mixed`/`token_language_tags`/`lid_model`/`transliterated_name_config`/`budget` ones.
   `policy` (an `Optional[str]` — a canonical name from `openmed.core.policy.list_policies()`, default
   `None`) selects a **regulatory compliance profile** that assigns a per-label action; the `Policy
   de-ID` tab drives it. The policy machinery lives in `openmed.core.policy` (**not** top-level
-  exported — `from openmed.core.policy import PolicyName, list_policies, load_policy`), which ships 10
+  exported — `from openmed.core.policy import PolicyName, list_policies, load_policy`), which ships 19
   built-ins (`hipaa_safe_harbor`, `hipaa_expert_review_assist`, `gdpr_pseudonymization`,
   `gdpr_art9_health`, `research_limited_dataset`, `strict_no_leak`, `clinical_minimal_redaction`,
-  `canada_pipeda`, `uk_ico_anonymisation`, `australia_privacy_act`) + 5 aliases; `load_policy(name)`
+  `canada_pipeda`, `uk_ico_anonymisation`, `australia_privacy_act`, plus 2.x's `china_pipl`,
+  `india_dpdp_act`, `africa_malabo_baseline`, `za_popia`, `ng_ndpa`, `ke_dpa`, `india_health_id`,
+  `eg_pdpl`, `ma_law_09_08`) + 8 aliases (`POLICY_ALIASES`); `load_policy(name)`
   returns a frozen `PolicyProfile` (`default_action`/`keep_mapping`/`reversible_id`/
   `safety_sweep_mandatory`/…) the app bakes into `POLICY_MODELS`. (Custom policies can't ride the
   public `deidentify(policy=str)` API — the name must be canonical — so they're out of scope; the
@@ -458,21 +486,32 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   tabs' `Advanced` expander), `hash`, `shift_dates`, and `format_preserve` (a `replace` sibling
   added in 1.7.0 — synthetic *format-preserving* surrogates for structured identifiers, masking
   free-text entities like names it can't shape-preserve; shares `replace`'s consistent/seed/locale
-  knobs).
+  knobs). `aadhaar_mask` (added in 2.0) is India-specific: a value passing openmed's Aadhaar checksum
+  (`pii_i18n.validate_aadhaar`) renders as `XXXX XXXX NNNN`, and everything else falls through to the
+  ordinary mask placeholder — so it is byte-identical to `mask` on notes with no Aadhaar number
+  (verified end-to-end on the app's own `EXAMPLE_NOTE`). It is the **only method that leaves part of
+  an identifier in the output** (the UIDAI display form keeps the last four digits), making it
+  strictly weaker than `mask`, so `_render_deid_controls` shows a warning caption when it is picked
+  (pinned by `tests/test_ui_app.py::test_aadhaar_mask_warns_that_it_retains_digits`) and the
+  `DeidMethod` literal lists it **last** — the guard compares sets, so order is the app's to choose,
+  and `streamlit_app.py`'s `METHODS = list(get_args(DeidMethod))` feeds that order into the picker.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
 - `analyze_text(text, model_name="disease_detection_superclinical", *, loader=None,
   confidence_threshold=0.0, aggregation_strategy="simple", output_format="dict",
   group_entities=False, …)` — the general **clinical NER** (token-classification) entry point. With
-  the default `output_format="dict"` it returns a `PredictionResult` **object** (a misnomer — *not*
-  a plain dict) whose `.entities` is a `list[EntityPrediction]`, each with `.text`/`.label`/
-  `.confidence`/`.start`/`.end`. Labels are **UPPERCASE** (`DISEASE`, `CHEM`, `GENE`, …), unlike
+  the default `output_format="dict"` it returns an `AnalyzeResult` **object** (a misnomer — *not*
+  a plain dict; it was `PredictionResult` before 2.0, and both still expose the same
+  `.text`/`.entities`/`.metadata` surface the app reads) whose `.entities` is a
+  `list[EntityPrediction]`, each with
+  `.text`/`.label`/`.confidence`/`.start`/`.end`. Labels are **UPPERCASE** (`DISEASE`, `CHEM`, `GENE`, …), unlike
   `extract_pii`'s lowercase. Clinical NER is **one model per domain** (no universal model), selected
   by registry alias via `model_name`; the app curates one per domain in `engine.NER_MODELS` and
   pins them with `tests/test_validation.py::test_validation_ner_models_resolve_in_openmed`. The
   app's engine forwards `model_name`/`confidence_threshold`/`aggregation_strategy`/`group_entities`/
   `output_format="dict"`/`loader` (no `lang` — `analyze_text` has none). It excludes the alternate
   construction / tuning knobs (`model_id`/`config`/`include_confidence`/`formatter_kwargs`/
-  `metadata`/`use_fast_tokenizer`/`sentence_*`) plus 1.7.0's `cache_results`/`max_cache_entries`;
+  `metadata`/`use_fast_tokenizer`/`sentence_*` — including 2.x's `sentence_backend`) plus 1.7.0's
+  `cache_results`/`max_cache_entries` and 2.x's `assert_context` (assertion-status detection);
   `tests/test_engine.py::test_analyze_forwards_every_openmed_param_or_allowlists_it` pins that split
   (it matters more here than for `deidentify`: `analyze_text` declares `**pipeline_kwargs`, so a
   drifted forwarded param would be silently swallowed rather than raising).
@@ -510,43 +549,81 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   surrogate policies (GDPR/PIPEDA/UK ICO — `keep_mapping=True`) return a re-identification key, the
   masking ones don't. This only surfaces under `--run-model` (a stub can't model openmed's OR), so
   `tests/test_engine.py::test_engine_deidentify_policy_masks_and_pseudonymizes` pins both branches.
-- **openmed's `reidentify()` mis-restores overlapping mapping keys; the app fixes it.**
-  openmed applies `str.replace` per entry, so a key that is a prefix/substring of another
-  (e.g. `ALIAS_1` vs `ALIAS_10`, or unbracketed `hash`/`replace` surrogates) corrupts the
-  longer one, and a replacement value that contains another key gets re-substituted.
-  `PIIEngine.reidentify` instead restores in a single regex pass (longest key first), so no
-  replacement is re-scanned and both failure modes are eliminated; `tests/test_engine.py` pins
-  the prefix and value-contains-key cases. The raw-openmed limitation is still captured as a
-  `strict` xfail in `tests/test_pii_pure.py`.
-- **The engine pins eager attention because DeBERTa-v2 has no SDPA kernel.** The OpenMed
-  models (default PII + the NER models) are `DebertaV2ForTokenClassification`, which has no
-  SDPA/flash-attention kernel. openmed's default `torch_attention_backend="auto"` requests SDPA;
-  transformers ≤5.12 silently downgraded that to eager for unsupported architectures, but
-  transformers ≥5.13 hard-errors (`DebertaV2ForTokenClassification does not support ...
-  scaled_dot_product_attention`), which breaks **all** model loading — and no fast test catches it
-  (they stub the model; the real load path is `--run-model` only). `PIIEngine.loader` therefore
-  builds every `ModelLoader` with `OpenMedConfig(torch_attention_backend="eager")`. eager is the
-  impl these models ran under all along, so this is behavior-preserving; the
-  `OPENMED_TORCH_ATTENTION_BACKEND` env var still overrides it. Verify model loading end-to-end
-  (not just the fast suite) after any torch/transformers/openmed bump.
-- **The `gliner` extra forks the transformers version, on purpose.** `gliner` pins
-  `transformers<5.7`, but the rest of the stack targets the latest (and the eager pin above only
-  *matters* on transformers ≥5.13). uv builds one universal lock, so **merely declaring** a bare
-  `gliner` extra would pin `transformers==5.6.2` for *every* install — including CI and the PII/NER
-  tabs. `pyproject.toml` avoids that with a `[tool.uv] conflicts` between the `gliner` extra and a
-  marker `hf-latest = ["transformers>=5.7"]` extra: the conflict is genuine, so uv **forks** the lock —
+- **Re-identification has TWO independent hazards, and each side owns one of them.**
+  *(a) openmed mis-restores overlapping plain keys.* It applies `str.replace` per entry, so a key
+  that is a prefix/substring of another (e.g. `ALIAS_1` vs `ALIAS_10`, or unbracketed
+  `hash`/`replace` surrogates) corrupts the longer one, and a replacement value that contains
+  another key gets re-substituted. `PIIEngine.reidentify` restores in a single regex pass (longest
+  key first), so no replacement is re-scanned and both those modes are eliminated;
+  `tests/test_engine.py` pins the prefix and value-contains-key cases, and the raw-openmed
+  limitation stays a `strict` xfail in `tests/test_pii_pure.py`.
+  *(b) openmed 2.x added an occurrence-mapping protocol the app must speak.* When one redacted
+  surface stands for several distinct originals, `_build_reidentification_mapping` emits
+  `__openmed_occurrence_v1__:<8-digit ordinal>:<surface>` keys instead of one plain key. Those are
+  **protocol, not literal text** — matching them verbatim finds nothing, so a restorer that doesn't
+  parse them silently leaves every affected placeholder in the "re-identified" output. This is
+  reachable in two default clicks: `method="aadhaar_mask"` is not in openmed's unique-placeholder
+  set (`core/pii.py` only suffixes `_2`/`_3` for `mask`/`remove`), so every repeated label collapses
+  onto one placeholder and the entire mapping comes back occurrence-keyed — and `Keep mapping`
+  defaults on. `PIIEngine.reidentify` therefore groups occurrence keys by surface and hands out
+  their originals in ordinal order as the single pass walks the document (ordinals are assigned in
+  entity order upstream, so ordinal order *is* document order), leaving a surface untouched once its
+  group is exhausted. The prefix is **baked** in `engine.py` (`_OCCURRENCE_MAPPING_PREFIX`) rather
+  than imported, because `reidentify` is a pure lock-free `@staticmethod` with no openmed import;
+  `tests/test_pii_pure.py::test_occurrence_prefix_matches_openmed` pins the copy against openmed's
+  private constant so a rename fails CI. The two hazards are disjoint — both must be handled.
+- **`locale` widens DETECTION in openmed 2.x, not just surrogate generation.** The `Advanced` →
+  "Surrogate locale" box reads like a Faker knob, and through 1.x it was one. In 2.x
+  `core/safety_sweep.py::_patterns_for_language` special-cases *only* `lang="en"` **with
+  `locale=None`** to a narrowed pattern set; **any** non-`None` locale escapes that branch to
+  `get_patterns_for_language`, taking English from **28 to 35 patterns** (adding MRZ, USCC and
+  India health-ID detectors). So typing a locale changes *what gets found*, not only what replaces
+  it, and blank is the narrower setting — the opposite of the intuition that blank means "default,
+  everything on". Both locale inputs' help text says so. Reproduce with
+  `openmed.core.safety_sweep._patterns_for_language("en", None)` vs `(..., "en_US")`.
+- **The engine pins eager attention because DeBERTa-v2 has no SDPA kernel — but the pin is now
+  belt-and-braces, not load-bearing.** The OpenMed models (default PII + the NER models) are
+  `DebertaV2ForTokenClassification`, which has no SDPA kernel. The precise transformers rule
+  (`modeling_utils.py::get_correct_attn_implementation`, verified identical in 5.13.1 and 5.15.1) is:
+  `_sdpa_can_dispatch` raises `DebertaV2ForTokenClassification does not support ...
+  scaled_dot_product_attention` **only when the caller requested SDPA explicitly** — a caller that
+  passes nothing still falls back to eager silently. So the earlier framing ("transformers ≥5.13
+  hard-errors where ≤5.12 downgraded") was wrong: what mattered was that openmed's
+  `torch_attention_backend="auto"` used to request SDPA explicitly. **openmed 2.x no longer does** —
+  `openmed/torch/attention.py::select_attn_implementation("auto")` returns `None` (its own comment:
+  "Selecting SDPA from Torch capability alone can force an unsupported implementation on models such
+  as DeBERTa-v2"), and `models.py::_apply_attention_pipeline_kwargs` only sets
+  `attn_implementation` when that result is not `None`. `PIIEngine.loader` still builds every
+  `ModelLoader` with `OpenMedConfig(torch_attention_backend="eager")` — **keep it**: eager is the impl
+  these models run under either way, and pinning it means an openmed regression here cannot silently
+  break every model load. No fast test catches a load failure (they stub the model; the real load path
+  is `--run-model` only), so verify model loading end-to-end after any torch/transformers/openmed bump.
+  The `OPENMED_TORCH_ATTENTION_BACKEND` env var still overrides the pin.
+- **The `gliner` extra forks the transformers version, on purpose — and the marker extra's floor
+  must be re-derived on every gliner bump.** `gliner` caps transformers (`<5.14.0` as of 0.2.28;
+  it was `<5.7` through 0.2.27), but the rest of the stack targets the latest. uv builds one universal
+  lock, so **merely declaring** a bare `gliner` extra would cap transformers for *every* install —
+  including CI and the PII/NER tabs. `pyproject.toml` avoids that with a `[tool.uv] conflicts` between
+  the `gliner` extra and a marker `hf-latest = ["transformers>=5.14"]` extra, so uv **forks** the lock:
   the default resolution (and `--extra mlx`) stays on the latest transformers, and only
   `--extra gliner` (which combines with `--extra mlx`) downgrades. The `hf-latest` extra has no runtime
-  purpose; don't "clean it up" or the fork collapses. On the older transformers the GLiNER DeBERTa-v2
-  models load fine *without* the eager pin (SDPA silently degrades to eager pre-5.13), so the zero-shot
-  path doesn't need it. Depend on **bare `gliner`**, not `openmed[gliner]` (the latter's
-  `gliner[tokenizers]` drags in mecab/stanza/spacy — 137 packages vs 74 — for tokenizers this app
-  never uses). Verify the fork after any dependency bump: `uv export --extra gliner | grep transformers`
-  should show `5.6.x`, and `uv export` (no extras) the latest.
+  purpose; don't "clean it up" or the fork collapses. **Keep its floor at or above gliner's cap.** uv
+  forks on the *declaration* alone and never checks that a declared conflict is real, so when gliner
+  0.2.28 raised its cap from `<5.7` to `<5.14`, the old `>=5.7` floor silently became satisfiable
+  alongside it (5.7–5.13) — the fork still worked, but the recorded reason had quietly become false.
+  Re-read `Requires-Dist: transformers` from the gliner wheel on every bump and raise the floor to match.
+  The zero-shot path needs no eager pin regardless of the fork's transformers version: neither
+  `gliner.GLiNER.from_pretrained` (openmed passes only `cache_dir`/`token` —
+  `openmed/ner/families/gliner.py::_load_model`) nor the checkpoints themselves request SDPA, and per
+  the gotcha above an unrequested SDPA degrades to eager silently. Depend on **bare `gliner`**, not
+  `openmed[gliner]` (the latter's `gliner[tokenizers]` drags in mecab/stanza/spacy — 137 packages vs 74 —
+  for tokenizers this app never uses). Verify the fork after any dependency bump:
+  `uv export --extra gliner | grep transformers` should show a version below gliner's cap (`5.13.x`
+  today), and `uv export` (no extras) the latest (`5.15.x` today).
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
   literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.
-- **FastAPI ≥0.139 includes routers lazily.** `app.include_router(...)` no longer eagerly flattens the
+- **FastAPI ≥0.139 includes routers lazily (still true at 0.141.1).** `app.include_router(...)` no longer eagerly flattens the
   child routes into `app.routes`; it stores an `_IncludedRouter` wrapper (no `.path`). So the `/compat`
   routes are absent from `app.routes` even when mounted — if you need to introspect routes, use
   `app.openapi()["paths"]` instead. Requests route correctly regardless; only `.path`-based
