@@ -205,18 +205,22 @@ def test_aadhaar_mask_warns_that_it_retains_digits(monkeypatch):
     # aadhaar_mask arrived with openmed 2.0 and reaches the picker automatically (METHODS is
     # derived from DeidMethod). It is the only method that leaves part of an identifier in the
     # output — the UIDAI masked form keeps the last four digits — so the tab must say so at the
-    # point of choice, and only for that method.
+    # point of choice, and only for that method. It renders as st.warning rather than a
+    # caption: a method that weakens the privacy posture is a caution, and a caption that
+    # faked one with a leading :material/warning: still read as ordinary grey metadata.
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
-    assert "last four" not in " ".join(c.value for c in at.caption)
+    assert "last four" not in " ".join(w.value for w in at.warning)
 
     next(s for s in at.segmented_control if s.key == "single_method").set_value(
         "aadhaar_mask"
     ).run(timeout=30)
 
     assert not at.exception
-    captions = " ".join(c.value for c in at.caption)
-    assert "last four" in captions and "weaker than" in captions
+    warnings = " ".join(w.value for w in at.warning)
+    assert "last four" in warnings and "weaker than" in warnings
+    # ...and it stays out of the caption stream, so it can't regress to grey metadata.
+    assert "last four" not in " ".join(c.value for c in at.caption)
 
 
 def test_policy_tab_names_only_the_policies_that_keep_a_key(monkeypatch):
@@ -364,6 +368,41 @@ def test_ner_renders_entities(monkeypatch):
     # label is no longer a stub-only sentinel); the <mark> proves the entity was highlighted.
     assert any(m.label == "Entities found" and str(m.value) == "1" for m in at.metric)
     assert "<mark" in _html(at)
+
+
+def test_extraction_tabs_render_a_kpi_row_not_a_lone_metric(monkeypatch):
+    # Polish guard: st.metric defaults to width="stretch", so at layout="wide" a lone bordered
+    # card spanned the whole page to show one number. Detect/NER/Zero-shot now render a
+    # horizontal, content-width row of two cards, and "Distinct types" is the second one — its
+    # presence is the proxy for the row (reverting to the single metric drops it).
+    #
+    # The default stub returns two entities with two distinct labels, where a "distinct types"
+    # card and a card that merely echoed len(entities) are indistinguishable. So this uses
+    # three entities across two labels: 3 found / 2 distinct can only agree if the tally is
+    # really counting labels.
+    class _Repeating(_StubEngine):
+        def extract(self, _text, **_):
+            return [
+                SimpleNamespace(
+                    label="first_name", text="John", start=8, end=12, confidence=0.9
+                ),
+                SimpleNamespace(
+                    label="last_name", text="Doe", start=13, end=16, confidence=0.8
+                ),
+                SimpleNamespace(
+                    label="first_name", text="John", start=18, end=22, confidence=0.7
+                ),
+            ]
+
+    _use_engine(monkeypatch, _Repeating())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note to scan", "Patient John Doe, John.")
+    _click(at, "Detect")
+
+    assert not at.exception
+    metrics = {m.label: str(m.value) for m in at.metric}
+    assert metrics.get("Entities found") == "3"
+    assert metrics.get("Distinct types") == "2"
 
 
 def test_ner_model_picker_lists_curated_domains(monkeypatch):

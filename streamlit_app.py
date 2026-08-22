@@ -21,6 +21,7 @@ Run it::
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Callable
 from typing import Any, get_args
 
@@ -64,19 +65,65 @@ def get_engine() -> PIIEngine:
     return service.build_engine()
 
 
-def _entity_columns() -> dict[str, Any]:
-    """Shared ``st.dataframe`` column config for the entity tables (Detect/NER/Single).
+def _render_entity_table(entities: list[dict[str, Any]]) -> None:
+    """The shared entity table (Detect / Clinical NER / Zero-shot / the de-identify panels).
 
-    Confidence renders as a 0–1 progress bar so a reviewer can scan model certainty at a
-    glance rather than reading decimals.
+    ``placeholder`` is what makes this worth a helper rather than four bare ``st.dataframe``
+    calls: zero rows here means "nothing cleared the confidence threshold", not "nothing
+    ran", and a blank grid says neither. Confidence renders as a 0–1 progress bar so model
+    certainty is scannable rather than read as decimals.
+
+    Deliberately **no** ``key``. The performance guidance to give a dataframe a stable key
+    applies only to a *selectable* one: ``st.dataframe`` derives an element id from
+    ``user_key`` solely inside its ``if is_selection_activated:`` branch
+    (``streamlit/elements/arrow.py``), so under the default ``on_select="ignore"`` a key is
+    accepted and then dropped — verified by reading the rendered proto, whose ``id`` stays
+    empty. These tables are identified by delta path instead, which is already stable across
+    reruns, so a key would buy nothing and imply a guarantee it does not provide.
     """
-    return {
-        "confidence": st.column_config.ProgressColumn(
-            "confidence", min_value=0.0, max_value=1.0, format="%.2f"
-        ),
-        "start": st.column_config.NumberColumn(width="small"),
-        "end": st.column_config.NumberColumn(width="small"),
-    }
+    st.dataframe(
+        entities,
+        hide_index=True,
+        placeholder="No entities at or above the confidence threshold.",
+        column_config={
+            "confidence": st.column_config.ProgressColumn(
+                "confidence", min_value=0.0, max_value=1.0, format="%.2f"
+            ),
+            "start": st.column_config.NumberColumn(width="small"),
+            "end": st.column_config.NumberColumn(width="small"),
+        },
+    )
+
+
+def _render_entity_metrics(entities: list[dict[str, Any]], *, icon: str) -> None:
+    """KPI row for the read-only extraction tabs (Detect / Clinical NER / Zero-shot).
+
+    Content-width cards in a horizontal row, not a lone stretched metric: ``st.metric``
+    defaults to ``width="stretch"``, so at ``layout="wide"`` a single bordered card spans
+    the whole page to show one number. "Distinct types" is the balancing second card — it
+    reads off the same list, so it costs no extra work and answers the question the raw
+    count raises (30 entities of one type reads very differently from 30 of eight).
+    """
+    counts = Counter(str(e.get("label", "")) for e in entities if e.get("label"))
+    with st.container(horizontal=True):
+        st.metric(
+            "Entities found", len(entities), border=True, width="content", icon=icon
+        )
+        st.metric(
+            "Distinct types",
+            len(counts),
+            border=True,
+            width="content",
+            icon=":material/label:",
+            # Per-label counts as a bar sparkline: the tally alone can't show whether the
+            # entities are spread evenly or dominated by one label, which is exactly what a
+            # reviewer is judging. Counter preserves first-seen order and render_legend
+            # below iterates the same order, so the bars read left-to-right against the
+            # legend pills. None (not []) when nothing was found — an empty chart draws a
+            # flat rule inside the card.
+            chart_data=list(counts.values()) or None,
+            chart_type="bar",
+        )
 
 
 def _call(
@@ -230,7 +277,7 @@ def _render_deid_result(
 
     if show_entities:
         with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
-            st.dataframe(entities, hide_index=True, column_config=_entity_columns())
+            _render_entity_table(entities)
     if result.get("mapping") and st.button(
         "Show re-identification key", icon=":material/key:", key=f"{dl_key}_showkey"
     ):
@@ -259,12 +306,13 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
         # The one method that leaves part of an identifier behind, so say so where it is
         # chosen rather than burying it in help text — everything else here fully removes,
         # masks, or substitutes the span.
-        st.caption(
-            ":material/warning: India-specific. A number passing openmed's Aadhaar checksum "
-            "becomes `XXXX XXXX NNNN` — the UIDAI masked form, which **keeps the last four "
+        st.warning(
+            "India-specific. A number passing openmed's Aadhaar checksum becomes "
+            "`XXXX XXXX NNNN` — the UIDAI masked form, which **keeps the last four "
             "digits**. Every other entity is masked exactly as `mask` does. Because it leaves "
             "four digits in place it is weaker than `mask`; don't use it where a HIPAA Safe "
-            'Harbor-style "no residual identifier" posture is required.'
+            'Harbor-style "no residual identifier" posture is required.',
+            icon=":material/warning:",
         )
     c1, c2 = st.columns([3, 2])
     confidence = c1.slider(
@@ -375,9 +423,21 @@ def _render_single(lang: str) -> None:
         return
     text, result = stored["text"], stored["result"]
     entities = result["entities"]
-    m1, m2 = st.columns(2)
-    m1.metric("Entities found", len(entities), border=True)
-    m2.metric("Method", result["method"], border=True)
+    with st.container(horizontal=True):
+        st.metric(
+            "Entities found",
+            len(entities),
+            border=True,
+            width="content",
+            icon=":material/search:",
+        )
+        st.metric(
+            "Method",
+            result["method"],
+            border=True,
+            width="content",
+            icon=":material/lock:",
+        )
     _render_deid_result(
         text,
         result,
@@ -437,15 +497,35 @@ def _render_batch(lang: str) -> None:
     table = build_batch_table(notes, results)
     n_ok = sum(1 for r in results if r.get("ok", True))
     n_failed = len(results) - n_ok
-    st.metric("Notes de-identified", n_ok, border=True)
+    n_entities = sum(len(r.get("entities", ())) for r in results if r.get("ok", True))
+    with st.container(horizontal=True):
+        st.metric(
+            "Notes de-identified",
+            n_ok,
+            border=True,
+            width="content",
+            icon=":material/stacks:",
+        )
+        st.metric(
+            "Entities found",
+            n_entities,
+            border=True,
+            width="content",
+            icon=":material/search:",
+        )
     if n_failed:
         st.warning(
             f"{n_failed} of {len(results)} note(s) failed — see the Status column.",
-            icon=":material/error:",
+            icon=":material/warning:",
         )
+    # row_height because the two wide columns hold multi-line clinical notes: at the default
+    # height each row shows one truncated line, which is not enough to tell whether a note was
+    # de-identified correctly. No `key` here either — see _render_entity_table on why a key is
+    # inert on a dataframe that hasn't activated selection.
     st.dataframe(
         table,
         hide_index=True,
+        row_height=56,
         column_config={
             "status": st.column_config.TextColumn(width="small"),
             "original": st.column_config.TextColumn(width="large"),
@@ -486,7 +566,11 @@ def _render_anonymize(lang: str) -> None:
             height=200,
             key="anon_text",
         )
-        c1, c2 = st.columns(2)
+        # [3, 2], matching the Detect tab and the Single/Batch controls: a slider needs the
+        # width to be readable, a toggle does not. This was the one such row still on an even
+        # split. A precise ratio is what st.columns is for; the metric rows above use
+        # st.container(horizontal=True) instead, since those want content-sized cards.
+        c1, c2 = st.columns([3, 2])
         confidence = c1.slider(
             "Confidence threshold",
             0.0,
@@ -502,23 +586,29 @@ def _render_anonymize(lang: str) -> None:
             key="anon_consistent",
             help="Same input → same surrogate, so repeated mentions resolve to one identity.",
         )
-        seed = c1.number_input(
-            "Seed",
-            value=42,
-            step=1,
-            key="anon_seed",
-            help="Reproducible surrogates across runs (used when Deterministic is on).",
-        )
-        locale = c2.text_input(
-            "Locale",
-            value="",
-            placeholder="e.g. en_US, pt_BR",
-            key="anon_locale",
-            help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the "
-            "language. Note: on English notes, setting ANY locale also widens the safety "
-            "sweep from 28 to 35 patterns (adding MRZ, USCC and India health-ID detectors), "
-            "so it affects what is detected, not just what replaces it.",
-        )
+        # Seed/locale live in an Advanced expander so this form matches the Policy de-ID tab
+        # and the Single/Batch controls — three de-identifying surfaces, one control shape.
+        # They render UNCONDITIONALLY (not gated on `consistent`, the way the Single note
+        # controls gate theirs): inside a form a toggle still holds the previous rerun's
+        # value, so gating here would hide the very widget the pending submit reads.
+        with st.expander("Advanced", icon=":material/tune:"):
+            seed = st.number_input(
+                "Seed",
+                value=42,
+                step=1,
+                key="anon_seed",
+                help="Reproducible surrogates across runs (used when Deterministic is on).",
+            )
+            locale = st.text_input(
+                "Locale",
+                value="",
+                placeholder="e.g. en_US, pt_BR",
+                key="anon_locale",
+                help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the "
+                "language. Note: on English notes, setting ANY locale also widens the safety "
+                "sweep from 28 to 35 patterns (adding MRZ, USCC and India health-ID "
+                "detectors), so it affects what is detected, not just what replaces it.",
+            )
         submitted = st.form_submit_button(
             "Anonymize", type="primary", icon=":material/masks:"
         )
@@ -550,9 +640,21 @@ def _render_anonymize(lang: str) -> None:
         return
     text, result, consistent = stored["text"], stored["result"], stored["consistent"]
     entities = result["entities"]
-    m1, m2 = st.columns(2)
-    m1.metric("Entities replaced", len(entities), border=True)
-    m2.metric("Deterministic", "On" if consistent else "Off", border=True)
+    with st.container(horizontal=True):
+        st.metric(
+            "Entities replaced",
+            len(entities),
+            border=True,
+            width="content",
+            icon=":material/masks:",
+        )
+        st.metric(
+            "Deterministic",
+            "On" if consistent else "Off",
+            border=True,
+            width="content",
+            icon=":material/repeat:",
+        )
     _render_deid_result(
         text,
         result,
@@ -595,7 +697,16 @@ def _render_policy_anon(lang: str) -> None:
     # outside its form). model_name resolves via POLICY_MODELS[policy_label].name.
     policy_label = st.selectbox("Policy", list(POLICY_MODELS), key="policy_pick")
     model = POLICY_MODELS[policy_label]
-    reversibility = "reversible with a key" if model.keep_mapping else "irreversible"
+    # Badged because reversibility is the single fact that decides whether this run can be
+    # undone, and it is NOT predictable from the policy's name or from "does it substitute
+    # surrogates" (four surrogate profiles keep no key). Blue/gray, deliberately not
+    # green/red: keeping a key is a capability, not a virtue — the key is as sensitive as
+    # raw PHI — so the badge must not read as a safety verdict in either direction.
+    reversibility = (
+        ":blue-badge[reversible with a key]"
+        if model.keep_mapping
+        else ":gray-badge[irreversible]"
+    )
     sweep = (
         "safety sweep enforced"
         if model.safety_sweep_mandatory
@@ -701,9 +812,21 @@ def _render_policy_anon(lang: str) -> None:
     # Reversibility is a property of the (snapshotted) policy, so derive it from the stored
     # label rather than storing a second field — POLICY_MODELS is the single source of truth.
     reversible = POLICY_MODELS[stored["policy_label"]].keep_mapping
-    m1, m2 = st.columns(2)
-    m1.metric("Entities found", len(entities), border=True)
-    m2.metric("Policy", stored["policy_label"], border=True)
+    with st.container(horizontal=True):
+        st.metric(
+            "Entities found",
+            len(entities),
+            border=True,
+            width="content",
+            icon=":material/search:",
+        )
+        st.metric(
+            "Policy",
+            stored["policy_label"],
+            border=True,
+            width="content",
+            icon=":material/policy:",
+        )
     _render_deid_result(
         text,
         result,
@@ -737,7 +860,7 @@ def _render_reidentify() -> None:
         try:
             mapping = json.loads(mapping_text or "{}")
         except json.JSONDecodeError as exc:
-            st.error(f"Mapping is not valid JSON: {exc}")
+            st.error(f"Mapping is not valid JSON: {exc}", icon=":material/error:")
             mapping = None
         if isinstance(mapping, dict) and mapping:
             result = _call(
@@ -811,11 +934,11 @@ def _render_detect(lang: str) -> None:
         return
 
     entities = result["entities"]
-    st.metric("Entities found", len(entities), border=True)
+    _render_entity_metrics(entities, icon=":material/search:")
     with st.container(border=True):
         st.caption("Detected PII")
         _render_highlight(text, entities)
-    st.dataframe(entities, hide_index=True, column_config=_entity_columns())
+    _render_entity_table(entities)
 
 
 @st.fragment
@@ -873,12 +996,12 @@ def _render_ner() -> None:
     analyzed.add(domain)
 
     entities = result["entities"]
-    st.metric("Entities found", len(entities), border=True)
+    _render_entity_metrics(entities, icon=":material/biotech:")
     st.caption(f"Model: {model.display_name} (`{model.alias}`)")
     with st.container(border=True):
         st.caption(f"Detected {domain.lower()} entities")
         _render_highlight(text, entities)
-    st.dataframe(entities, hide_index=True, column_config=_entity_columns())
+    _render_entity_table(entities)
 
 
 @st.fragment
@@ -974,12 +1097,12 @@ def _render_zero_shot() -> None:
     analyzed.add(domain)
 
     entities = result["entities"]
-    st.metric("Entities found", len(entities), border=True)
+    _render_entity_metrics(entities, icon=":material/frame_inspect:")
     st.caption(f"Model: {model.display_name} (`{model.alias}`)")
     with st.container(border=True):
         st.caption("Extracted entities")
         _render_highlight(text, entities)
-    st.dataframe(entities, hide_index=True, column_config=_entity_columns())
+    _render_entity_table(entities)
 
 
 def _render_sidebar() -> str:
@@ -1000,9 +1123,15 @@ def _render_sidebar() -> str:
             f"Model: {engine.model_name or DEFAULT_PII_MODEL} (English) — non-English "
             "languages auto-load a language-specific model on first use."
         )
+        # Inline badge rather than plain text: load state is the one thing in this readout
+        # that changes at runtime, so it should be the one thing that catches the eye.
         st.caption(
             f"Backend: {engine.backend or 'auto'} · v{__version__} · "
-            + ("model loaded" if engine.is_loaded else "loads on first request")
+            + (
+                ":green-badge[model loaded]"
+                if engine.is_loaded
+                else ":gray-badge[loads on first request]"
+            )
         )
         lang = st.selectbox(
             "Language",
@@ -1024,8 +1153,11 @@ def main() -> None:
     st.session_state.setdefault("last_mapping", None)
     st.session_state.setdefault("last_deidentified", "")
 
-    lang = _render_sidebar()
-
+    # Title first, then the sidebar: st.sidebar writes into its own container regardless of
+    # call order, so this only changes EXECUTION order — the page states what it is before
+    # _render_sidebar() touches the engine. Cheap today (the engine constructs lazily and the
+    # model loads on first request, not here), and it keeps the ordering honest if that ever
+    # stops being true.
     st.title("OpenMed Studio")
     st.caption(
         "Detect PII, run clinical NER, extract any entity type zero-shot, or de-identify "
@@ -1034,6 +1166,21 @@ def main() -> None:
         "round-trip with re-identification. The model runs in-process."
     )
 
+    lang = _render_sidebar()
+
+    # All eight tab bodies execute on every rerun (st.tabs defaults to on_change="ignore").
+    # Deliberate, and measured: the eight together are ~20 ms of a ~26 ms script run, because
+    # they only DECLARE widgets — every tab returns before its service call unless its own
+    # form was submitted. on_change="rerun" + `if tab.open:` would save ~17 ms on a submit
+    # path already dominated by model inference, and charge a full server rerun for every tab
+    # CLICK, which costs nothing today. Revisit only if a tab body starts doing real work at
+    # render time.
+    #
+    # Two neighbouring "optimizations" would be bugs rather than merely a net loss. Gating an
+    # `Advanced` expander on `.open` would stop declaring the widgets its form's submit reads,
+    # so a collapsed expander would silently send options other than the ones on screen. And
+    # @st.fragment(parallel=True) can overlap nothing here: PIIEngine serializes every model
+    # call on one lock, and no fragment does slow work at render time.
     (
         tab_detect,
         tab_ner,
