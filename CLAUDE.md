@@ -482,7 +482,11 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     is HTML-escaped, so a user-supplied label can't inject markup). `ui_helpers.py`'s `render_highlighted`/`render_legend` are
     **theme-agnostic**: a translucent per-label tint from `PALETTE`/`color_for` plus `color: inherit`,
     so the marks read on light or dark with no runtime theme detection (`render_plain`/
-    `build_base_opts`/`build_batch_table` are kept separate for browserless unit tests). The
+    `build_base_opts`/`build_batch_table` are kept separate for browserless unit tests). `PALETTE` is
+    the **nine** Nord accents (five Aurora, four Frost), mirroring `.streamlit/config.toml`; nine and
+    not ten is load-bearing, because `color_for` hashes with `sum(ord(c)) % len(PALETTE)` and at ten
+    `first_name` and `date` — the most common pair in a clinical note — collide. Per-hue alphas keep
+    every tint visible on both Nord's `#2e3440` and white while holding text above WCAG AA. The
     de-identified output offers a `Download` button (**no** copy-to-clipboard — the in-process tool
     deliberately avoids sending PHI to a browser-side clipboard component); entity tables render
     confidence as a `ProgressColumn`, count/method metrics are bordered cards, and
@@ -490,10 +494,19 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     produces (`result["entities"]`, `result["deidentified_text"]`, `result.get("mapping")`). The
     confidence slider defaults to `0.5` (the de-identify default is `0.7`).
   - *Config:* `streamlit>=1.58` (1.58 horizontal/`height="stretch"` flex layout) is a core
-    dependency. `.streamlit/config.toml` defines both `[theme.light]` and `[theme.dark]` (so the app
-    honors the user's mode; the theme-agnostic marks read correctly in either) plus a shared `[theme]`
-    with `baseRadius` and a semantic `red`/`green`/`orange` palette brightened per mode, so status
-    accents feel intentional; `gatherUsageStats = false` (a clinical-text tool shouldn't phone home);
+    dependency. `.streamlit/config.toml` is **Nord, dark only**: one flat `[theme]` (plus
+    `[theme.sidebar]`) and *no* `[theme.light]`/`[theme.dark]`, which is precisely what removes the
+    light/dark selector — Streamlit offers it only when both mode sections exist
+    (`runtime/app_session.py` populates `custom_theme.light`/`.dark` only from those sections), so
+    re-adding either brings the toggle back. It sets the Polar Night backgrounds / Snow Storm text /
+    Frost accents, `baseRadius`/`buttonRadius` `4px` with widget+sidebar borders on, and an Aurora
+    `red`/`orange`/`yellow`/`green`/`violet` + Frost `blue` semantic palette that `ui_helpers.PALETTE`
+    mirrors, so status accents and entity marks come from one set of nine colors. It deliberately
+    omits the upstream Nord template's `font`/`codeFont` (Inter + JetBrains Mono via
+    fonts.googleapis.com) — a tool that already sets `gatherUsageStats = false` shouldn't make an
+    outbound CDN call per page load, and the fonts would silently fall back in an air-gapped deploy;
+    the font *metrics* (`baseFontSize`/`headingFontSizes`/…) are family-independent and stay.
+    `gatherUsageStats = false` (a clinical-text tool shouldn't phone home);
     and `[client] showErrorDetails = "none"`, so a traceback (which can quote note text) never reaches
     the browser — full detail goes to the server console, meaning **debug from the terminal, not the
     page**.

@@ -145,8 +145,12 @@ guards; the API adds only HTTP concerns (routing, auth, status codes) on top.
 - **Model reuse.** Streamlit caches the engine (`st.cache_resource`), so the PII model loads at most
   once per process and is reused across every tab. The shared loader dispatches by model name, so the
   Clinical NER tab loads a per-domain model into the same loader on first use of that domain.
-- **Theme-aware.** The highlights and legend adapt to light or dark mode automatically (a translucent
-  tint plus `color: inherit`, no runtime theme detection; both modes live in `.streamlit/config.toml`).
+- **Nord theme, dark only.** `.streamlit/config.toml` carries a single `[theme]` section, which is
+  what locks the app to one mode — Streamlit shows the light/dark selector only when both
+  `[theme.light]` and `[theme.dark]` exist. The entity highlights draw from the same nine Nord
+  accents (translucent tint plus `color: inherit`, so they still need no runtime theme detection),
+  and no webfont is loaded: the upstream Nord template's Google Fonts would mean an outbound CDN
+  call on every page load, which a clinical-text tool shouldn't make.
 - **Isolated reruns.** The Detect / Clinical NER / Zero-shot / Batch / Re-identify tabs are
   `st.fragment`s, so an interaction in one doesn't rerun the others; Single note and Anonymize stay
   full reruns so they can hand their result to Re-identify.

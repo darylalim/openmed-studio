@@ -10,30 +10,59 @@ gatherUsageStats = false
 # browser (they can contain note text). Full detail still goes to the server console.
 showErrorDetails = "none"
 
-# Both [theme.light] and [theme.dark] are defined so the app honors the user's
-# light/dark preference (a single [theme] would lock it to one mode). The
-# entity-highlight colors in ui_helpers.py adapt to whichever is active.
+# Nord (https://www.nordtheme.com) — arctic, north-bluish palette, dark only.
+# A SINGLE [theme] section is deliberate: Streamlit offers the light/dark selector in
+# the settings menu only when BOTH [theme.light] and [theme.dark] exist, so one flat
+# [theme] locks the app to this one mode. Don't re-add the mode sections unless you
+# want the toggle back.
+#
+# No `font`/`codeFont`: the upstream Nord template loads Inter + JetBrains Mono from
+# fonts.googleapis.com, and a clinical-text tool that already sets
+# gatherUsageStats = false shouldn't make an outbound CDN call on every page load (it
+# would also silently fall back in an air-gapped deploy). The typography *metrics*
+# below are font-family-independent, so they still apply to the built-in stack.
 [theme]
-primaryColor = "#2563eb"
-# Rounded corners on widgets/containers, in step with the entity-highlight marks.
-baseRadius = "8px"
-# Semantic palette for st.error/warning/success accents, badges, and status text
-# (light-mode shades; [theme.dark] brightens them for contrast). Streamlit derives the
-# background/text variants automatically.
-redColor = "#dc2626"
-greenColor = "#16a34a"
-orangeColor = "#d97706"
+base = "dark"
 
-[theme.light]
-backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f6f8fa"
-textColor = "#1f2328"
+# Polar Night backgrounds, Snow Storm text, Frost accents.
+primaryColor = "#88c0d0"              # nord8  — buttons, active widgets
+backgroundColor = "#2e3440"           # nord0  — main canvas
+secondaryBackgroundColor = "#3b4252"  # nord1  — widget/expander surfaces
+codeBackgroundColor = "#3b4252"       # nord1
+textColor = "#eceff4"                 # nord6
+codeTextColor = "#d8dee9"             # nord4
+linkColor = "#81a1c1"                 # nord9
+borderColor = "#4c566a"               # nord3
 
-[theme.dark]
-primaryColor = "#60a5fa"
-backgroundColor = "#0d1117"
-secondaryBackgroundColor = "#161b22"
-textColor = "#e6edf3"
-redColor = "#f87171"
-greenColor = "#4ade80"
-orangeColor = "#fbbf24"
+# Borders on, small radius — Nord reads crisp rather than soft.
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "4px"
+buttonRadius = "4px"
+linkUnderline = false
+
+baseFontSize = 14
+baseFontWeight = 400
+codeFontSize = "0.875rem"
+headingFontSizes = ["32px", "24px", "20px", "16px", "14px", "12px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+
+# Aurora + Frost, the semantic palette behind st.error/warning/success accents,
+# badges, and :red[...]-style markdown. Matches ui_helpers.PALETTE, which tints the
+# entity-highlight marks from the same nine Nord accents.
+redColor = "#bf616a"      # nord11
+orangeColor = "#d08770"   # nord12
+yellowColor = "#ebcb8b"   # nord13
+greenColor = "#a3be8c"    # nord14
+violetColor = "#b48ead"   # nord15
+blueColor = "#81a1c1"     # nord9
+
+chartCategoricalColors = ["#88c0d0", "#81a1c1", "#5e81ac", "#a3be8c", "#ebcb8b", "#d08770", "#bf616a"]
+
+# Sidebar sits one Polar Night step lighter than the canvas, so the engine readout
+# and Language filter read as a distinct panel.
+[theme.sidebar]
+backgroundColor = "#3b4252"           # nord1
+secondaryBackgroundColor = "#434c5e"  # nord2
+codeBackgroundColor = "#434c5e"       # nord2
+borderColor = "#4c566a"               # nord3

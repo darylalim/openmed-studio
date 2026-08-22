@@ -10,21 +10,26 @@ from __future__ import annotations
 import html
 from typing import Any
 
-# Translucent per-label tints. Each reads as a highlight over either a light or a
-# dark page, and marks pair the tint with ``color: inherit`` so the text always
-# takes the active theme's color — so the highlight is correct on any theme with no
-# runtime theme detection (the alpha is tuned to stay visible on white and on dark).
+# The nine Nord accent colors — five Aurora, four Frost — as translucent per-label
+# tints, matching the palette in ``.streamlit/config.toml``. Marks pair the tint with
+# ``color: inherit`` so the text always takes the active theme's color, and the
+# highlight is therefore correct on any theme with no runtime theme detection.
+# Alphas are tuned per hue so every tint stays visible over Nord's #2e3440 canvas
+# *and* over white while keeping text above WCAG AA (4.5:1) on both; Aurora yellow is
+# the lightest hue, hence its lower alpha. Warm and cool alternate so hash-adjacent
+# labels land on visibly different tints. Nine and not ten is deliberate:
+# ``color_for`` hashes with ``sum(ord(c)) % len(PALETTE)``, and at ten the two most
+# common labels in a clinical note — ``first_name`` and ``date`` — collide.
 PALETTE: list[str] = [
-    "rgba(253,230,138,.40)",
-    "rgba(147,197,253,.42)",
-    "rgba(134,239,172,.40)",
-    "rgba(252,165,165,.42)",
-    "rgba(196,181,253,.45)",
-    "rgba(244,164,212,.42)",
-    "rgba(110,231,183,.40)",
-    "rgba(253,186,116,.42)",
-    "rgba(165,180,252,.45)",
-    "rgba(94,234,212,.40)",
+    "rgba(136,192,208,.40)",  # nord8  frost cyan
+    "rgba(191,97,106,.42)",  # nord11 aurora red
+    "rgba(163,190,140,.40)",  # nord14 aurora green
+    "rgba(129,161,193,.45)",  # nord9  frost blue
+    "rgba(235,203,139,.32)",  # nord13 aurora yellow
+    "rgba(143,188,187,.40)",  # nord7  frost teal
+    "rgba(180,142,173,.45)",  # nord15 aurora purple
+    "rgba(208,135,112,.42)",  # nord12 aurora orange
+    "rgba(94,129,172,.52)",  # nord10 frost deep blue
 ]
 
 
