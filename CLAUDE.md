@@ -78,9 +78,12 @@ uv run pytest                  # fast tests only; model tests are skipped
 uv run pytest --run-model      # also run the tests that load the OpenMed PII model
 ```
 
-CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `ty check`, and `pytest`
-on pushes to `main` and every PR, across Python 3.10 and 3.13 (model tests stay skipped, so CI needs
-no model download).
+CI (`.github/workflows/ci.yml`) runs on pushes to `main` and every PR: `pytest` across Python 3.10
+and 3.13, and `ruff check` / `ruff format --check` / `ty check` **once** on the 3.10 leg (ruff never
+reads `.venv` and ty targets 3.10 via `[tool.ty.environment]` whatever interpreter runs it, so a
+second leg would duplicate the work and the failure annotations). Model tests stay skipped, so CI
+needs no model download. `astral-sh/setup-uv` is pinned to an **exact** version — it stopped
+publishing floating major tags at v8 — so it must be bumped by hand.
 
 Test layout (`tests/`) — fast no-model tests by file (model tests are a separate opt-in, below):
 

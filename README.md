@@ -211,8 +211,9 @@ detection,
 masking, deterministic replacement, and round-trips; the zero-shot model test is additionally gated on
 the `gliner` extra, so CI never downloads it.
 
-CI (`.github/workflows/ci.yml`) runs the lint / format / type / test checks on pushes to `main` and
-on every pull request, across Python 3.10 and 3.13.
+CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on every pull request: the tests across
+Python 3.10 and 3.13, and the lint / format / type checks once on the 3.10 leg (they are
+interpreter-independent, so a second run would only duplicate the work).
 
 ## Security & notes
 
