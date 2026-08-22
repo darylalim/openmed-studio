@@ -514,7 +514,10 @@ def _render_anonymize(lang: str) -> None:
             value="",
             placeholder="e.g. en_US, pt_BR",
             key="anon_locale",
-            help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the language.",
+            help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the "
+            "language. Note: on English notes, setting ANY locale also widens the safety "
+            "sweep from 28 to 35 patterns (adding MRZ, USCC and India health-ID detectors), "
+            "so it affects what is detected, not just what replaces it.",
         )
         submitted = st.form_submit_button(
             "Anonymize", type="primary", icon=":material/masks:"
@@ -574,7 +577,7 @@ def _render_policy_anon(lang: str) -> None:
     Re-identify fragment re-reads the ``last_deidentified``/``last_mapping`` handed off here.
     """
     # Derived, not hand-listed: openmed went from 10 policies to 19 in one release and the
-    # reversible set is NOT "the surrogate ones" — five of the eight surrogate-based profiles
+    # reversible set is NOT "the surrogate ones" — four of the nine surrogate-based profiles
     # keep no key at all. Reading it off keep_mapping means the sentence can't go stale again.
     reversible = [label for label, m in POLICY_MODELS.items() if m.keep_mapping]
     st.caption(

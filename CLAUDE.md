@@ -18,9 +18,7 @@ It has **two delivery surfaces over one shared in-process seam** (`openmed_studi
 [Streamlit](https://streamlit.io/) app (`streamlit_app.py`) and a [FastAPI](https://fastapi.tiangolo.com/)
 service (`openmed_studio/main.py`). Both run the model **in-process** through a framework-free
 `PIIEngine` — the FastAPI service is a *thin HTTP layer over the same seam the UI uses*, not a
-separate service the UI calls. (The app was once FastAPI-only with a Streamlit HTTP *client*; that
-collapsed to Streamlit-only, and the HTTP surface was then re-added as a second, independent surface —
-see "The FastAPI service" and "What is (and isn't) dropped".)
+separate service the UI calls (see "The two surfaces").
 
 ## Working with Python
 
@@ -30,6 +28,8 @@ When working with Python, invoke the relevant `/astral:<skill>` for uv, ty, and 
 
 This is a [uv](https://docs.astral.sh/uv/) **non-package** project (`[tool.uv] package = false`
 in `pyproject.toml`) — uv installs the declared dependencies into `.venv` but builds no wheel.
+
+### Running it
 
 ```bash
 # Run the Streamlit app (opens http://localhost:8501). uv auto-creates .venv and installs deps.
@@ -61,6 +61,19 @@ OPENMED_STUDIO_API_KEY=secret uv run python -m openmed_studio
 OPENMED_STUDIO_PRELOAD=1 OPENMED_STUDIO_COMPAT=1 uv run python -m openmed_studio
 ```
 
+| Env var | Effect |
+|---|---|
+| `OPENMED_STUDIO_BACKEND` | Pin `hf`/`mlx` (`service.resolve_backend`); unset = openmed auto-detects. `mlx` raises off-Apple. |
+| `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Per-request text cap; read **at import** by `validation._max_text_chars` (default 50,000). |
+| `OPENMED_STUDIO_API_KEY` | Require `X-API-Key` on every model route; unset = unauthenticated + a startup warning. |
+| `OPENMED_STUDIO_PRELOAD` | Truthy = warm the model in a threadpool at FastAPI startup. |
+| `OPENMED_STUDIO_COMPAT` | Truthy = mount the two-route `/compat` OpenMed-REST surface. |
+| `OPENMED_STUDIO_HOST` / `_PORT` | `python -m openmed_studio` bind address (defaults `127.0.0.1:8080`). |
+| `OPENMED_TORCH_ATTENTION_BACKEND` | openmed's own knob; overrides the engine's `eager` pin (see "Known gotchas"). |
+| `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | Skip HF Hub network checks once the model is cached. |
+
+### Static checks and tests
+
 Lint, format, and type-check with the project-pinned tools (configured under
 `[tool.ruff.lint]` and `[tool.ty.environment]`):
 
@@ -78,12 +91,18 @@ uv run pytest                  # fast tests only; model tests are skipped
 uv run pytest --run-model      # also run the tests that load the OpenMed PII model
 ```
 
+### CI
+
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and every PR: `pytest` across Python 3.10
 and 3.13, and `ruff check` / `ruff format --check` / `ty check` **once** on the 3.10 leg (ruff never
 reads `.venv` and ty targets 3.10 via `[tool.ty.environment]` whatever interpreter runs it, so a
 second leg would duplicate the work and the failure annotations). Model tests stay skipped, so CI
-needs no model download. `astral-sh/setup-uv` is pinned to an **exact** version — it stopped
+needs no model download. CI installs with `uv sync --locked --group dev`, so the committed `uv.lock`
+is **part of the contract**: a `pyproject.toml` dependency edit must be followed by `uv lock` or CI
+fails before running a single test. `astral-sh/setup-uv` is pinned to an **exact** version — it stopped
 publishing floating major tags at v8 — so it must be bumped by hand.
+
+### Releases
 
 Releases (`.github/workflows/release.yml`) are cut from `pyproject.toml`'s `version`. A push to
 `main` touching that file runs a `guard` job that reads the version and checks whether `v<version>`
@@ -100,27 +119,31 @@ Caveat: two version bumps merged within one CI cycle can leave the intermediate 
 because the called `ci.yml` brings its own `cancel-in-progress` concurrency group.
 
 The release body comes from GitHub's `releases/generate-notes` API, **with a commit-log fallback**:
-that API builds its body from merged **pull requests** only, and this repo has never had one (59
-commits, all pushed straight to `main`), so it returns nothing but a `**Full Changelog**` link —
+that API builds its body from merged **pull requests** only, and this repo has never had one (every
+commit pushed straight to `main`), so it returns nothing but a `**Full Changelog**` link —
 78 bytes, verified by dry-running the endpoint. The job therefore checks whether the generated body
 contains any `* ` entry and, when it doesn't, substitutes `git log --no-merges --reverse
---format='* %s' "$prev..HEAD"` under a `## Commits` heading, keeping the generator's compare link.
+--format='* %s' "$prev..HEAD"` under a `## Commits` heading, keeping the generator's compare link
+(with no `v*` tag yet — the state today — the range is a bare `HEAD`, so the first release's notes
+list the entire history).
 Two consequences: the release job needs `fetch-depth: 0` (it runs `git log`), and **commit subjects
 are release notes now** — write them accordingly. If the repo ever moves to a PR workflow the
 fallback goes quiet on its own, since the generated body will have `* ` entries again.
+
+### Test layout
 
 Test layout (`tests/`) — fast no-model tests by file (model tests are a separate opt-in, below):
 
 | File | Pins |
 |------|------|
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
-| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), and batch per-note isolation |
+| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI), and the openmed-sync guards |
-| `test_engine.py` | `PIIEngine` lazy-load + backend selection (bare `ModelLoader` vs `OpenMedConfig(backend=...)`), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and a `--run-model` policy test (masking vs reversible-surrogate) |
+| `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and a `--run-model` policy test (masking vs reversible-surrogate) |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub) |
 | `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s, `X-API-Key` auth (401/accept/reject + open `/health`), and the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated) |
-| `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, and that `.claude/settings.json` still registers the hook under `PreToolUse` |
+| `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, that those same names are in `.gitignore` (the other half of the invariant), and that `.claude/settings.json` still registers the hook under `PreToolUse`. The whole file `skipif`s when `sh` or `python3` is missing |
 
 Named guards worth knowing — each **fails CI when openmed drifts**:
 `test_validation_deidmethod_matches_openmed` (`DeidMethod`↔openmed),
@@ -135,8 +158,12 @@ registry/label metadata only — no download, so it runs in CI without the `glin
 `default_action`/`keep_mapping`/`safety_sweep_mandatory`; profile metadata only — no
 download), `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (introspects
 `inspect.signature(openmed.deidentify)`, pinning the forwarded-vs-excluded split from "OpenMed API" —
-`policy` is now **forwarded**, not excluded), and `test_shift_dates_actually_shifts_dates` (see "Known
-gotchas").
+`policy` is now **forwarded**, not excluded), and — **the one exception** —
+`test_shift_dates_actually_shifts_dates`, which is `@pytest.mark.model` in `test_pii_model.py`, so it
+catches that drift only under `--run-model`, never in CI (see "Known gotchas").
+Two more openmed-drift guards live outside this list:
+`test_analyze_forwards_every_openmed_param_or_allowlists_it` (see "OpenMed API" — it matters *more*
+than its `deidentify` twin) and `test_occurrence_prefix_matches_openmed` (see "Known gotchas").
 
 One guard tracks the **repo's own tooling** instead of openmed. `.claude/hooks/block-phi-paths.sh`
 is a PreToolUse hook that denies reads/writes of the gitignored files which can carry PHI (the app's
@@ -148,8 +175,8 @@ arm**. It exists because that sync was missed once: `policy_anonymized.txt` ship
 for a month. The hook matches on basename and does not cover `Bash(cat ...)`, so treat it as a guard
 against accidental reads, not as containment.
 
-Model tests (`test_pii_model.py` + the `@pytest.mark.model` tests in `test_engine.py`) are
-**skipped by default** and drive the real engine via the shared `loader` fixture; `--run-model` opts
+Model tests (`test_pii_model.py` + the `@pytest.mark.model` tests in `test_engine.py` and
+`test_service.py`) are **skipped by default** and drive the real engine via the shared `loader` fixture; `--run-model` opts
 in, wired in `tests/conftest.py` (`pytest_addoption` + `pytest_collection_modifyitems`, plus the
 session-scoped `loader` and a `note` fixture). The zero-shot model test
 (`test_engine_extract_zero_shot_detects_user_labels`) is **doubly gated** — `@pytest.mark.model`
@@ -160,6 +187,30 @@ Note: `ty` targets Python 3.10 (the minimum). openmed ships inline type hints �
 expects the `Literal` of the seven method names — so the `DeidMethod` alias (in `engine.py`,
 re-exported by `validation.py`) must stay in sync; the guard above enforces it. Tests pass the
 `PIIEngine` seam a structural stub via `typing.cast` (the repo convention).
+
+## Conventions when editing
+
+- **Never bypass `service.py`.** Both surfaces call `service.*`, never `PIIEngine` directly — the
+  sole exception is `main.py`'s `/compat`, which needs raw entity objects.
+- **The UI layer never imports `openmed`.** `streamlit_app.py`/`ui_helpers.py` import only
+  `openmed_studio` + `streamlit`; registry metadata is baked into `engine.py` for exactly this
+  reason, and the drift guards keep the baked copy honest.
+- **Tests stub the seam structurally:** `PIIEngine(loader=cast("ModelLoader", object()))` — no model,
+  no `openmed` import. A fast test must never download anything.
+- **Adding a de-identifying tab, in order** (this ritual drifted once and left a PHI-carrying download
+  readable for a month — see the PHI-hook note under "Test layout"):
+  1. `validation.py` — the request model (`extra="forbid"`), plus any new bound primitive.
+  2. `service.py` — an entry point that validates → `_run`s the engine → adapts to plain dicts.
+  3. `engine.py` — only if a new openmed call or registry entry is needed; keep the `_lock`.
+  4. `main.py` — a thin route + typed response model, if the capability should be served.
+  5. `streamlit_app.py` — the tab; route its submit through `_submit_deidentify` so the Re-identify
+     handoff can't drift.
+  6. **`.gitignore` *and* `.claude/hooks/block-phi-paths.sh`** — add the new `Download` filename to
+     both. `test_phi_hook_blocks_every_app_download_output` derives its set from `streamlit_app.py`,
+     so CI fails until you do.
+- **After any openmed/torch/transformers bump:** run `uv run pytest --run-model` (fast tests stub the
+  model and cannot catch a load failure) and re-verify the gliner fork with
+  `uv export --extra gliner | grep transformers`.
 
 ## How it works
 
@@ -183,6 +234,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   domain — switching domains loads another model rather than rebuilding the loader.
 - **Python:** `requires-python = ">=3.10"`; verified on 3.11, but uv may pick a
   newer interpreter (e.g. 3.13) for `.venv`.
+### Core modules (`openmed_studio/`)
+
 - **App structure:** `engine.py`/`service.py`/`validation.py` are the **framework-free core** (no
   Streamlit, no HTTP); `main.py`/`__main__.py` are the FastAPI/uvicorn HTTP layer *over* that core
   (the only files that import a web framework), mirroring how `streamlit_app.py`/`ui_helpers.py` are
@@ -208,11 +261,10 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       for the `shift_dates` fix).
     - *Policy anonymization:* `deidentify` also forwards a `policy` param (a compliance-profile name,
       e.g. `"hipaa_safe_harbor"` — a `Policy` `Literal` value; `None` by default = no policy). When
-      set it **overrides `method`**: openmed assigns a per-label action (mask/redact/replace/keep) from
-      that profile, so the `Policy de-ID` tab sends **no** method. Reversibility is the policy's call —
-      the engine passes `keep_mapping=False` and openmed **ORs** the profile's own `keep_mapping` flag,
-      so the surrogate policies (GDPR/PIPEDA/UK ICO) return a re-identification mapping while the
-      masking policies (HIPAA Safe Harbor, strict-no-leak) stay irreversible (see "Known gotchas").
+      set it **overrides `method`** (openmed assigns a per-label action from the profile, so the
+      `Policy de-ID` tab sends **no** method) and the profile — not the caller — decides
+      reversibility: the engine passes `keep_mapping=False`. See "Known gotchas" → *A `policy`
+      overrides `method`* for the OR semantics and which five profiles keep a key.
     - *Clinical NER:* `analyze(text, *, model_name, confidence_threshold=0.0, aggregation_strategy,
       group_entities)` delegates to `analyze_text`. `model_name` is **required** (NER is one model
       per domain; an absent one silently falls back to openmed's disease-only default). `analyze_text`
@@ -231,7 +283,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       loaded domains itself. Two static helpers back the
       tab without a UI-side openmed import: `zero_shot_available()` (→ `is_gliner_available()`, so the
       tab can show install instructions instead of failing) and `default_labels(label_domain)` (→
-      `get_default_labels`, seeding the label picker live). See "Known gotchas" for the `.score` field.
+      `get_default_labels`, seeding the label picker live). See "OpenMed API" → *Zero-shot (GLiNER)*
+      for the `.score` field (openmed's zero-shot `Entity` has no `.confidence`).
     - *Registry:* defines the `DeidMethod`/`Backend` `Literal`s, `DEFAULT_PII_MODEL`,
       `DEFAULT_NER_MODEL`, the `NerModel` `NamedTuple`, and `NER_MODELS` — a curated
       `dict[domain → NerModel]` of one ~141M "superclinical" model per category. (There is no
@@ -261,9 +314,10 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       `normalize_label` funnels unknowns to `OTHER`), so a profile can declare `replace` while masking
       119 of 135 labels (South Africa POPIA does; Nigeria NDPA masks 126). The `Policy de-ID` preview
       therefore does **not** render `default_action`; the field stays baked only so the guard keeps
-      pinning it. Two more traps the 2.x catalog added: "surrogate policy" ≠ "reversible policy" (five
-      of the eight `replace`-declaring profiles keep no key — `test_policy_models_resolve_in_openmed`
-      now fails any description that promises "reversible" against `keep_mapping=False`), and four of
+      pinning it. Two more traps the 2.x catalog added: "surrogate policy" ≠ "reversible policy" (**four
+      of the nine** `replace`-declaring profiles keep no key — Australia Privacy Act, India DPDP, ZA
+      POPIA, NG NDPA; `test_policy_models_resolve_in_openmed` now fails any description that promises
+      "reversible" against `keep_mapping=False`), and four of
       the nine new profiles (Malabo, Kenya DPA, Egypt PDPL, Morocco 09-08) are `mask`-everything and
       behaviorally identical to `strict_no_leak`.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`, `ZeroShotRequest`,
@@ -284,7 +338,9 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `pydantic`/`os`/`re` — no web framework — so it doubles as the in-process validation layer.
     Re-exports `DeidMethod` and `Policy`.
   - `service.py` — the single in-process chokepoint (framework-free); **both** surfaces (the Streamlit
-    UI and the FastAPI service) funnel every engine call through it, so nothing bypasses validation:
+    UI and the FastAPI service) funnel every engine call through it — the two opt-in `/compat` routes
+    are the one exception (they call the engine directly for the raw entity objects, but still validate
+    via the `Compat*` models and reuse `service._run`) — so nothing bypasses validation:
     - `resolve_backend()` (reads `OPENMED_STUDIO_BACKEND`) and `build_engine()` (the `PIIEngine`
       factory both the UI's `st.cache_resource` and the API's `get_engine` wrap).
     - `ServiceError` carries a transport-neutral `.kind`
@@ -347,6 +403,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
 
   It stays a uv **non-package** project, so pytest imports `openmed_studio` via the repo root on
   `sys.path` (`pythonpath = ["."]`; Streamlit adds the app's directory).
+### UI (`streamlit_app.py`, `ui_helpers.py`)
+
 - **UI structure:** the Streamlit app lives at the repo root in `streamlit_app.py`; the pure,
   Streamlit-free render helpers live in `ui_helpers.py` so they unit-test without a browser.
   - *App + tabs:* `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call`
@@ -361,7 +419,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `@st.fragment` so an in-tab interaction reruns only that tab; `Single note`, `Anonymize`, and
     `Policy de-ID` are **intentionally not**, because their form submit must trigger a full rerun to
     hand `last_deidentified`/`last_mapping` (via `st.session_state`, not widget keys) to `Re-identify`
-    (a reversible policy — GDPR/PIPEDA/UK ICO — round-trips this way). `_set_handoff` sets the two
+    (a reversible policy — one of the five `keep_mapping=True` profiles — round-trips this way).
+    `_set_handoff` sets the two
     together once per submit — the single security-relevant copy of "so a stale mapping can't
     linger" — *not* on re-render. The shared `_submit_deidentify` helper takes an optional `call=`
     (defaulting to `service.deidentify`; `Policy de-ID` passes `service.anonymize_policy`) so all three
@@ -406,9 +465,11 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `zs_`-scoped so they don't collide with the NER tab's identically-labelled widgets.
   - *Policy anonymization controls* (`_render_policy_anon`, **not** a fragment — it feeds the
     Re-identify handoff like `Anonymize`): a policy picker (`st.selectbox` over `POLICY_MODELS`, default
-    `HIPAA Safe Harbor`) sits **outside** the form (reactive preview: `display name`/`description`/
-    `default_action`/reversible?/safety-sweep, refreshed on pick — a full rerun like `Single note`'s
-    method picker). There is **no Method control** (the policy selects the action). Inside the form:
+    `HIPAA Safe Harbor`) sits **outside** the form (reactive preview: display name + canonical `name`
+    / reversible? / safety-sweep, then the hand-authored `description` — deliberately **not**
+    `default_action`, which openmed never reaches (see the *Registry* note), so it misleads as a
+    headline; it appears only in the `Advanced` caption. Refreshed on pick — a full rerun like
+    `Single note`'s method picker). There is **no Method control** (the policy selects the action). Inside the form:
     text area, confidence slider, and an `Advanced` expander with the surrogate knobs
     (consistent/seed/locale — they apply to the `replace`-based policies) + the safety-sweep toggle.
     `build_policy_opts` shapes the payload (no `method`, no `keep_mapping`); the tab submits via
@@ -432,23 +493,25 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     dependency. `.streamlit/config.toml` defines both `[theme.light]` and `[theme.dark]` (so the app
     honors the user's mode; the theme-agnostic marks read correctly in either) plus a shared `[theme]`
     with `baseRadius` and a semantic `red`/`green`/`orange` palette brightened per mode, so status
-    accents feel intentional; `gatherUsageStats = false` (a clinical-text tool shouldn't phone home).
-    Local secrets go in the gitignored `.streamlit/secrets.toml`, and the download outputs
-    (`deidentified.txt`/`anonymized.txt`/`reidentified.txt`/`deidentified_batch.json`) are gitignored
-    too, since they can carry PHI or its surrogates.
-- **The FastAPI service, and what is (and isn't) dropped:** the app was FastAPI-only, then collapsed
-  to Streamlit-only (removing the HTTP boundary), and the HTTP surface has since been **re-added as a
-  second, independent surface over the same `service.py` seam** — *not* by reverting to Streamlit-as-a-
-  client. `main.py`/`__main__.py` and `fastapi`/`uvicorn` (core) + `httpx` (dev, for `TestClient`) are
-  back. **Restored** because they matter for a *served* surface: API-key auth (`OPENMED_STUDIO_API_KEY`
-  / `X-API-Key`), the `{"error":{code,message,details}}` JSON envelope + PHI-safe 422, `/health`, the
-  opt-in `/compat` OpenMed-REST surface (`OPENMED_STUDIO_COMPAT`), and the startup preload
-  (`OPENMED_STUDIO_PRELOAD`). **Still dropped:** the Streamlit-as-HTTP-client architecture and the
-  `requests` dep — the Streamlit app runs the model in-process, and the two surfaces are parallel and
-  independent (both import `service.py`; neither calls the other). Env knobs now:
-  `OPENMED_STUDIO_BACKEND`, `OPENMED_STUDIO_MAX_TEXT_LENGTH`, `OPENMED_STUDIO_API_KEY`,
-  `OPENMED_STUDIO_PRELOAD`, `OPENMED_STUDIO_COMPAT`, and `OPENMED_STUDIO_HOST`/`OPENMED_STUDIO_PORT`.
-  Security posture is unchanged in spirit: still a **local / small-scale** tool — an unset API key runs
+    accents feel intentional; `gatherUsageStats = false` (a clinical-text tool shouldn't phone home);
+    and `[client] showErrorDetails = "none"`, so a traceback (which can quote note text) never reaches
+    the browser — full detail goes to the server console, meaning **debug from the terminal, not the
+    page**.
+    Local secrets go in the gitignored `.streamlit/secrets.toml`, and the **five** download outputs
+    (`deidentified.txt`/`deidentified_batch.json`/`anonymized.txt`/`policy_anonymized.txt`/
+    `reidentified.txt` — same order as `.gitignore` and the PHI hook's `case` arm, so the three lists
+    diff cleanly) are gitignored too, since they can carry PHI or its surrogates.
+### The two surfaces
+
+- **They are parallel, not layered:** both import `service.py`; neither calls the other, and the
+  Streamlit app runs the model **in-process** — there is **no HTTP client and no `requests` dependency
+  in the UI, and re-adding one is a regression.** `main.py`/`__main__.py` + `fastapi`/`uvicorn` (core)
+  and `httpx` (dev, for `TestClient`) exist for what a *served* surface needs and the UI doesn't:
+  API-key auth (`OPENMED_STUDIO_API_KEY` / `X-API-Key`), the `{"error":{code,message,details}}` JSON
+  envelope + PHI-safe 422, `/health`, the opt-in `/compat` OpenMed-REST surface
+  (`OPENMED_STUDIO_COMPAT`), and the startup preload (`OPENMED_STUDIO_PRELOAD`) — env knobs are
+  tabled under "Commands".
+  Security posture: still a **local / small-scale** tool — an unset API key runs
   the service **unauthenticated** (with a loud startup warning), so set the key (and use TLS or your own
   reverse proxy) before exposing it or processing real PHI. The guarantees that protect the *model*
   regardless of surface are enforced in-process by `service.py` (text/batch/mapping caps,
@@ -462,7 +525,8 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
 `list_model_categories()`.
 
 - `extract_pii(text, model_name=<default>, confidence_threshold=0.5, config=None, use_smart_merging=True, lang="en", cache_results=False, max_cache_entries=128, normalize_accents=None, *, preserve_whitespace=False, locale=None, loader=None, batch_size=None, num_workers=None, custom_recognizer=None, abdm=None, code_mixed=False, token_language_tags=None, lid_model=None, transliterated_name_config=None, budget=None)`
-  returns a `PredictionResult` object (like `analyze_text`, below) whose `.entities` are PII
+  returns a `PredictionResult` object (an object with `.entities`, like `analyze_text`'s
+  `AnalyzeResult` below — but a plain dataclass, not a `Mapping`) whose `.entities` are PII
   predictions with `.label`/`.text`/`.start`/`.end`/`.confidence` — the engine's `_entities` unwraps
   it. Labels are **lowercase** (`first_name`, `last_name`, `date`, `ssn`, `phone_number`, …). The
   engine forwards `confidence_threshold`/`use_smart_merging`/`lang`/`model_name`/`loader` only (it
@@ -488,6 +552,11 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   omission. The other four and `budget` do default to off/`None`.
   (Note: `keep_year` now defaults to `False` upstream, but the app always passes its own value —
   default `True` in `_DeidentifyOptions`/`PIIEngine.deidentify` — so the flip is inert.)
+  `date_shift_days` (and 1.7.0's `patient_key`/`date_shift_max_days`/`date_shift_secret`) are
+  **validated, not ignored**: `core/pii.py::_resolve_deidentification_method` raises
+  `ValueError("date_shift_days requires method='shift_dates'")` when paired with any other method, so
+  the seam surfaces a `bad_options` 400. The UI only renders them under `shift_dates`, but the HTTP
+  request model accepts them with any method.
   It returns a `DeidentificationResult` with
   `.deidentified_text`, `.pii_entities`, `.mapping` (or an `AuditReport` when `audit=True` —
   1.7.0 types the return as `DeidentificationResult | AuditReport`; the app's engine returns it
@@ -526,8 +595,11 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   free-text entities like names it can't shape-preserve; shares `replace`'s consistent/seed/locale
   knobs). `aadhaar_mask` (added in 2.0) is India-specific: a value passing openmed's Aadhaar checksum
   (`pii_i18n.validate_aadhaar`) renders as `XXXX XXXX NNNN`, and everything else falls through to the
-  ordinary mask placeholder — so it is byte-identical to `mask` on notes with no Aadhaar number
-  (verified end-to-end on the app's own `EXAMPLE_NOTE`). It is the **only method that leaves part of
+  ordinary mask placeholder — so **with `keep_mapping=False`** it is byte-identical to `mask` on notes
+  with no Aadhaar number (verified end-to-end on the app's own `EXAMPLE_NOTE`). With
+  `keep_mapping=True` — **the UI default** — it diverges: `aadhaar_mask` is outside openmed's
+  unique-placeholder set, so repeated labels collapse onto one placeholder instead of `_2`/`_3` (see
+  the occurrence-mapping gotcha). It is the **only method that leaves part of
   an identifier in the output** (the UIDAI display form keeps the last four digits), making it
   strictly weaker than `mask`, so `_render_deid_controls` shows a warning caption when it is picked
   (pinned by `tests/test_ui_app.py::test_aadhaar_mask_warns_that_it_retains_digits`) and the
@@ -537,9 +609,10 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
 - `analyze_text(text, model_name="disease_detection_superclinical", *, loader=None,
   confidence_threshold=0.0, aggregation_strategy="simple", output_format="dict",
   group_entities=False, …)` — the general **clinical NER** (token-classification) entry point. With
-  the default `output_format="dict"` it returns an `AnalyzeResult` **object** (a misnomer — *not*
-  a plain dict; it was `PredictionResult` before 2.0, and both still expose the same
-  `.text`/`.entities`/`.metadata` surface the app reads) whose `.entities` is a
+  the default `output_format="dict"` it returns an `AnalyzeResult` **object** (a misnomer only in
+  part — it *is* a `Mapping[str, Any]`, so `result["entities"]` works, but `__getitem__` delegates to
+  `to_dict()` and hands back plain **dicts**, not `EntityPrediction`s; hence `_entities` reads
+  `.entities`. It was `PredictionResult` before 2.0) whose `.entities` is a
   `list[EntityPrediction]`, each with
   `.text`/`.label`/`.confidence`/`.start`/`.end`. Labels are **UPPERCASE** (`DISEASE`, `CHEM`, `GENE`, …), unlike
   `extract_pii`'s lowercase. Clinical NER is **one model per domain** (no universal model), selected
@@ -584,8 +657,10 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `keep_mapping=True` alongside a *masking* policy (HIPAA Safe Harbor) wrongly makes it **reversible**
   (openmed returns a mask-token→original mapping), contradicting the policy's irreversible posture.
   `service.anonymize_policy` therefore passes `keep_mapping=False` and lets the profile decide: the
-  surrogate policies (GDPR/PIPEDA/UK ICO — `keep_mapping=True`) return a re-identification key, the
-  masking ones don't. This only surfaces under `--run-model` (a stub can't model openmed's OR), so
+  **five** `keep_mapping=True` profiles (GDPR pseudonymization, GDPR Art. 9 health, Canada PIPEDA,
+  UK ICO, China PIPL) return a re-identification key; everything else doesn't — including the four
+  *surrogate* profiles that keep no key (Australia Privacy Act, India DPDP, ZA POPIA, NG NDPA), so
+  "surrogate" does **not** select reversibility. This only surfaces under `--run-model` (a stub can't model openmed's OR), so
   `tests/test_engine.py::test_engine_deidentify_policy_masks_and_pseudonymizes` pins both branches.
 - **Re-identification has TWO independent hazards, and each side owns one of them.**
   *(a) openmed mis-restores overlapping plain keys.* It applies `str.replace` per entry, so a key
@@ -601,7 +676,8 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   **protocol, not literal text** — matching them verbatim finds nothing, so a restorer that doesn't
   parse them silently leaves every affected placeholder in the "re-identified" output. This is
   reachable in two default clicks: `method="aadhaar_mask"` is not in openmed's unique-placeholder
-  set (`core/pii.py` only suffixes `_2`/`_3` for `mask`/`remove`), so every repeated label collapses
+  set (`core/pii.py:2166-2184` suffixes `_2`/`_3` only for `mask`/`remove`, plus `shift_dates` on a
+  non-date span and `format_preserve` when it falls back to mask), so every repeated label collapses
   onto one placeholder and the entire mapping comes back occurrence-keyed — and `Keep mapping`
   defaults on. `PIIEngine.reidentify` therefore groups occurrence keys by surface and hands out
   their originals in ordinal order as the single pass walks the document (ordinals are assigned in
@@ -617,7 +693,8 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `get_patterns_for_language`, taking English from **28 to 35 patterns** (adding MRZ, USCC and
   India health-ID detectors). So typing a locale changes *what gets found*, not only what replaces
   it, and blank is the narrower setting — the opposite of the intuition that blank means "default,
-  everything on". Both locale inputs' help text says so. Reproduce with
+  everything on". All three locale inputs' help text says so (Single/Batch, `Anonymize`,
+  `Policy de-ID`). Reproduce with
   `openmed.core.safety_sweep._patterns_for_language("en", None)` vs `(..., "en_US")`.
 - **The engine pins eager attention because DeBERTa-v2 has no SDPA kernel — but the pin is now
   belt-and-braces, not load-bearing.** The OpenMed models (default PII + the NER models) are
