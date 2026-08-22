@@ -93,6 +93,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub) |
 | `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s, `X-API-Key` auth (401/accept/reject + open `/health`), and the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated) |
+| `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, and that `.claude/settings.json` still registers the hook under `PreToolUse` |
 
 Named guards worth knowing — each **fails CI when openmed drifts**:
 `test_validation_deidmethod_matches_openmed` (`DeidMethod`↔openmed),
@@ -109,6 +110,16 @@ download), `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (intr
 `inspect.signature(openmed.deidentify)`, pinning the forwarded-vs-excluded split from "OpenMed API" —
 `policy` is now **forwarded**, not excluded), and `test_shift_dates_actually_shifts_dates` (see "Known
 gotchas").
+
+One guard tracks the **repo's own tooling** instead of openmed. `.claude/hooks/block-phi-paths.sh`
+is a PreToolUse hook that denies reads/writes of the gitignored files which can carry PHI (the app's
+`Download` outputs) or local secrets, so that data never enters a context window;
+`test_phi_hook_blocks_every_app_download_output` executes it against every `Download` filename in
+`streamlit_app.py`, so **a new de-identifying tab fails CI until the hook grows a matching `case`
+arm**. It exists because that sync was missed once: `policy_anonymized.txt` shipped with the
+`Policy de-ID` tab, was gitignored the same day, and stayed readable through the plain `Read` tool
+for a month. The hook matches on basename and does not cover `Bash(cat ...)`, so treat it as a guard
+against accidental reads, not as containment.
 
 Model tests (`test_pii_model.py` + the `@pytest.mark.model` tests in `test_engine.py`) are
 **skipped by default** and drive the real engine via the shared `loader` fixture; `--run-model` opts
