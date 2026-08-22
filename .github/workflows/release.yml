@@ -1,0 +1,101 @@
+name: Release
+
+# Fires when a version bump lands on main. `paths` is only a cheap pre-filter — the
+# `guard` job below is what actually decides, by asking whether the tag already exists,
+# so a pyproject.toml edit that leaves `version` alone is a no-op. `workflow_dispatch`
+# is the manual retry when a release run fails after the bump has already merged.
+on:
+  push:
+    branches: [main]
+    paths: ["pyproject.toml"]
+  workflow_dispatch:
+
+# Serialize releases; never cancel one mid-tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      new: ${{ steps.check.outputs.new }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so the local tag list is populated; that list is how a real
+          # bump is told apart from any other pyproject.toml edit.
+          fetch-depth: 0
+
+      - id: check
+        run: |
+          version=$(python3 -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')
+          tag="v$version"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::notice::$tag already exists — no version bump, nothing to release."
+            new=false
+          else
+            echo "::notice::$tag is new — releasing."
+            new=true
+          fi
+
+          # A pure-numeric PEP 440 version is a final release; anything carrying an
+          # a/b/rc/dev marker is not, and gets GitHub's prerelease badge instead of
+          # becoming "Latest".
+          if [[ "$version" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then prerelease=false; else prerelease=true; fi
+
+          { echo "tag=$tag"; echo "new=$new"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
+
+  # Re-runs CI itself rather than copying its steps, so a tag can never point at a
+  # commit that would fail `ruff` / `ty` / `pytest`.
+  verify:
+    needs: guard
+    if: needs.guard.outputs.new == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: [guard, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      # Create the tag and the release. Everything else stays read-only.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags and full history: the notes fall back to `git log` below.
+          fetch-depth: 0
+
+      # `gh release create --target` creates the tag and the release in one API call,
+      # so there is no `git push` and no third-party action in the trust chain.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+        run: |
+          prev=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+
+          notes_args=(-f tag_name="$TAG" -f target_commitish="$GITHUB_SHA")
+          if [ -n "$prev" ]; then notes_args+=(-f previous_tag_name="$prev"); fi
+          body=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+                   "${notes_args[@]}" --jq .body)
+
+          # GitHub builds that body from merged PULL REQUESTS only. Commits pushed
+          # straight to main produce no entries at all, so a body with no `* ` line
+          # means the generator found nothing and we substitute commit subjects.
+          # Keep its `**Full Changelog**` line either way — the compare URL is right.
+          if ! grep -q '^\* ' <<<"$body"; then
+            if [ -n "$prev" ]; then range="$prev..HEAD"; else range="HEAD"; fi
+            commits=$(git log --no-merges --reverse --format='* %s' "$range")
+            link=$(grep '^\*\*Full Changelog\*\*' <<<"$body" || true)
+            body=$(printf '## Commits\n\n%s\n\n%s\n' "$commits" "$link")
+          fi
+
+          flags=(--target "$GITHUB_SHA" --title "$TAG" --notes "$body")
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); else flags+=(--latest); fi
+          gh release create "$TAG" "${flags[@]}"

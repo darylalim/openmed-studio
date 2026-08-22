@@ -85,6 +85,30 @@ second leg would duplicate the work and the failure annotations). Model tests st
 needs no model download. `astral-sh/setup-uv` is pinned to an **exact** version — it stopped
 publishing floating major tags at v8 — so it must be bumped by hand.
 
+Releases (`.github/workflows/release.yml`) are cut from `pyproject.toml`'s `version`. A push to
+`main` touching that file runs a `guard` job that reads the version and checks whether `v<version>`
+is already a tag; if it is, the run is a no-op (so a `pyproject.toml` edit that doesn't bump the
+version releases nothing — the `paths` filter is only a cheap pre-filter, the tag check is the real
+decision). If the tag is new, `verify` re-runs `ci.yml` through `workflow_call` — CI is **reusable**
+for exactly this reason, so "green" has one definition and a tag can never point at a red commit —
+and then `gh release create --target "$GITHUB_SHA"` publishes the tag and the release in one API
+call (no `git push`, no third-party action in the trust chain). A pure-numeric version gets
+`--latest`; anything with an a/b/rc/dev marker gets `--prerelease`. `workflow_dispatch` is the
+manual retry after a failed run. **No wheel is built and nothing goes to PyPI**
+(`[tool.uv] package = false`) — the release carries only GitHub's automatic source archives.
+Caveat: two version bumps merged within one CI cycle can leave the intermediate version untagged,
+because the called `ci.yml` brings its own `cancel-in-progress` concurrency group.
+
+The release body comes from GitHub's `releases/generate-notes` API, **with a commit-log fallback**:
+that API builds its body from merged **pull requests** only, and this repo has never had one (59
+commits, all pushed straight to `main`), so it returns nothing but a `**Full Changelog**` link —
+78 bytes, verified by dry-running the endpoint. The job therefore checks whether the generated body
+contains any `* ` entry and, when it doesn't, substitutes `git log --no-merges --reverse
+--format='* %s' "$prev..HEAD"` under a `## Commits` heading, keeping the generator's compare link.
+Two consequences: the release job needs `fetch-depth: 0` (it runs `git log`), and **commit subjects
+are release notes now** — write them accordingly. If the repo ever moves to a PR workflow the
+fallback goes quiet on its own, since the generated body will have `* ` entries again.
+
 Test layout (`tests/`) — fast no-model tests by file (model tests are a separate opt-in, below):
 
 | File | Pins |

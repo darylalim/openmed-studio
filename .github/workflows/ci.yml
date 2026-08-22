@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets release.yml re-run this exact job before it tags, so "green" has one definition.
+  workflow_call:
 
 # Cancel superseded runs on the same ref.
 concurrency:

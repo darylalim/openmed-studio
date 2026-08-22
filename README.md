@@ -215,6 +215,12 @@ CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on every pull reque
 Python 3.10 and 3.13, and the lint / format / type checks once on the 3.10 leg (they are
 interpreter-independent, so a second run would only duplicate the work).
 
+Releases (`.github/workflows/release.yml`) follow `version` in `pyproject.toml`: bump it, merge to
+`main`, and — once CI re-runs green — the workflow tags `v<version>` and publishes a GitHub release.
+The notes are GitHub's own, generated from merged pull requests, falling back to the commit subjects
+in the range when there are none. Nothing is published to PyPI; this is an application, not a
+library.
+
 ## Security & notes
 
 **Run it locally.** This is a single-user / small-scale tool. The [HTTP API](#http-api-fastapi) *does*
