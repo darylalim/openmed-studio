@@ -439,8 +439,10 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `shift_dates`→date_shift_days/keep_year, plus the safety
     sweep) live in `Single note` + `Batch` via a shared `_render_deid_controls(key_prefix=…, lang=…)`
     (above each tab's form, widget keys `key_prefix`-scoped so the tabs don't collide). `Detect` has
-    its own confidence slider + smart-merge toggle; `Anonymize` reads the sidebar `Language`. Only
-    `Method`/`Advanced` are per-tab — the sidebar holds just the engine readout
+    its own confidence slider + smart-merge toggle; `Anonymize` reads the sidebar `Language` and
+    carries its own in-form controls (confidence + `Deterministic` in a `[3, 2]` column row, then
+    seed/locale in an `Advanced` expander — the same shape as `Policy de-ID`, so all three
+    de-identifying tabs read alike). Only `Method`/`Advanced` are per-tab — the sidebar holds just the engine readout
     (model/backend/`is_loaded`, read directly) and the lone global `Language` filter
     (`_render_sidebar` returns the chosen `lang`).
   - *Clinical NER controls* (`_render_ner`, independent of the de-id controls): a domain picker
@@ -488,9 +490,16 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `first_name` and `date` — the most common pair in a clinical note — collide. Per-hue alphas keep
     every tint visible on both Nord's `#2e3440` and white while holding text above WCAG AA. The
     de-identified output offers a `Download` button (**no** copy-to-clipboard — the in-process tool
-    deliberately avoids sending PHI to a browser-side clipboard component); entity tables render
-    confidence as a `ProgressColumn`, count/method metrics are bordered cards, and
-    `Download`/`Re-identify` confirm with an `st.toast`. The UI consumes the plain dicts `service`
+    deliberately avoids sending PHI to a browser-side clipboard component); every entity table goes
+    through the shared `_render_entity_table` (confidence as a `ProgressColumn` plus a `placeholder`,
+    because zero rows here means "nothing cleared the confidence threshold", not "nothing ran");
+    metric cards sit in an `st.container(horizontal=True)` at `width="content"` carrying their own
+    tab's Material Symbol (a bare `st.metric` defaults to `width="stretch"`, so under `layout="wide"`
+    a lone bordered card spanned the whole page to show one number), and `Detect`/`Clinical NER`/
+    `Zero-shot` add a `Distinct types` card whose bar sparkline is the per-label counts in first-seen
+    order — the order `render_legend` also uses, so the bars line up with the legend pills below;
+    the `Batch` table sets `row_height` because its two wide columns hold multi-line notes that
+    otherwise truncate to one line; and `Download`/`Re-identify` confirm with an `st.toast`. The UI consumes the plain dicts `service`
     produces (`result["entities"]`, `result["deidentified_text"]`, `result.get("mapping")`). The
     confidence slider defaults to `0.5` (the de-identify default is `0.7`).
   - *Config:* `streamlit>=1.58` (1.58 horizontal/`height="stretch"` flex layout) is a core
@@ -614,8 +623,10 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   unique-placeholder set, so repeated labels collapse onto one placeholder instead of `_2`/`_3` (see
   the occurrence-mapping gotcha). It is the **only method that leaves part of
   an identifier in the output** (the UIDAI display form keeps the last four digits), making it
-  strictly weaker than `mask`, so `_render_deid_controls` shows a warning caption when it is picked
-  (pinned by `tests/test_ui_app.py::test_aadhaar_mask_warns_that_it_retains_digits`) and the
+  strictly weaker than `mask`, so `_render_deid_controls` renders an `st.warning` when it is picked —
+  a real callout, not a caption prefixed with `:material/warning:`, which read as ordinary grey
+  metadata (pinned by `tests/test_ui_app.py::test_aadhaar_mask_warns_that_it_retains_digits`, which
+  also asserts the text stays *out* of the caption stream so it can't regress) and the
   `DeidMethod` literal lists it **last** — the guard compares sets, so order is the app's to choose,
   and `streamlit_app.py`'s `METHODS = list(get_args(DeidMethod))` feeds that order into the picker.
 - `reidentify(deidentified_text, mapping)` → original text (use with `deidentify(..., keep_mapping=True)`).
@@ -751,6 +762,32 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
 - **pysbd `SyntaxWarning`s** (a transitive dependency) appear on Python ≥3.12 from its regex
   literals; they are harmless. `openmed_studio/engine.py` silences them with
   `warnings.filterwarnings("ignore", category=SyntaxWarning)` *before* importing `openmed`.
+- **`st.dataframe(key=…)` is inert unless selection is activated** (Streamlit 1.62.0). The
+  performance guidance to give a dataframe a stable `key` so it doesn't remount when its data
+  changes applies only to a *selectable* one: `streamlit/elements/arrow.py` sets
+  `proto.id = compute_and_register_element_id(…, user_key=key, …)` **inside** its
+  `if is_selection_activated:` branch, so under the default `on_select="ignore"` the key is accepted,
+  never registered, and silently dropped — no error, no warning, and nothing `ruff` or `ty` can see.
+  Verified on this app: the rendered proto's `id` stays `''`. Those tables are identified by delta
+  path instead, which is already stable across reruns, so `_render_entity_table` deliberately passes
+  no key rather than imply a guarantee it doesn't provide. `placeholder` and `row_height`, by
+  contrast, *do* apply without selection.
+- **All eight tab bodies run on every rerun, and that is the cheaper option here.** `st.tabs`
+  defaults to `on_change="ignore"`, so every tab's body executes even while hidden. Measured on this
+  app: a full rerun is ~18 ms with nothing submitted and ~24 ms once all four persisted panels hold
+  a result, the eight tab bodies being the bulk of it (profiled at ~20 of ~26 ms). They are cheap
+  because a tab mostly just *declares* widgets — each returns before its `service.*` call unless its
+  own form was submitted, and the only openmed work in a hidden tab is noise
+  (`zero_shot_available()` 0.0003 ms, cached in an openmed module global; `default_labels()`
+  0.03 ms); only the persisted de-identify panels do more, re-rendering their highlight and entity
+  table from `st.session_state`. Switching to `on_change="rerun"` + `if tab.open:` would shave most
+  of that off a submit path already dominated by model inference while charging a full server rerun
+  for every tab *click*, which costs nothing today — a net loss until some tab body starts doing
+  real work at render time. Two neighbouring "optimizations" from the same guidance would be
+  outright **bugs**: gating an `Advanced` expander on `.open` stops declaring the widgets its form's
+  submit reads (a collapsed expander would silently send options other than the ones on screen), and
+  `@st.fragment(parallel=True)` can overlap nothing behind `PIIEngine`'s single inference lock. The
+  numbers are recorded at the `st.tabs` call in `streamlit_app.py`.
 - **FastAPI ≥0.139 includes routers lazily (still true at 0.141.1).** `app.include_router(...)` no longer eagerly flattens the
   child routes into `app.routes`; it stores an `_IncludedRouter` wrapper (no `.path`). So the `/compat`
   routes are absent from `app.routes` even when mounted — if you need to introspect routes, use

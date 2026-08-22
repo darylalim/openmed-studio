@@ -1169,9 +1169,12 @@ def main() -> None:
     lang = _render_sidebar()
 
     # All eight tab bodies execute on every rerun (st.tabs defaults to on_change="ignore").
-    # Deliberate, and measured: the eight together are ~20 ms of a ~26 ms script run, because
-    # they only DECLARE widgets — every tab returns before its service call unless its own
-    # form was submitted. on_change="rerun" + `if tab.open:` would save ~17 ms on a submit
+    # Deliberate, and measured: a full rerun is ~18 ms with nothing submitted and ~24 ms once
+    # all four persisted panels hold a result, the eight tab bodies being the bulk of it
+    # (profiled at ~20 of ~26 ms). They are cheap because a tab mostly just DECLARES widgets —
+    # each returns before its service call unless its own form was submitted; only the
+    # persisted de-identify panels do more, re-rendering their highlight and entity table from
+    # session_state. on_change="rerun" + `if tab.open:` would shave most of that off a submit
     # path already dominated by model inference, and charge a full server rerun for every tab
     # CLICK, which costs nothing today. Revisit only if a tab body starts doing real work at
     # render time.
