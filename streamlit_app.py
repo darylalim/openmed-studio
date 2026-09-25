@@ -678,9 +678,9 @@ def _render_policy_anon(lang: str) -> None:
     ``keep_mapping``) keep a mapping, and the form submit must trigger a full rerun so the
     Re-identify fragment re-reads the ``last_deidentified``/``last_mapping`` handed off here.
     """
-    # Derived, not hand-listed: openmed went from 10 policies to 19 in one release and the
-    # reversible set is NOT "the surrogate ones" — four of the nine surrogate-based profiles
-    # keep no key at all. Reading it off keep_mapping means the sentence can't go stale again.
+    # Derived, not hand-listed: openmed went from 10 policies to 19 in one release (20 as of 2.5)
+    # and the reversible set is NOT "the surrogate ones" — four of the nine surrogate-based
+    # profiles keep no key at all. Reading it off keep_mapping means the sentence can't go stale.
     reversible = [label for label, m in POLICY_MODELS.items() if m.keep_mapping]
     st.caption(
         "Anonymize under a regulatory **policy** — a compliance profile that decides, per entity "
@@ -713,8 +713,8 @@ def _render_policy_anon(lang: str) -> None:
         else "safety sweep optional"
     )
     # `model.default_action` is deliberately NOT shown: openmed never reaches a profile's
-    # fallback action (its `actions` map covers all 135 canonical labels), so surfacing it as the
-    # headline misleads — South Africa POPIA declares "replace" while masking 119 of 135. The
+    # fallback action (its `actions` map covers all 139 canonical labels), so surfacing it as the
+    # headline misleads — South Africa POPIA declares "replace" while masking 123 of 139. The
     # hand-authored description below is the honest account; the field stays baked only so the
     # drift guard keeps pinning it. See PolicyModel.default_action.
     st.caption(f"**{policy_label}** (`{model.name}`) · {reversibility} · {sweep}")
@@ -743,7 +743,7 @@ def _render_policy_anon(lang: str) -> None:
         with st.expander("Advanced", icon=":material/tune:"):
             # Using default_action here is sound even though openmed never *applies* it: as a
             # DECLARED posture it lines up exactly with "does this profile replace anything"
-            # (all 8 replace-declaring profiles have replace actions; no mask/redact-declaring
+            # (all 9 replace-declaring profiles have replace actions; no mask/redact-declaring
             # one does). It is only misleading as a per-entity prediction, which is why the
             # preview above no longer shows it.
             st.caption(

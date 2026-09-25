@@ -200,7 +200,7 @@ class ZeroShotModel(NamedTuple):
     params: str
     # openmed.ner label-vocabulary domain used to SEED the label picker (a suggestion the
     # user edits freely); a key of openmed.ner.available_domains(), distinct from the
-    # model-category names above (openmed's label vocab is its own 24-domain taxonomy).
+    # model-category names above (openmed's label vocab is its own, larger taxonomy).
     label_domain: str
 
 
@@ -357,6 +357,7 @@ Policy = Literal[
     "research_limited_dataset",
     "strict_no_leak",
     "clinical_minimal_redaction",
+    "clinical_preserve",  # openmed 2.5 — slotted where PolicyName declares it
     "canada_pipeda",
     "uk_ico_anonymisation",
     "australia_privacy_act",
@@ -383,21 +384,24 @@ class PolicyModel(NamedTuple):
     ``tests/test_validation.py::test_policy_models_resolve_in_openmed`` pins them against
     openmed's live ``PolicyProfile`` (``load_policy``), so a policy-schema change fails CI rather
     than leaving this table stale. ``description`` is the one hand-authored field — openmed ships
-    no per-policy description (only a ``name``/``posture`` slug).
+    no per-policy description (only a ``name``/``posture`` slug; 2.5's ``clinical_preserve`` adds
+    a ``metadata["purpose"]`` line, which over-promises — see its entry — so it isn't reused).
     """
 
     # canonical policy name passed to deidentify(policy=...); a Policy Literal value
     name: str
     # one-line, hand-authored summary of what the policy does (openmed ships none). This — NOT
     # `default_action` below — is the honest account of a profile's behavior, so write it from
-    # `load_policy(name).actions` / `.policy_label_actions`, never from `default_action`.
+    # `load_policy(name).actions` / `.policy_label_actions`, never from `default_action`. When
+    # `safety_sweep_mandatory` is set, confirm any "keeps X" claim with a real run: the sweep
+    # runs after `keep` spans are dropped, so it can re-detect and mask what the rules keep.
     description: str
     # The profile's DECLARED fallback action (mask/redact/replace/keep), pinned against
     # load_policy. Caveat worth knowing before you surface it as a headline: openmed never
     # reaches it. `PolicyProfile.action_for` resolves through `actions[normalize_label(label)]`,
-    # `_canonical_actions` requires `actions` to cover all 135 canonical labels exactly, and
+    # `_canonical_actions` requires `actions` to cover all 139 canonical labels exactly, and
     # `normalize_label` funnels anything unrecognized to OTHER — so the fallback is unreachable
-    # and a profile can declare "replace" while masking 119 of 135 labels (za_popia does).
+    # and a profile can declare "replace" while masking 123 of 139 labels (za_popia does).
     default_action: str
     # whether the policy keeps a surrogate->original mapping (i.e. is reversible) — pinned
     keep_mapping: bool
@@ -405,7 +409,7 @@ class PolicyModel(NamedTuple):
     safety_sweep_mandatory: bool
 
 
-# openmed's 19 built-in compliance profiles, keyed by a friendly display name (the picker shows
+# openmed's 20 built-in compliance profiles, keyed by a friendly display name (the picker shows
 # the key). Each maps to a canonical policy that, passed as deidentify(policy=...), OVERRIDES the
 # flat method and assigns a per-label action encoding that legal standard. Reversibility is a
 # SEPARATE flag, not implied by the action: masking profiles never keep a mapping, and only some
@@ -466,6 +470,27 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         False,
         False,
     ),
+    # openmed 2.5. Its action map is Clinical Minimal Redaction's plus two masked labels
+    # (LOCATION, ZIPCODE) — 35 of 139 masked, 104 kept — but it also forces the safety sweep,
+    # which runs after `keep` spans are dropped (openmed core/pipeline.py, stage 8 → 9), and
+    # `use_safety_sweep=False` can't turn a mandatory sweep off. So DATE/ORGANIZATION=keep holds
+    # only for what the sweep's regexes miss: it masks full dates with a year (ISO, 03/14/2024,
+    # "March 14, 2024", "14 Mar 2024") and names ending in Clinic / Health Center / Dispensary /
+    # District|Referral|Mission Hospital, while month-year, yearless and relative dates and
+    # ordinary "... General Hospital" / "... Medical Center" names survive. Keep the description
+    # that precise in BOTH directions — over-promising masking is the dangerous error in a PHI
+    # tool; test_engine_clinical_preserve_sweep_masks_only_its_patterns pins it.
+    # Upstream's `metadata["purpose"]` ("...preserving clinical content and treatment dates")
+    # over-promises the other way; don't copy it here.
+    "Clinical Preserve": PolicyModel(
+        "clinical_preserve",
+        "Mask direct identifiers and places; keep ages, occupations and clinical detail. "
+        "Its rules also keep dates and facility names, but the enforced sweep masks full "
+        "dates and '…Clinic'-style names; irreversible.",
+        "mask",
+        False,
+        True,
+    ),
     "Canada PIPEDA": PolicyModel(
         "canada_pipeda",
         "Surrogate identifiers per Canada's PIPEDA; reversible with a key.",
@@ -487,13 +512,14 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         False,
         True,
     ),
-    # openmed 2.x additions. Two things to keep straight when editing these descriptions —
-    # both verified against `load_policy(...).actions` (135 canonical labels each), not inferred
-    # from `default_action`, which openmed never actually applies (see PolicyModel's docstring):
+    # openmed 2.x additions (APAC and African regimes). Two things to keep straight when editing
+    # these descriptions — both verified against `load_policy(...).actions` (139 canonical labels
+    # each as of openmed 2.5), not inferred from `default_action`, which openmed never actually
+    # applies (see PolicyModel's docstring):
     #   * Reversibility: only China PIPL keeps a mapping. The other `replace` profiles here
     #     produce IRREVERSIBLE surrogates, so their descriptions must not promise a key.
-    #   * "replace" rarely means "surrogate everything". za_popia replaces 16 of 135 labels and
-    #     masks 119; ng_ndpa replaces 9 and masks 126. Four profiles (Malabo, Kenya DPA, Egypt
+    #   * "replace" rarely means "surrogate everything". za_popia replaces 16 of 139 labels and
+    #     masks 123; ng_ndpa replaces 9 and masks 130. Four profiles (Malabo, Kenya DPA, Egypt
     #     PDPL, Morocco 09-08) are `mask`-everything and behaviorally identical to Strict
     #     No-Leak — say so rather than implying four distinct regimes.
     # Eight of the nine also carry threshold_profile="strict_no_leak" (higher recall than the

@@ -690,6 +690,31 @@ def test_engine_deidentify_policy_masks_and_pseudonymizes(loader, note) -> None:
 
 
 @pytest.mark.model
+def test_engine_clinical_preserve_sweep_masks_only_its_patterns(loader) -> None:
+    # Pins the prose of the "Clinical Preserve" description, which the fast guard can't: it
+    # checks only the baked flags. The policy's rules KEEP dates and facility names, but its
+    # safety sweep is mandatory and runs after keep spans are dropped, so it masks whatever its
+    # regexes match — even with use_safety_sweep=False — and nothing else. If openmed ever makes
+    # the sweep honour keep (or widens its patterns), this fails and the description must change.
+    engine = PIIEngine(loader=loader)
+    text = (
+        "A 54-year-old teacher was seen at Mercy Clinic on 03/14/2024 and at Riverside "
+        "General Hospital in March 2024 for type 2 diabetes."
+    )
+    result = engine.deidentify(
+        text, policy="clinical_preserve", keep_mapping=False, use_safety_sweep=False
+    )
+    out = result.deidentified_text
+    assert "03/14/2024" not in out  # a full date: masked by the sweep despite DATE=keep
+    assert "Mercy Clinic" not in out  # a "...Clinic" name: masked despite ORG=keep
+    assert "March 2024" in out  # a month-year date: no sweep pattern, so kept
+    assert "Riverside General Hospital" in out  # an ordinary hospital name: kept
+    assert "54-year-old teacher" in out  # AGE / OCCUPATION = keep
+    assert "type 2 diabetes" in out  # clinical detail kept
+    assert not result.mapping  # irreversible: the profile keeps no mapping
+
+
+@pytest.mark.model
 def test_engine_analyze_detects_clinical_entities(loader) -> None:
     # Real clinical NER: the default (Disease) model finds the disease mention. Uses a
     # different model than the PII fixture, loaded into the same shared loader by model_name.

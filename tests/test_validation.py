@@ -463,7 +463,8 @@ def test_policy_models_resolve_in_openmed() -> None:
     # ...and the catalog is COMPLETE. The loop above only pins POLICY_MODELS ⊆ registry, and
     # test_validation_policy_matches_openmed pins Policy == PolicyName — so without this a policy
     # openmed adds would be accepted by AnonymizePolicyRequest yet missing from the UI picker.
-    # openmed 2.x took the built-ins from 10 to 19 in one release, so the gap is not theoretical.
+    # openmed 2.x took the built-ins from 10 to 19 in one release (and 2.5 added a 20th), so the
+    # gap is not theoretical.
     assert {model.name for model in POLICY_MODELS.values()} == set(
         typing.get_args(validation.Policy)
     ), "POLICY_MODELS must surface every policy the Policy literal accepts"
@@ -472,8 +473,8 @@ def test_policy_models_resolve_in_openmed() -> None:
     # descriptions are hand-authored prose, so most of their accuracy can only be reviewed by a
     # human — but this one claim is safety-critical and mechanically checkable: telling a user a
     # policy is "reversible with a key" when keep_mapping is False means they may anonymize
-    # believing they can get the original back. (openmed 2.x makes this easy to get wrong: five
-    # of the eight `replace`-based profiles keep NO mapping.)
+    # believing they can get the original back. (openmed 2.x makes this easy to get wrong: four
+    # of the nine `replace`-based profiles keep NO mapping.)
     for label, model in POLICY_MODELS.items():
         # Match the CLAIM, not one blessed wording ("reversible with a key" / "reversible").
         # Strip "irreversible" first — it contains "reversible" as a substring.

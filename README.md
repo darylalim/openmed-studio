@@ -34,7 +34,7 @@ The app opens with eight tabs:
 | **Single note** | De-identify one note — original (PII highlighted) beside the redacted text, with a download and a re-identification key. |
 | **Batch** | De-identify up to 100 notes at once — a results table with per-note entity counts; a failing note is isolated as a `Failed` row instead of aborting the batch. |
 | **Anonymize** | Replace *detected* PII/PHI with realistic *fake* surrogates rather than masks; round-trips through Re-identify. |
-| **Policy de-ID** | Anonymize under one of 19 **regulatory policies** (HIPAA Safe Harbor, GDPR pseudonymization, PIPEDA, UK ICO, China PIPL, India DPDP, South Africa POPIA, …) — the policy decides, per entity type, whether to mask, redact, or surrogate. Masking policies are irreversible; only the policies that keep a mapping (GDPR, PIPEDA, UK ICO, PIPL) yield a re-identification key. |
+| **Policy de-ID** | Anonymize under one of 20 **regulatory and clinical policies** (HIPAA Safe Harbor, GDPR pseudonymization, PIPEDA, UK ICO, China PIPL, India DPDP, South Africa POPIA, …) — the policy decides, per entity type, whether to mask, redact, or surrogate. Masking policies are irreversible; only the policies that keep a mapping (GDPR, PIPEDA, UK ICO, PIPL) yield a re-identification key. |
 | **Re-identify** | Restore originals from a kept mapping (auto-filled from the last Single note, Anonymize, or Policy de-ID run). |
 
 Detect, Clinical NER, Zero-shot, Single note, and Policy de-ID render matched entities as highlighted

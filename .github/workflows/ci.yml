@@ -28,7 +28,7 @@ jobs:
 
       # setup-uv stopped publishing floating major tags at v8 (supply-chain hardening),
       # so this is an exact version and has to be bumped by hand.
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}

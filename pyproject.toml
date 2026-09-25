@@ -7,15 +7,17 @@ requires-python = ">=3.10"
 dependencies = [
     # Clinical NLP framework + the Hugging Face / PyTorch backend used for inference.
     # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
-    # >=2.1.0 is a HARD floor, not a preference: the app bakes openmed's registry and enum
+    # >=2.5.0 is a HARD floor, not a preference: the app bakes openmed's registry and enum
     # surface at authoring time and four equality guards fail on anything older —
-    # `DeidMethod` includes 2.0's `aadhaar_mask`, `Policy`/`POLICY_MODELS` carry all 19
-    # compliance profiles (1.9.x shipped 10), `NER_MODELS` bakes the 2.x entity_types, and the
-    # `Medical` NER domain is gone because 2.0 dropped the 434M ClinicalNER alias it used.
-    "openmed[hf]>=2.1.0",
+    # `DeidMethod` includes 2.0's `aadhaar_mask`, `Policy`/`POLICY_MODELS` carry all 20
+    # compliance profiles (2.5.0 added `clinical_preserve`; 2.1.0 had 19, 1.9.x shipped 10),
+    # `NER_MODELS` bakes the 2.x entity_types, and the `Medical` NER domain is gone because 2.0
+    # dropped the 434M ClinicalNER alias it used.
+    "openmed[hf]>=2.5.0",
     # The Streamlit app (`streamlit_app.py`) — one of the two delivery surfaces.
-    # Needs streamlit>=1.58 for the `height="stretch"` flex-layout containers the UI uses.
-    "streamlit>=1.58",
+    # Needs streamlit>=1.61 for `st.metric(icon=...)` on every KPI card (1.60 and earlier raise
+    # TypeError); the `height="stretch"` flex-layout containers the UI uses predate it.
+    "streamlit>=1.61",
     # The FastAPI service (`openmed_studio/main.py`) — the second delivery surface, a thin
     # HTTP layer over the same in-process `service.py` seam. Core (not an extra) so every
     # install can run `python -m openmed_studio`; neither pins transformers, so the
@@ -35,43 +37,49 @@ dependencies = [
 # pre-converted `...-mlx` repo is an optional local-dir shortcut. See README "Native
 # Apple Silicon (MLX)".
 mlx = [
-    "openmed[mlx]>=2.1.0",
+    "openmed[mlx]>=2.5.0",
 ]
 
 # Zero-shot (GLiNER) extraction — the Clinical NER tab's arbitrary-label sibling. Install with:
 #   uv sync --extra gliner
 # We depend on the bare `gliner` package rather than openmed's `gliner` extra: openmed
 # declares `gliner[tokenizers]`, which drags in python-mecab-ko/camel-tools/stanza/spacy
-# (137 packages vs 74) for language tokenizers this clinical app never uses. openmed's
-# zero-shot path only needs `import gliner` (it lazy-imports it in openmed.ner.families).
+# (136 packages vs 75 at openmed 2.5) for language tokenizers this clinical app never uses.
+# openmed's zero-shot path only needs `import gliner` (it lazy-imports it in
+# openmed.ner.families).
 #
-# gliner caps `transformers<5.14.0` (it was `<5.7` before gliner 0.2.28), but the rest of
-# the stack targets the latest transformers. uv builds ONE universal lock, so merely
-# declaring this extra would cap transformers at 5.13.x for EVERY install — including CI and
+# gliner caps `transformers<5.17.0` (0.2.29; `<5.14.0` in 0.2.28, `<5.7.0` in 0.2.27), but
+# the rest of the stack targets the latest transformers. uv builds ONE universal lock, so merely
+# declaring this extra would cap transformers at 5.16.x for EVERY install — including CI and
 # the PII/NER tabs. The conflict below (against the marker extra `hf-latest`) forks the
 # lock instead: default installs + CI stay on the latest transformers, and only
 # `uv sync --extra gliner` downgrades. `--extra mlx --extra gliner` still combine.
+# The >=0.2.25 floor is what keeps the conflict below genuine: every gliner from 0.2.25 on caps
+# transformers below 5.17 (`<5.2.0` in 0.2.25-0.2.26), whereas 0.2.23-0.2.24 are UNCAPPED and
+# would co-resolve with `hf-latest` (gliner==0.2.24 + transformers==5.17.0 resolves).
 gliner = [
-    "gliner>=0.2.0",
+    "gliner>=0.2.25",
 ]
 
-# A marker extra that exists solely to make the `gliner` conflict below TRUE: gliner caps
-# `transformers<5.14.0`, so an extra requiring `>=5.14` genuinely cannot co-resolve with it.
+# A marker extra that exists solely to make the `gliner` conflict below TRUE: every gliner the
+# extra above admits caps `transformers<5.17.0` or lower, so an extra requiring `>=5.17`
+# genuinely cannot co-resolve with it.
 # Declaring the conflict is what makes uv fork the lock (keeping the default resolution on
 # the latest transformers). It has no runtime purpose; you never need to install it.
-# KEEP THIS FLOOR AT-OR-ABOVE GLINER'S CAP: gliner raised its cap from <5.7 to <5.14 in
-# 0.2.28, which silently made the old `>=5.7` floor satisfiable alongside it (5.7-5.13) and
-# the declared conflict merely nominal. Re-check `Requires-Dist: transformers` on every
-# gliner bump.
+# KEEP THIS FLOOR AT-OR-ABOVE GLINER'S CAP. It has drifted twice: gliner 0.2.28 raised its
+# cap from <5.7 to <5.14, silently making the old `>=5.7` floor satisfiable alongside it
+# (5.7-5.13), and 0.2.29 raised it to <5.17, doing the same to `>=5.14` (5.14-5.16) — each
+# time leaving the declared conflict merely nominal. Re-check `Requires-Dist: transformers`
+# on every gliner bump, and keep the `gliner` floor above any uncapped release.
 hf-latest = [
-    "transformers>=5.14",
+    "transformers>=5.17",
 ]
 
 # This project runs as an application (a Streamlit app), not an importable package,
 # so uv installs the dependencies without building a wheel for it.
 [tool.uv]
 package = false
-# Fork the resolution so `--extra gliner` (transformers<5.14) doesn't drag the default
+# Fork the resolution so `--extra gliner` (transformers<5.17) doesn't drag the default
 # install off the latest transformers. See the `gliner`/`hf-latest` extras above.
 conflicts = [[{ extra = "gliner" }, { extra = "hf-latest" }]]
 
