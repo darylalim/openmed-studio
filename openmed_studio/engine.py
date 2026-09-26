@@ -344,34 +344,56 @@ DeidMethod = Literal[
     "aadhaar_mask",
 ]
 
-# The regulatory anonymization policies openmed's deidentify(policy=...) accepts. Mirrors
-# openmed.core.policy.PolicyName; test_validation_policy_matches_openmed enforces they stay in
-# sync. A policy is a per-entity-label ACTION rulebook (a compliance profile) that OVERRIDES
-# ``method`` when set — it assigns mask/redact/replace/keep per label per that legal standard,
-# and can force reversibility (a kept mapping) and the safety sweep. See POLICY_MODELS.
+# The regulatory anonymization policies the app OFFERS: openmed.core.policy.PolicyName minus
+# HIDDEN_POLICIES below, in PolicyName order. test_validation_policy_matches_openmed pins that
+# the two partition PolicyName exactly. A policy is a per-entity-label ACTION rulebook (a
+# compliance profile) that OVERRIDES ``method`` when set — it assigns an action per label per
+# that legal standard, and can force reversibility (a kept mapping) and the safety sweep. The
+# Literal itself is narrowed, not just the picker, so AnonymizePolicyRequest rejects a hidden
+# name (PHI-safely, before the engine) on the UI and the HTTP API alike. See POLICY_MODELS.
 Policy = Literal[
     "hipaa_safe_harbor",
-    "hipaa_expert_review_assist",
-    "gdpr_pseudonymization",
     "gdpr_art9_health",
-    "research_limited_dataset",
     "strict_no_leak",
-    "clinical_minimal_redaction",
-    "clinical_preserve",  # openmed 2.5 — slotted where PolicyName declares it
-    "canada_pipeda",
-    "uk_ico_anonymisation",
-    "australia_privacy_act",
-    # openmed 2.x additions — APAC and African data-protection regimes:
     "china_pipl",
-    "india_dpdp_act",
     "africa_malabo_baseline",
     "za_popia",
     "ng_ndpa",
     "ke_dpa",
-    "india_health_id",
     "eg_pdpl",
     "ma_law_09_08",
 ]
+
+# The openmed profiles the app deliberately does NOT offer. Each maps openmed's catch-all
+# OTHER label to `keep`, and openmed's `normalize_label` (core/labels.py) files 26 of the PII
+# model's 54 entity types under OTHER — license, tax and employee IDs, fax and health-plan
+# numbers, company names, religion, political views, sexuality — so these profiles pass those
+# identifiers through verbatim (bar the few formats the safety sweep's patterns catch, such
+# as IP addresses), and because keep spans are dropped from the result (core/pipeline.py),
+# the entity table doesn't list them either. Probe (openmed 2.5, the tab's defaults) on
+# "Mr. Tom Hale, driver's license D4417-2290, tax ID 98-7654321, works at Brightline
+# Logistics and is a devout Catholic.": GDPR Pseudonymization surrogated the name and
+# returned the license, tax ID, employer and religion untouched, listing only the two name
+# spans; HIPAA Safe Harbor masked all four. No profile left in Policy keeps any label.
+# To re-expose one: once openmed stops keeping OTHER in it,
+# test_hidden_policies_are_exactly_those_that_keep_other fails naming it (and its case in
+# test_engine_hidden_policies_keep_other_identifiers_verbatim, --run-model, fails too). Move
+# it back into Policy + POLICY_MODELS; the descriptions these ten last had, and the
+# --run-model tests that pinned them, are in commit 8e1e50f — re-check both with a real run.
+HIDDEN_POLICIES: frozenset[str] = frozenset(
+    {
+        "hipaa_expert_review_assist",
+        "gdpr_pseudonymization",
+        "research_limited_dataset",
+        "clinical_minimal_redaction",
+        "clinical_preserve",
+        "canada_pipeda",
+        "uk_ico_anonymisation",
+        "australia_privacy_act",
+        "india_dpdp_act",
+        "india_health_id",
+    }
+)
 
 
 class PolicyModel(NamedTuple):
@@ -384,20 +406,18 @@ class PolicyModel(NamedTuple):
     ``tests/test_validation.py::test_policy_models_resolve_in_openmed`` pins them against
     openmed's live ``PolicyProfile`` (``load_policy``), so a policy-schema change fails CI rather
     than leaving this table stale. ``description`` is the one hand-authored field — openmed ships
-    no per-policy description (only a ``name``/``posture`` slug; 2.5's ``clinical_preserve`` adds
-    a ``metadata["purpose"]`` line, which over-promises — see its entry — so it isn't reused).
+    no per-policy description (only a ``name``/``posture`` slug).
     """
 
     # canonical policy name passed to deidentify(policy=...); a Policy Literal value
     name: str
     # short, hand-authored summary of what the policy does (openmed ships none). This — NOT
     # `default_action` below — is the honest account of a profile's behavior, so write it from
-    # `load_policy(name).actions` / `.policy_label_actions`, never from `default_action`.
-    # Whenever the sweep runs — forced by `safety_sweep_mandatory`, or by the Policy de-ID
-    # tab's default-on toggle — confirm any "keeps X" claim with a real run: the sweep runs
-    # after `keep` spans are dropped, so it can re-detect and mask what the rules keep (see
-    # the Research Limited Dataset entry). And never claim a profile masks clinical terms: the
-    # shared PII model has no clinical labels, so those `mask` actions never fire.
+    # `load_policy(name).actions` / `.policy_label_actions`, never from `default_action`. Never
+    # claim a profile masks clinical terms: the shared PII model has no clinical labels, so
+    # those `mask` actions never fire. No offered profile keeps a label; if a hidden one
+    # returns, confirm every "keeps X" claim with a real run — the safety sweep runs after keep
+    # spans are dropped, so it can still mask what the rules keep (commit 8e1e50f has details).
     description: str
     # The profile's DECLARED fallback action (mask/redact/replace/keep), pinned against
     # load_policy. Caveat worth knowing before you surface it as a headline: openmed never
@@ -412,34 +432,19 @@ class PolicyModel(NamedTuple):
     safety_sweep_mandatory: bool
 
 
-# openmed's 20 built-in compliance profiles, keyed by a friendly display name (the picker shows
-# the key). Each maps to a canonical policy that, passed as deidentify(policy=...), OVERRIDES the
-# flat method and assigns a per-label action encoding that legal standard. Reversibility is a
-# SEPARATE flag, not implied by the action: masking profiles never keep a mapping, and only some
-# `replace` profiles do (GDPR/PIPEDA/UK ICO/PIPL) — the rest surrogate irreversibly. Ordered from
-# the most widely used (HIPAA Safe Harbor) outward.
+# The openmed built-in compliance profiles the app offers (HIDDEN_POLICIES has the rest, and
+# why), keyed by a friendly display name (the picker shows the key). Each maps to a canonical
+# policy that, passed as deidentify(policy=...), OVERRIDES the flat method and assigns a
+# per-label action encoding that legal standard. Reversibility is a SEPARATE flag, not implied
+# by the action: masking profiles never keep a mapping, and of the four `replace` profiles only
+# GDPR Art. 9 and China PIPL do — ZA POPIA and NG NDPA surrogate irreversibly. Ordered from the
+# most widely used (HIPAA Safe Harbor) outward.
 POLICY_MODELS: dict[str, PolicyModel] = {
     "HIPAA Safe Harbor": PolicyModel(
         "hipaa_safe_harbor",
         "Mask all 18 HIPAA identifiers; irreversible (US HIPAA §164.514(b)).",
         "mask",
         False,
-        True,
-    ),
-    "HIPAA Expert Review": PolicyModel(
-        "hipaa_expert_review_assist",
-        "Redact direct identifiers but keep clinical detail — a review-assist posture, "
-        "not full de-identification.",
-        "redact",
-        False,
-        False,
-    ),
-    "GDPR Pseudonymization": PolicyModel(
-        "gdpr_pseudonymization",
-        "Replace identifiers with realistic surrogates and keep clinical terms; reversible "
-        "with a key (EU GDPR Art. 4(5)).",
-        "replace",
-        True,
         True,
     ),
     "GDPR Art. 9 Health": PolicyModel(
@@ -450,82 +455,10 @@ POLICY_MODELS: dict[str, PolicyModel] = {
         True,
         True,
     ),
-    # Research Limited Dataset, India Health ID, Clinical Minimal Redaction and Clinical
-    # Preserve all KEEP dates and facility names (and, bar Clinical Preserve, places and ZIPs)
-    # in their action maps, yet the safety sweep runs over all four: forced for three —
-    # `use_safety_sweep=False` can't turn a mandatory sweep off — and on by the Policy de-ID
-    # tab's default for Clinical Minimal Redaction. It runs after `keep` spans are dropped
-    # (openmed core/pipeline.py, stage 8 → 9), and a span it re-detects under a kept label falls
-    # back to the flat method, i.e. mask (core/pii.py `_entity_redaction_method`). So "keep"
-    # holds only for what its English patterns miss. They catch dates written 2024-03-14,
-    # 03/14/2024 (also 3/14/24, 03-14-2024), "March 14, 2024" or "14 Mar 2024"; names ending in
-    # Clinic / Health Center / Dispensary / District|Referral|Mission Hospital; ZIPs within 100
-    # characters of "zip" or "postal"; and 20 ethnic-group names near a cue like "ethnicity".
-    # They miss month-year, yearless and relative dates, other full-date forms ("March 14th,
-    # 2024", "2024/03/14", "14.03.2024"), "... General Hospital" / "... Medical Center" names and
-    # bare ZIPs — so "the sweep masks full dates" over-promises. Keep these descriptions that
-    # precise in BOTH directions — over-promising masking is the dangerous error in a PHI tool;
-    # test_engine_sweep_overrides_keep_rules_only_where_its_patterns_match pins them.
-    "Research Limited Dataset": PolicyModel(
-        "research_limited_dataset",
-        "Mask direct identifiers; keep ages, places and dates for research (HIPAA "
-        "limited dataset). The enforced sweep still masks '…Clinic'-style names, "
-        "labelled ZIPs and dates written 03/14/2024, 2024-03-14, March 14, 2024 or "
-        "14 March 2024.",
-        "mask",
-        False,
-        True,
-    ),
     "Strict No-Leak": PolicyModel(
         "strict_no_leak",
         "Maximum-recall detection, mask every detected span — the most aggressive profile.",
         "mask",
-        False,
-        True,
-    ),
-    "Clinical Minimal Redaction": PolicyModel(
-        "clinical_minimal_redaction",
-        "Mask only direct identifiers; keep quasi-identifiers and clinical detail "
-        "(most readable, least safe). The safety sweep, on by default, still masks "
-        "'…Clinic'-style names, labelled ZIPs and dates written 03/14/2024, 2024-03-14, "
-        "March 14, 2024 or 14 March 2024.",
-        "mask",
-        False,
-        False,
-    ),
-    # openmed 2.5. Its action map is Clinical Minimal Redaction's plus two masked labels
-    # (LOCATION, ZIPCODE) — 35 of 139 masked, 104 kept — and it forces the safety sweep, so its
-    # kept dates and facility names survive only where the patterns listed at Research Limited
-    # Dataset miss. Upstream's `metadata["purpose"]` ("...preserving clinical content and
-    # treatment dates") over-promises what survives; don't copy it here.
-    "Clinical Preserve": PolicyModel(
-        "clinical_preserve",
-        "Mask direct identifiers and places; keep ages, occupations and clinical detail. "
-        "Its rules also keep dates and facility names, but the enforced sweep masks "
-        "'…Clinic'-style names and dates written 03/14/2024, 2024-03-14, March 14, 2024 "
-        "or 14 March 2024; irreversible.",
-        "mask",
-        False,
-        True,
-    ),
-    "Canada PIPEDA": PolicyModel(
-        "canada_pipeda",
-        "Surrogate identifiers per Canada's PIPEDA; reversible with a key.",
-        "replace",
-        True,
-        True,
-    ),
-    "UK ICO Anonymisation": PolicyModel(
-        "uk_ico_anonymisation",
-        "Surrogate quasi-identifiers per the UK ICO anonymisation code; reversible with a key.",
-        "replace",
-        True,
-        True,
-    ),
-    "Australia Privacy Act": PolicyModel(
-        "australia_privacy_act",
-        "Surrogate identifiers per the Australian Privacy Act APPs; irreversible (no key kept).",
-        "replace",
         False,
         True,
     ),
@@ -539,37 +472,19 @@ POLICY_MODELS: dict[str, PolicyModel] = {
     #     masks 123; ng_ndpa replaces 9 and masks 130. Four profiles (Malabo, Kenya DPA, Egypt
     #     PDPL, Morocco 09-08) are `mask`-everything and behaviorally identical to Strict
     #     No-Leak — say so rather than implying four distinct regimes.
-    #   * "Mask everything" never reaches clinical text. Seven of the nine map DISEASE, DRUG
-    #     and the other clinical labels to `mask`, but the shared PII model has none of them
-    #     (its 54 entity types are identifiers and personal attributes such as religion or
-    #     blood type) and the sweep has no clinical patterns, so diagnoses pass through every
-    #     profile. Hence "every detected span", never "clinical terms included".
-    # Eight of the nine also carry threshold_profile="strict_no_leak" (higher recall than the
-    # slider's nominal setting); that is what "high-recall" means below.
+    #   * "Mask everything" never reaches clinical text. All seven map DISEASE, DRUG and the
+    #     other clinical labels to `mask`, but the shared PII model has none of them (its 54
+    #     entity types are identifiers and personal attributes such as religion or blood type)
+    #     and the sweep has no clinical patterns, so diagnoses pass through every profile.
+    #     Hence "every detected span", never "clinical terms included".
+    # All seven also carry threshold_profile="strict_no_leak" (higher recall than the slider's
+    # nominal setting); that is what "high-recall" means below.
     "China PIPL": PolicyModel(
         "china_pipl",
         "Surrogate direct identifiers, mask every other detected span; high-recall, "
         "reversible with a key (China PIPL).",
         "replace",
         True,
-        True,
-    ),
-    "India DPDP Act": PolicyModel(
-        "india_dpdp_act",
-        "Surrogate direct identifiers, mask dates/ages/places, keep clinical detail; "
-        "irreversible (India DPDP 2023).",
-        "replace",
-        False,
-        True,
-    ),
-    "India Health ID": PolicyModel(
-        "india_health_id",
-        "Mask direct identifiers only, with high-recall detection (no ABHA-specific "
-        "rules); keep ages, places and dates. The enforced sweep still masks "
-        "'…Clinic'-style names, labelled ZIPs and dates written 03/14/2024, 2024-03-14, "
-        "March 14, 2024 or 14 March 2024.",
-        "mask",
-        False,
         True,
     ),
     "African Union (Malabo)": PolicyModel(

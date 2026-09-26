@@ -724,13 +724,17 @@ def test_policy_anon_renders_output_and_metrics(monkeypatch):
 
 
 def test_policy_anon_picker_lists_curated_policies(monkeypatch):
-    from openmed_studio import POLICY_MODELS
+    from openmed_studio import HIDDEN_POLICIES, POLICY_MODELS
 
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
     picker = next(s for s in at.selectbox if s.key == "policy_pick")
     assert list(picker.options) == list(POLICY_MODELS)
     assert picker.value == "HIPAA Safe Harbor"  # default = first policy
+    # The hidden profiles are explained, not silently dropped, with counts derived from the
+    # constants so the tooltip can't go stale when openmed's catalog changes.
+    assert f"The {len(HIDDEN_POLICIES)} not listed" in picker.help
+    assert f"ships {len(POLICY_MODELS) + len(HIDDEN_POLICIES)} " in picker.help
 
 
 def test_policy_anon_forwards_selected_policy(monkeypatch):
@@ -752,13 +756,13 @@ def test_policy_anon_forwards_selected_policy(monkeypatch):
     at = AppTest.from_file(APP).run(timeout=30)
     # The policy picker lives outside the form, so set it (and rerun) before submitting.
     next(s for s in at.selectbox if s.key == "policy_pick").set_value(
-        "GDPR Pseudonymization"
+        "GDPR Art. 9 Health"
     ).run(timeout=30)
     _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
     _click(at, "Anonymize under policy")
 
     assert not at.exception
-    assert captured["policy"] == POLICY_MODELS["GDPR Pseudonymization"].name
+    assert captured["policy"] == POLICY_MODELS["GDPR Art. 9 Health"].name
     assert (
         captured["keep_mapping"] is False
     )  # policy decides reversibility, not a forced True

@@ -176,10 +176,11 @@ def build_policy_opts(
 
     The policy sibling of :func:`build_base_opts`, with two deliberate omissions: no ``method``
     (the policy selects the per-label action, so a method would be silently overridden) and no
-    ``keep_mapping`` (the policy decides reversibility; the service always requests it). ``seed``
-    is included only when ``consistent`` is on, and ``locale`` only when non-empty — both apply to
-    the surrogate (``replace``-based) policies and are ignored by the masking ones. ``text`` is not
-    in the payload (the caller passes it positionally to ``service.anonymize_policy``).
+    ``keep_mapping`` (the policy decides reversibility; the service sends ``keep_mapping=False`` and
+    lets the profile's own flag decide). ``seed`` is included only when ``consistent`` is on, and
+    ``locale`` only when non-empty — ``seed`` matters only to the surrogate (``replace``-based)
+    policies, while a locale also adds its region's identifier patterns under any policy. ``text``
+    is not in the payload (the caller passes it positionally to ``service.anonymize_policy``).
     """
     opts: dict[str, Any] = {
         "policy": policy,

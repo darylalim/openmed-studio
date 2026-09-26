@@ -201,12 +201,13 @@ class AnonymizePolicyRequest(_Strict):
     Distinct from :class:`DeidentifyRequest` in two deliberate ways. It has **no ``method``**:
     a ``policy`` overrides the flat method (openmed assigns a per-label action from the profile),
     so exposing a method here would be a control the policy silently ignores. And it has **no
-    ``keep_mapping``**: reversibility is the policy's decision (surrogate profiles keep a mapping,
-    masking ones don't), so the seam always requests it and surfaces whatever the policy yields.
+    ``keep_mapping``**: reversibility is the policy's decision (by the profile's own flag — some
+    surrogate profiles keep no key), so the seam surfaces whatever mapping the policy yields.
     ``policy`` is a required closed :data:`~openmed_studio.engine.Policy` Literal (mirroring
-    ``RequiredModelName``'s "make the caller choose" rationale), so an unknown/typo'd policy is
-    rejected here — with a PHI-safe message — before the engine. The surrogate knobs
-    ``consistent``/``seed``/``locale`` apply to the ``replace``-based (reversible) policies.
+    ``RequiredModelName``'s "make the caller choose" rationale), so an unknown/typo'd policy —
+    or one of openmed's :data:`~openmed_studio.engine.HIDDEN_POLICIES` — is rejected here, with a
+    PHI-safe message, before the engine. The surrogate knobs ``consistent``/``seed``/``locale``
+    apply to the ``replace``-based policies.
     """
 
     text: ClinicalText

@@ -236,6 +236,20 @@ def test_anonymize_policy_rejects_unknown_policy() -> None:
         service.anonymize_policy(ENGINE, "x", policy="not_a_real_policy")
 
 
+def test_anonymize_policy_rejects_hidden_policies_phi_safely() -> None:
+    # openmed ships these profiles, but they keep some detected identifiers verbatim, so the
+    # Policy Literal leaves them out: each is refused by validation — before the engine, as
+    # kind "validation", and without echoing the note (possible PHI).
+    from openmed_studio.engine import HIDDEN_POLICIES
+
+    secret = "SECRET-PATIENT-NAME-98765"
+    for policy in sorted(HIDDEN_POLICIES):
+        with pytest.raises(ServiceError) as excinfo:
+            service.anonymize_policy(ENGINE, secret, policy=policy)
+        assert excinfo.value.kind == "validation", policy
+        assert secret not in str(excinfo.value), policy
+
+
 def test_anonymize_policy_rejects_method_field() -> None:
     # There is deliberately no `method` on the request (the policy overrides it), so passing one
     # is an unknown field that extra="forbid" rejects — not a silently-ignored control.
@@ -267,7 +281,7 @@ def test_anonymize_policy_rejects_bad_lang() -> None:
 def test_anonymize_policy_rejects_malformed_locale() -> None:
     with pytest.raises(ServiceError):
         service.anonymize_policy(
-            ENGINE, "x", policy="gdpr_pseudonymization", locale="not a locale!"
+            ENGINE, "x", policy="gdpr_art9_health", locale="not a locale!"
         )
 
 
@@ -425,11 +439,40 @@ def test_zero_shot_models_resolve_in_openmed() -> None:
 
 
 def test_validation_policy_matches_openmed() -> None:
-    # Keep the app's Policy enum in sync with openmed's canonical policy set — the policy analogue
-    # of test_validation_deidmethod_matches_openmed (registry metadata only, no model load).
+    # Keep the app's policy surface in sync with openmed's canonical policy set — the policy
+    # analogue of test_validation_deidmethod_matches_openmed (registry metadata only, no model
+    # load). Every canonical profile is either offered (Policy) or deliberately hidden
+    # (HIDDEN_POLICIES), never both and never neither, so a profile openmed adds fails here
+    # until someone decides which side it belongs on.
     from openmed.core.policy import PolicyName
 
-    assert set(typing.get_args(validation.Policy)) == {p.value for p in PolicyName}
+    from openmed_studio.engine import HIDDEN_POLICIES
+
+    offered = set(typing.get_args(validation.Policy))
+    assert offered.isdisjoint(HIDDEN_POLICIES), sorted(offered & HIDDEN_POLICIES)
+    assert offered | HIDDEN_POLICIES == {p.value for p in PolicyName}
+
+
+def test_hidden_policies_are_exactly_those_that_keep_other() -> None:
+    # HIDDEN_POLICIES is not a taste call: it is exactly the profiles whose catch-all OTHER
+    # action is "keep". openmed files much of the PII model's vocabulary (license, tax and
+    # employee IDs, employers, religion, ...) under OTHER, so such a profile passes those
+    # identifiers through verbatim. Pinned against the live profiles, so an openmed change to
+    # a profile's OTHER action, or a new leaky profile, fails CI and forces a human decision.
+    from openmed.core.policy import PolicyName, load_policy
+
+    from openmed_studio.engine import HIDDEN_POLICIES
+
+    keeps_other = {
+        p.value for p in PolicyName if load_policy(p.value).actions["OTHER"] == "keep"
+    }
+    assert HIDDEN_POLICIES == keeps_other, (
+        "openmed changed which profiles keep OTHER-labelled identifiers verbatim; a "
+        "human must decide. Newly leaky (hide: add to HIDDEN_POLICIES, drop from "
+        f"Policy/POLICY_MODELS): {sorted(keeps_other - HIDDEN_POLICIES)}. No longer "
+        "leaky (re-expose after a real run; their last descriptions are in commit "
+        f"8e1e50f): {sorted(HIDDEN_POLICIES - keeps_other)}."
+    )
 
 
 def test_policy_models_resolve_in_openmed() -> None:
@@ -461,8 +504,9 @@ def test_policy_models_resolve_in_openmed() -> None:
         )
 
     # ...and the catalog is COMPLETE. The loop above only pins POLICY_MODELS ⊆ registry, and
-    # test_validation_policy_matches_openmed pins Policy == PolicyName — so without this a policy
-    # openmed adds would be accepted by AnonymizePolicyRequest yet missing from the UI picker.
+    # test_validation_policy_matches_openmed pins Policy (with HIDDEN_POLICIES) against
+    # PolicyName — so without this a policy moved into Policy would be accepted by
+    # AnonymizePolicyRequest yet missing from the UI picker.
     # openmed 2.x took the built-ins from 10 to 19 in one release (and 2.5 added a 20th), so the
     # gap is not theoretical.
     assert {model.name for model in POLICY_MODELS.values()} == set(
@@ -473,8 +517,8 @@ def test_policy_models_resolve_in_openmed() -> None:
     # descriptions are hand-authored prose, so most of their accuracy can only be reviewed by a
     # human — but this one claim is safety-critical and mechanically checkable: telling a user a
     # policy is "reversible with a key" when keep_mapping is False means they may anonymize
-    # believing they can get the original back. (openmed 2.x makes this easy to get wrong: four
-    # of the nine `replace`-based profiles keep NO mapping.)
+    # believing they can get the original back. (openmed 2.x makes this easy to get wrong: two
+    # of the four `replace`-based profiles offered, ZA POPIA and NG NDPA, keep NO mapping.)
     for label, model in POLICY_MODELS.items():
         # Match the CLAIM, not one blessed wording ("reversible with a key" / "reversible").
         # Strip "irreversible" first — it contains "reversible" as a substring.

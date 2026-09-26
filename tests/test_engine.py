@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from openmed_studio import DEFAULT_PII_MODEL, PIIEngine
+from openmed_studio import DEFAULT_PII_MODEL, HIDDEN_POLICIES, POLICY_MODELS, PIIEngine
 
 if TYPE_CHECKING:
     from openmed import ModelLoader
@@ -231,9 +231,10 @@ def test_deidentify_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -
         # preserves 1.x behavior. `abdm` does NOT: `abdm=None` means AUTO, not off —
         # openmed/core/custom_recognizer.py::abdm_mode_enabled turns the India ABDM
         # recognizers ON whenever policy=="india_dpdp_act", locale ends in "_in", or lang is
-        # hi/te, ALL THREE of which this app forwards. Leaving it unset is a deliberate
-        # choice to let openmed decide per context (forcing False would gut the India DPDP
-        # policy the Policy de-ID tab now offers), not an inert omission:
+        # hi/te — all knobs this app forwards, though india_dpdp_act is one of its
+        # HIDDEN_POLICIES. Leaving it unset is a deliberate choice to let openmed decide per
+        # context (forcing False would gut the India recognizers an en_IN locale or a hi/te
+        # note relies on), not an inert omission:
         "abdm",  # India ABDM (Ayushman Bharat) health-ID recognizers; None = auto, not off
         "code_mixed",  # code-mixed (e.g. Hinglish) detection mode
         "token_language_tags",  # caller-supplied per-token language tags
@@ -662,13 +663,19 @@ def test_engine_round_trips_with_kept_mapping(loader, note) -> None:
 
 
 @pytest.mark.model
-def test_engine_deidentify_policy_masks_and_pseudonymizes(loader, note) -> None:
+@pytest.mark.parametrize(
+    "reversible", [m.name for m in POLICY_MODELS.values() if m.keep_mapping]
+)
+def test_engine_deidentify_policy_masks_and_pseudonymizes(
+    loader, note, reversible
+) -> None:
     # Real policy-driven anonymization proves two things the service path relies on: the policy
     # (not the flat method) drives the per-label action, AND reversibility is the policy's call.
     # Both calls pass keep_mapping=False (what service.anonymize_policy sends) and leave method at
     # its default — the policy overrides it. The default policy (HIPAA Safe Harbor) masks the SSN
-    # irreversibly (no mapping); GDPR pseudonymization replaces it with a surrogate and FORCES a
-    # mapping (openmed ORs the profile's own keep_mapping) that round-trips.
+    # irreversibly (no mapping); each reversible profile offered (GDPR Art. 9 Health, China
+    # PIPL) replaces it with a surrogate and FORCES a mapping (openmed ORs the profile's own
+    # keep_mapping) that round-trips.
     from openmed_studio.engine import DEFAULT_POLICY_MODEL
 
     engine = PIIEngine(loader=loader)
@@ -679,7 +686,7 @@ def test_engine_deidentify_policy_masks_and_pseudonymizes(loader, note) -> None:
         not masked.mapping
     )  # Safe Harbor is irreversible — the policy keeps no mapping
 
-    pseudo = engine.deidentify(note, policy="gdpr_pseudonymization", keep_mapping=False)
+    pseudo = engine.deidentify(note, policy=reversible, keep_mapping=False)
     assert "123-45-6789" not in pseudo.deidentified_text  # replaced by a surrogate
     assert (
         pseudo.mapping
@@ -689,98 +696,61 @@ def test_engine_deidentify_policy_masks_and_pseudonymizes(loader, note) -> None:
     assert "123-45-6789" in restored
 
 
-# A synthetic note for the policy-description pins below; every identifier is fabricated.
-# The bare ZIP (45402) sits more than 100 characters from the word "ZIP", outside the window
-# the sweep's context-gated postcode pattern searches, while the labelled one (45409) sits
-# inside it. "devout Catholic" is a sensitive trait (the PII model's religious_belief label).
+# A synthetic note for the policy pins below; every identifier is fabricated. "devout
+# Catholic" is a sensitive trait (the PII model's religious_belief label).
 _POLICY_NOTE = (
     "Mr. Tom Hale, a devout Catholic and 54-year-old teacher from Dayton, Ohio 45402, was "
     "seen at Mercy Clinic on 03/14/2024, at Riverside General Hospital on 2024-03-14, "
     "March 14, 2024 and 14 March 2024, and again on March 14th, 2024 and in June 2023 for "
     "type 2 diabetes. Phone 937-555-0142, SSN 123-45-6789, billing ZIP code: 45409."
 )
-# What the sweep's patterns catch in it: four full-date forms, a "...Clinic" name, and the
-# labelled ZIP.
-_SWEEP_HITS = (
-    "03/14/2024",
-    "2024-03-14",
-    "March 14, 2024",
-    "14 March 2024",
-    "Mercy Clinic",
-    "45409",
+# Identifiers the PII model detects but openmed's normalize_label files under the catch-all
+# OTHER label (certificate_license_number, tax_id, company_name, religious_belief) — the
+# reason HIDDEN_POLICIES exists. Fabricated.
+_OTHER_NOTE = (
+    "Mr. Tom Hale, driver's license D4417-2290, tax ID 98-7654321, works at Brightline "
+    "Logistics and is a devout Catholic."
 )
+_OTHER_SURFACES = ("D4417-2290", "98-7654321", "Brightline Logistics", "Catholic")
 
 
-def _anonymize_note(engine: PIIEngine, policy: str, *, use_safety_sweep: bool = True):
+def _anonymize_note(engine: PIIEngine, policy: str, text: str = _POLICY_NOTE):
     # What service.anonymize_policy sends (no method, keep_mapping=False) at the Policy de-ID
     # tab's defaults: confidence 0.5 (the engine's own default is 0.7), deterministic
     # surrogates with seed 42, and the sweep on.
     return engine.deidentify(
-        _POLICY_NOTE,
+        text,
         policy=policy,
         keep_mapping=False,
         confidence_threshold=0.5,
         consistent=True,
         seed=42,
-        use_safety_sweep=use_safety_sweep,
+        use_safety_sweep=True,
     )
 
 
 @pytest.mark.model
 @pytest.mark.parametrize(
-    ("policy", "use_safety_sweep", "keeps_places"),
-    [
-        # The three mandatory-sweep profiles run with use_safety_sweep=False to prove the
-        # sweep can't be switched off; Clinical Minimal Redaction's is optional, default on.
-        ("research_limited_dataset", False, True),
-        ("india_health_id", False, True),
-        ("clinical_minimal_redaction", True, True),
-        # Clinical Preserve's rules mask LOCATION and ZIPCODE outright.
-        ("clinical_preserve", False, False),
-    ],
+    "policy", sorted({m.name for m in POLICY_MODELS.values()} | HIDDEN_POLICIES)
 )
-def test_engine_sweep_overrides_keep_rules_only_where_its_patterns_match(
-    loader, policy, use_safety_sweep, keeps_places
-) -> None:
-    # Pins the prose of the four "keep dates" descriptions, which the fast guard can't: it
-    # checks only the baked flags. Their rules KEEP dates and facility names, but the sweep
-    # runs after keep spans are dropped, so it masks whatever its regexes match and nothing
-    # else. If openmed ever makes the sweep honour keep, or widens or narrows its patterns,
-    # this fails and the descriptions (and the pattern list at POLICY_MODELS' Research
-    # Limited Dataset entry) must change.
+def test_engine_hidden_policies_keep_other_identifiers_verbatim(loader, policy) -> None:
+    # Pins the reason for HIDDEN_POLICIES with a real run, one openmed profile per case: a
+    # hidden profile (OTHER = keep) passes a detected license number, tax ID, employer and
+    # religion through verbatim AND leaves them out of pii_entities (the tab's entity table),
+    # while every offered profile masks all four and lists them. A hidden profile's case
+    # failing here is the signal that openmed fixed it and it can be re-exposed (see
+    # HIDDEN_POLICIES in engine.py). The sweep-vs-keep description pins for the four
+    # keep-dates profiles are in commit 8e1e50f; all four are hidden, and no offered
+    # profile keeps a label for the sweep to override.
     engine = PIIEngine(loader=loader)
-    result = _anonymize_note(engine, policy, use_safety_sweep=use_safety_sweep)
+    result = _anonymize_note(engine, policy, _OTHER_NOTE)
     out = result.deidentified_text
-    # Masked by the sweep despite DATE / ORGANIZATION / ZIPCODE = keep.
-    for masked in _SWEEP_HITS:
-        assert masked not in out, f"{masked!r} survived under {policy}"
-    # No sweep pattern matches these, so the keep rules hold: the descriptions must not
-    # promise to mask every full date or every facility name.
-    for kept in (
-        "March 14th, 2024",
-        "June 2023",
-        "Riverside General Hospital",
-        "54-year-old teacher",
-        "type 2 diabetes",
-    ):
-        assert kept in out, f"{kept!r} was masked under {policy}"
-    assert ("Dayton" in out) is keeps_places
-    assert ("45402" in out) is keeps_places  # a bare ZIP, outside the sweep's window
-    assert "Tom Hale" not in out
-    assert not result.mapping  # irreversible: none of the four keeps a mapping
-
-
-@pytest.mark.model
-def test_engine_minimal_redaction_keeps_dates_with_sweep_off(loader) -> None:
-    # The other half of Clinical Minimal Redaction's description: its sweep is optional, so
-    # switching the tab's toggle off lets the keep rules stand.
-    engine = PIIEngine(loader=loader)
-    out = _anonymize_note(
-        engine, "clinical_minimal_redaction", use_safety_sweep=False
-    ).deidentified_text
-    for kept in _SWEEP_HITS:
-        assert kept in out, kept
-    assert "Tom Hale" not in out
+    listed = {e.text for e in result.pii_entities}
+    hidden = policy in HIDDEN_POLICIES
+    for surface in _OTHER_SURFACES:
+        assert (surface in out) is hidden, (policy, surface)
+        assert (surface in listed) is not hidden, (policy, surface)
+    assert "Tom Hale" not in out  # every profile handles the name either way
 
 
 @pytest.mark.model

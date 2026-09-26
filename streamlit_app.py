@@ -29,6 +29,7 @@ import streamlit as st
 
 from openmed_studio import (
     DEFAULT_PII_MODEL,
+    HIDDEN_POLICIES,
     NER_MODELS,
     POLICY_MODELS,
     ZERO_SHOT_MODELS,
@@ -671,36 +672,50 @@ def _render_policy_anon(lang: str) -> None:
     """Anonymize under a named regulatory policy (openmed's ``deidentify(policy=...)``).
 
     A distinct capability from the Anonymize tab's flat ``method="replace"``: a compliance policy
-    (HIPAA Safe Harbor, GDPR, …) assigns a per-label ACTION — mask, redact, surrogate, or keep —
-    encoding that legal standard, so the same note anonymizes differently under each. The policy
-    picks the action, so there is deliberately **no Method control**. Like ``_render_anonymize``
+    (HIPAA Safe Harbor, GDPR Art. 9, …) assigns a per-label ACTION — mask or surrogate, in every
+    profile offered here — encoding that legal standard, so the same note anonymizes differently
+    under each. The policy picks the action, so there is deliberately **no Method control**. The
+    picker lists ``POLICY_MODELS`` only: openmed's ``HIDDEN_POLICIES`` keep some detected
+    identifiers verbatim, so they are not offered (see engine.py). Like ``_render_anonymize``
     it is intentionally **not** an ``@st.fragment``: the reversible policies (those with
     ``keep_mapping``) keep a mapping, and the form submit must trigger a full rerun so the
     Re-identify fragment re-reads the ``last_deidentified``/``last_mapping`` handed off here.
     """
-    # Derived, not hand-listed: openmed went from 10 policies to 19 in one release (20 as of 2.5)
-    # and the reversible set is NOT "the surrogate ones" — four of the nine surrogate-based
-    # profiles keep no key at all. Reading it off keep_mapping means the sentence can't go stale.
+    # Derived, not hand-listed: openmed's catalog shifts between releases (10 profiles in 1.9,
+    # 20 in 2.5), and the reversible set is NOT "the surrogate ones" — two of the four
+    # surrogate-based profiles offered keep no key at all. Reading it off keep_mapping means
+    # the sentence can't go stale.
     reversible = [label for label, m in POLICY_MODELS.items() if m.keep_mapping]
     st.caption(
         "Anonymize under a regulatory **policy** — a compliance profile that decides, per entity "
-        "type, whether to mask, redact, replace with a surrogate, or keep it, so the same note "
+        "type, whether to mask it or replace it with a surrogate, so the same note "
         "anonymizes differently under each. Only "
-        + ", ".join(reversible)
+        + (" and ".join(reversible) if len(reversible) < 3 else ", ".join(reversible))
         + " keep a re-identification key that round-trips through the Re-identify tab — every "
-        "other policy is irreversible, **including several that substitute surrogates**. As with "
+        "other policy is irreversible, **including some that substitute surrogates**. As with "
         "all model-based de-identification, anything the model misses is left in place — review "
         "before sharing."
     )
     # The policy picker + preview live OUTSIDE the form, so choosing a policy reruns and refreshes
     # the preview (this tab is a full rerun, like Single note, whose method picker also sits
     # outside its form). model_name resolves via POLICY_MODELS[policy_label].name.
-    policy_label = st.selectbox("Policy", list(POLICY_MODELS), key="policy_pick")
+    # One tooltip answers "why isn't profile X here?" for anyone who knows openmed's
+    # catalog, with counts derived from the constants so it can't go stale. The reasoning
+    # (and how to re-expose a profile) lives at HIDDEN_POLICIES in engine.py.
+    hidden_help = (
+        f"OpenMed ships {len(POLICY_MODELS) + len(HIDDEN_POLICIES)} compliance "
+        f"profiles. The {len(HIDDEN_POLICIES)} not listed leave some detected "
+        "identifiers in place — license, tax and employee IDs, employers, religion "
+        "and more — without listing them as entities, so they are hidden."
+    )
+    policy_label = st.selectbox(
+        "Policy", list(POLICY_MODELS), key="policy_pick", help=hidden_help
+    )
     model = POLICY_MODELS[policy_label]
     # Badged because reversibility is the single fact that decides whether this run can be
     # undone, and it is NOT predictable from the policy's name or from "does it substitute
-    # surrogates" (four surrogate profiles keep no key). Blue/gray, deliberately not
-    # green/red: keeping a key is a capability, not a virtue — the key is as sensitive as
+    # surrogates" (two of the four surrogate profiles keep no key). Blue/gray, deliberately
+    # not green/red: keeping a key is a capability, not a virtue — the key is as sensitive as
     # raw PHI — so the badge must not read as a safety verdict in either direction.
     reversibility = (
         ":blue-badge[reversible with a key]"
@@ -743,7 +758,7 @@ def _render_policy_anon(lang: str) -> None:
         with st.expander("Advanced", icon=":material/tune:"):
             # Using default_action here is sound even though openmed never *applies* it: as a
             # DECLARED posture it lines up exactly with "does this profile replace anything"
-            # (all 9 replace-declaring profiles have replace actions; no mask/redact-declaring
+            # (all 4 replace-declaring profiles offered have replace actions; no mask-declaring
             # one does). It is only misleading as a per-entity prediction, which is why the
             # preview above no longer shows it.
             st.caption(
@@ -776,12 +791,17 @@ def _render_policy_anon(lang: str) -> None:
                 "language. Some locales (e.g. en_GB, en_IN) also add that region's "
                 "identifier patterns to detection — even under a masking policy.",
             )
+            # openmed ORs this switch with the profile's safety_sweep_mandatory
+            # (core/pipeline.py), and every profile offered today forces the sweep, so
+            # switching it off changes nothing for now. The help points at the preview's
+            # "enforced" label instead of saying so, which stays true if an optional-sweep
+            # profile is ever offered again.
             use_safety_sweep = st.toggle(
                 "Safety sweep",
                 value=True,
                 key="policy_sweep",
                 help="Run a deterministic structured-identifier sweep after model detection. "
-                "Some policies enforce it regardless.",
+                "Policies marked 'safety sweep enforced' above run it regardless.",
             )
         submitted = st.form_submit_button(
             "Anonymize under policy", type="primary", icon=":material/policy:"

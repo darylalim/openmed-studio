@@ -9,10 +9,10 @@ dependencies = [
     # This is the portable backend that runs everywhere (CPU, CUDA, Apple MPS).
     # >=2.5.0 is a HARD floor, not a preference: the app bakes openmed's registry and enum
     # surface at authoring time and four equality guards fail on anything older —
-    # `DeidMethod` includes 2.0's `aadhaar_mask`, `Policy`/`POLICY_MODELS` carry all 20
-    # compliance profiles (2.5.0 added `clinical_preserve`; 2.1.0 had 19, 1.9.x shipped 10),
-    # `NER_MODELS` bakes the 2.x entity_types, and the `Medical` NER domain is gone because 2.0
-    # dropped the 434M ClinicalNER alias it used.
+    # `DeidMethod` includes 2.0's `aadhaar_mask`, `Policy` + `HIDDEN_POLICIES` must partition
+    # all 20 compliance profiles (2.5.0 added `clinical_preserve`, which is hidden; 2.1.0 had
+    # 19, 1.9.x shipped 10), `NER_MODELS` bakes the 2.x entity_types, and the `Medical` NER
+    # domain is gone because 2.0 dropped the 434M ClinicalNER alias it used.
     "openmed[hf]>=2.5.0",
     # The Streamlit app (`streamlit_app.py`) — one of the two delivery surfaces.
     # Needs streamlit>=1.61 for `st.metric(icon=...)` on every KPI card (1.60 and earlier raise

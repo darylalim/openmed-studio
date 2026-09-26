@@ -255,9 +255,9 @@ def test_anonymize_policy_forwards_policy_and_lets_policy_decide_mapping() -> No
     # It sends NO method (the policy overrides it).
     engine, captured = _capturing()  # captures engine.deidentify kwargs
     service.anonymize_policy(
-        engine, "x", policy="gdpr_pseudonymization", consistent=True, seed=7
+        engine, "x", policy="gdpr_art9_health", consistent=True, seed=7
     )
-    assert captured["policy"] == "gdpr_pseudonymization"
+    assert captured["policy"] == "gdpr_art9_health"
     assert captured["keep_mapping"] is False  # not forced on — the policy decides
     assert captured["consistent"] is True
     assert captured["seed"] == 7
@@ -275,7 +275,7 @@ def test_anonymize_policy_surfaces_a_policy_forced_mapping() -> None:
             )
 
     engine = cast("PIIEngine", _Reversible())
-    result = service.anonymize_policy(engine, "x", policy="gdpr_pseudonymization")
+    result = service.anonymize_policy(engine, "x", policy="gdpr_art9_health")
     assert result["mapping"] == {"Wong": "John"}
 
 

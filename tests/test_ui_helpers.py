@@ -437,7 +437,7 @@ def test_build_policy_opts_base_fields_and_no_method_or_keep_mapping():
 
 def test_build_policy_opts_includes_seed_only_when_consistent():
     with_seed = build_policy_opts(
-        policy="gdpr_pseudonymization",
+        policy="gdpr_art9_health",
         confidence_threshold=0.6,
         lang="fr",
         consistent=True,
@@ -446,7 +446,7 @@ def test_build_policy_opts_includes_seed_only_when_consistent():
     )
     assert with_seed["seed"] == 42
     without_seed = build_policy_opts(
-        policy="gdpr_pseudonymization",
+        policy="gdpr_art9_health",
         confidence_threshold=0.6,
         lang="fr",
         consistent=False,
@@ -460,7 +460,7 @@ def test_build_policy_opts_locale_stripped_when_set_omitted_when_blank():
     # locale is a surrogate knob (used by the replace-based policies): stripped when present,
     # omitted when blank/whitespace/None so openmed derives it from the language.
     opts = build_policy_opts(
-        policy="gdpr_pseudonymization",
+        policy="gdpr_art9_health",
         confidence_threshold=0.5,
         lang="pt",
         consistent=True,
@@ -471,7 +471,7 @@ def test_build_policy_opts_locale_stripped_when_set_omitted_when_blank():
     assert opts["locale"] == "pt_BR"
     for blank in ("", "   ", None):
         opts = build_policy_opts(
-            policy="gdpr_pseudonymization",
+            policy="gdpr_art9_health",
             confidence_threshold=0.5,
             lang="en",
             consistent=False,

@@ -16,19 +16,13 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from openmed_studio import __version__
+from openmed_studio import HIDDEN_POLICIES, __version__
 from openmed_studio.main import API_KEY_ENV, COMPAT_ENV, app, create_app, get_engine
 
 # Policies whose profile keeps a re-identification mapping (openmed ORs the profile's own
-# keep_mapping) — the five POLICY_MODELS entries with keep_mapping=True. The stub mirrors
+# keep_mapping) — the two POLICY_MODELS entries with keep_mapping=True. The stub mirrors
 # that so the anonymize-policy tests can assert both branches.
-_REVERSIBLE_POLICIES = {
-    "gdpr_pseudonymization",
-    "gdpr_art9_health",
-    "canada_pipeda",
-    "uk_ico_anonymisation",
-    "china_pipl",
-}
+_REVERSIBLE_POLICIES = {"gdpr_art9_health", "china_pipl"}
 
 
 class _StubEngine:
@@ -198,11 +192,23 @@ def test_anonymize_policy_masking_has_no_mapping(client) -> None:
 def test_anonymize_policy_reversible_keeps_mapping(client) -> None:
     resp = client.post(
         "/pii/anonymize-policy",
-        json={"text": "John Doe", "policy": "gdpr_pseudonymization"},
+        json={"text": "John Doe", "policy": "gdpr_art9_health"},
     )
     body = resp.json()
-    assert body["method"] == "gdpr_pseudonymization"
+    assert body["method"] == "gdpr_art9_health"
     assert body["mapping"] == {"[first_name]": "John"}  # surrogate policy keeps a key
+
+
+@pytest.mark.parametrize("policy", sorted(HIDDEN_POLICIES))
+def test_anonymize_policy_rejects_hidden_policy_phi_safely(client, policy) -> None:
+    # A profile openmed ships but the app hides (it keeps some identifiers verbatim) is
+    # outside the Policy literal, so the route 422s before the engine, without echoing
+    # the note.
+    secret = "SENSITIVE-PATIENT-NAME-98765"
+    resp = client.post("/pii/anonymize-policy", json={"text": secret, "policy": policy})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "validation_error"
+    assert secret not in resp.text
 
 
 def test_anonymize_policy_rejects_method_field(client) -> None:

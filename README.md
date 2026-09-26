@@ -34,7 +34,7 @@ The app opens with eight tabs:
 | **Single note** | De-identify one note — original (PII highlighted) beside the redacted text, with a download and a re-identification key. |
 | **Batch** | De-identify up to 100 notes at once — a results table with per-note entity counts; a failing note is isolated as a `Failed` row instead of aborting the batch. |
 | **Anonymize** | Replace *detected* PII/PHI with realistic *fake* surrogates rather than masks; round-trips through Re-identify. |
-| **Policy de-ID** | Anonymize under one of 20 **regulatory and clinical policies** (HIPAA Safe Harbor, GDPR pseudonymization, PIPEDA, UK ICO, China PIPL, India DPDP, South Africa POPIA, …) — the policy decides, per entity type, whether to mask, redact, or surrogate. Masking policies are irreversible; only the policies that keep a mapping (GDPR, PIPEDA, UK ICO, PIPL) yield a re-identification key. |
+| **Policy de-ID** | Anonymize under one of 10 **regulatory policies** (HIPAA Safe Harbor, GDPR Art. 9 health data, China PIPL, South Africa POPIA, Nigeria NDPA, Kenya DPA, …) — the policy decides, per entity type, whether to mask or surrogate. Masking policies are irreversible; only the policies that keep a mapping (GDPR Art. 9, China PIPL) yield a re-identification key. |
 | **Re-identify** | Restore originals from a kept mapping (auto-filled from the last Single note, Anonymize, or Policy de-ID run). |
 
 Detect, Clinical NER, Zero-shot, Single note, and Policy de-ID render matched entities as highlighted
@@ -51,11 +51,19 @@ text with a color legend, plus an entity table. A few more things worth knowing:
 - Policy de-ID picks a compliance profile instead of a method: the policy decides each entity type's
   action, so the same note anonymizes differently under each. A live preview shows the policy's
   canonical name, whether it is reversible, whether it enforces the safety sweep, and a short
-  description of what it masks, substitutes, or keeps. Reversibility is the profile's own call, not
-  the action's: masking policies (HIPAA Safe Harbor) never keep a key, and only some surrogate
-  policies do (GDPR pseudonymization, GDPR Art. 9, PIPEDA, UK ICO, China PIPL) — the rest, like
-  Australia Privacy Act and South Africa POPIA, replace identifiers *irreversibly*. When a key is
-  kept it round-trips through Re-identify; the preview says which case you are in.
+  description of what it masks or substitutes. Reversibility is the profile's own call, not the
+  action's: masking policies (HIPAA Safe Harbor) never keep a key, and only some surrogate policies
+  do (GDPR Art. 9 Health, China PIPL) — the others, South Africa POPIA and Nigeria NDPA, replace
+  identifiers *irreversibly*. When a key is kept it round-trips through Re-identify; the preview
+  says which case you are in.
+- OpenMed ships 20 compliance profiles, and the app offers only the 10 that leave nothing they
+  detect in place. The other 10 (among them GDPR pseudonymization, Canada PIPEDA, UK ICO and the
+  research and clinical profiles) *keep* whatever falls under OpenMed's catch-all `OTHER` label,
+  and OpenMed files 26 of the PII model's 54 entity types there: license, tax and employee IDs,
+  fax and health-plan numbers, employers, religion, political views, sexuality. Bar the few formats
+  the safety sweep catches, those identifiers would pass through verbatim and stay out of the
+  entity table, so the profiles stay hidden (the API rejects them with a 422) until OpenMed stops
+  keeping them.
 
 ### Controls
 
@@ -99,7 +107,7 @@ Open `http://127.0.0.1:8080/docs` for interactive OpenAPI docs. Endpoints:
 | `POST /zero-shot` | Zero-shot extraction — pass `model_name` + `labels` (needs the `gliner` extra). |
 | `POST /pii/deidentify` | De-identify one note (`method`, `keep_mapping`, …). |
 | `POST /pii/deidentify/batch` | De-identify up to 100 notes; a bad note is isolated as `{"ok": false, …}`. |
-| `POST /pii/anonymize-policy` | Anonymize under a regulatory `policy` (the policy picks each action). |
+| `POST /pii/anonymize-policy` | Anonymize under a regulatory `policy` (the policy picks each action); the profiles the UI hides return 422. |
 | `POST /pii/reidentify` | Restore originals from a kept `mapping`. |
 | `GET /health` | Liveness + configured model/backend/limits (always unauthenticated). |
 
