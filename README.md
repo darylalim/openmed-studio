@@ -11,7 +11,7 @@ roadmap.
 
 ## Quickstart
 
-Requires [uv](https://docs.astral.sh/uv/) and Python ≥ 3.10.
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.10–3.14 (PyTorch has no 3.15 wheels yet).
 
 ```bash
 uv run streamlit run streamlit_app.py

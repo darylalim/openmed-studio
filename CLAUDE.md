@@ -98,7 +98,8 @@ CI (`.github/workflows/ci.yml`) runs on pushes to `main` and every PR: `pytest` 
 3.13 and 3.14, and `ruff check` / `ruff format --check` / `ty check` **once** on the 3.10 leg (ruff
 never reads `.venv` and ty targets 3.10 via `[tool.ty.environment]` whatever interpreter runs it, so
 another leg would duplicate the work and the failure annotations). 3.14 is the newest interpreter
-the locked stack ships wheels for (torch 2.14's last is cp314) and `uv.lock` gives it its own
+the locked stack ships wheels for (torch 2.14's last is cp314, which is also why `requires-python`
+stops at `<3.15` — see **Python** under "How it works") and `uv.lock` gives it its own
 `python_full_version >= '3.14'` fork — identical pins to 3.12–3.13 today, but a relock can split
 them — while 3.13 stays so a 3.14-only break reads as one. Every package CI installs ships a
 cp314/abi3/`py3` wheel for manylinux x86_64 except openmed's `jieba`, which is sdist-only on
@@ -223,7 +224,11 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
      so CI fails until you do.
 - **After any openmed/torch/transformers bump:** run `uv run pytest --run-model` (fast tests stub the
   model and cannot catch a load failure) and re-verify the gliner fork with
-  `uv export --extra gliner | grep transformers`.
+  `uv export --extra gliner | grep transformers`. A torch bump also re-opens the `<3.15`
+  `requires-python` cap: once torch (and triton/cuda-bindings) ship cp315 wheels, raise the cap and
+  add a 3.15 leg to `ci.yml` in the same commit — a cap raised alone leaves 3.15 untested, and a leg
+  added under the cap fails `uv sync` ("incompatible with the project's Python requirement") before
+  a single test runs.
 
 ## How it works
 
@@ -251,11 +256,17 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   documented best practice. The shared loader dispatches/caches by `model_name`, so the `Clinical
   NER` tab loads a per-domain NER model (~141M each) into the *same* loader on first use of that
   domain — switching domains loads another model rather than rebuilding the loader.
-- **Python:** `requires-python = ">=3.10"`; CI runs the fast suite on 3.10/3.13/3.14, and the full
-  `--run-model` suite (with the `gliner` extra, so nothing skips) passes locally on all three
-  (openmed 2.5, torch 2.14). uv does **not** pick the minimum for a fresh `.venv`: it takes the
-  newest uv-managed interpreter, else the first compatible Python on `PATH`, and downloads the
-  latest stable only when there is neither — check with `uv python find`.
+- **Python:** `requires-python = ">=3.10,<3.15"`; CI runs the fast suite on 3.10/3.13/3.14, and the
+  full `--run-model` suite (with the `gliner` extra, so nothing skips) passes locally on all three
+  (openmed 2.5, torch 2.14). The `<3.15` cap is load-bearing: torch 2.14 — like its Linux deps
+  triton and cuda-bindings — publishes wheels only through cp314 and no sdist, so on 3.15
+  `uv sync` dies on torch ("only has wheels with the following Python ABI tags: `cp310`, …
+  `cp314t`"). An upper bound is harmless here, since nothing depends on this non-package app. uv
+  does **not** pick the minimum for a fresh `.venv`: it takes the newest uv-managed interpreter,
+  else the first compatible Python on `PATH`, and downloads the latest stable only when there is
+  neither — every step filtered through `requires-python`, so the cap makes uv pass over an
+  installed 3.15 (and refuse an explicit `--python 3.15` up front) instead of failing on torch.
+  Check with `uv python find`.
 ### Core modules (`openmed_studio/`)
 
 - **App structure:** `engine.py`/`service.py`/`validation.py` are the **framework-free core** (no
