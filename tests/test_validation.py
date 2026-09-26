@@ -3,21 +3,29 @@
 The request models validate every request in-process via ``openmed_studio.service``
 (and, unchanged, serve as the FastAPI request bodies); the seam raises ``ServiceError``
 on rejection (validation runs before the stub engine is reached). This pins the
-text/batch/mapping caps, the value/enum/format checks, the
-``OPENMED_STUDIO_MAX_TEXT_LENGTH`` knob, the ``DeidMethod``↔openmed sync, and that
-rejection messages never echo the offending input (possible PHI).
+text/batch/mapping caps, the value/enum/format checks, the per-capability ``model_name``
+allowlists, the ``OPENMED_STUDIO_MAX_TEXT_LENGTH`` and ``OPENMED_STUDIO_EXTRA_MODELS``
+knobs, the ``DeidMethod``↔openmed sync, and that rejection messages never echo the
+offending input (possible PHI).
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import typing
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from openmed_studio import PIIEngine, service, validation
+from openmed_studio import PIIEngine, engine, service, validation
 from openmed_studio.service import ServiceError
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _StubEngine:
@@ -172,12 +180,8 @@ def test_model_name_rejection_does_not_echo_input() -> None:
         assert "SECRET" not in str(excinfo.value)
 
 
-def test_every_model_name_field_applies_the_dot_rule() -> None:
-    # One rule on every surface: each request model that declares a model_name — the
-    # seam's and the /compat bodies in main.py — must route it through
-    # _check_model_name, so a new model can't reopen "../x" with a bare `str` field.
-    from pydantic import BaseModel, ValidationError
-
+def _models_with_a_model_name() -> set[type[BaseModel]]:
+    """Every request model — the seam's and the /compat bodies in main.py — with one."""
     from openmed_studio import main
 
     models = {
@@ -189,14 +193,44 @@ def test_every_model_name_field_applies_the_dot_rule() -> None:
         and "model_name" in obj.model_fields
     }
     found = {model.__name__ for model in models}
-    assert {"ExtractRequest", "NerRequest", "CompatExtractRequest"} <= found
-    for model in models:
-        with pytest.raises(ValidationError) as excinfo:
-            model.model_validate({"model_name": "../x"})
-        messages = {e["loc"]: e["msg"] for e in excinfo.value.errors()}
-        assert "must not start with '.'" in messages.get(("model_name",), ""), (
+    assert {
+        "ExtractRequest",
+        "NerRequest",
+        "ZeroShotRequest",
+        "AnonymizePolicyRequest",
+        "DeidentifyRequest",
+        "DeidentifyBatchRequest",
+        "CompatExtractRequest",
+        "CompatDeidentifyRequest",
+    } <= found
+    return models
+
+
+def _model_name_error(model: type[BaseModel], name: str) -> str:
+    with pytest.raises(ValidationError) as excinfo:
+        model.model_validate({"model_name": name})
+    messages = {e["loc"]: e["msg"] for e in excinfo.value.errors()}
+    return messages.get(("model_name",), "")
+
+
+def test_every_model_name_field_applies_the_dot_rule() -> None:
+    # One rule on every surface: each request model that declares a model_name must
+    # route it through _check_model_name, so a new model can't reopen "../x" with a bare
+    # `str` field.
+    for model in _models_with_a_model_name():
+        assert "must not start with '.'" in _model_name_error(model, "../x"), (
             f"{model.__name__}.model_name skips the dot rule"
         )
+
+
+def test_every_model_name_field_applies_an_allowlist() -> None:
+    # ...and an allowlist after it, so a new model can't reopen arbitrary Hub ids (or
+    # the privacy-filter names openmed loads with trust_remote_code=True) with a
+    # format-only field.
+    for model in _models_with_a_model_name():
+        assert "is not an allowed" in _model_name_error(
+            model, "openai/privacy-filter"
+        ), f"{model.__name__}.model_name skips the allowlist"
 
 
 def test_accepts_every_openmed_registry_model_name() -> None:
@@ -205,11 +239,10 @@ def test_accepts_every_openmed_registry_model_name() -> None:
     # a leading "." in a repo id.) Registry metadata only — no model download.
     import openmed
 
-    from openmed_studio import engine
-
     catalog = openmed.get_all_models()  # dict[alias -> ModelInfo]
     names = set(catalog) | {info.model_id for info in catalog.values()}
-    names |= {engine.DEFAULT_PII_MODEL, engine.DEFAULT_NER_MODEL}
+    names |= {engine.DEFAULT_PII_MODEL, engine.DEFAULT_PII_MLX_MODEL}
+    names |= {engine.DEFAULT_NER_MODEL}
     names |= {engine.DEFAULT_ZERO_SHOT_MODEL}
     names |= {model.alias for model in engine.NER_MODELS.values()}
     names |= {model.alias for model in engine.ZERO_SHOT_MODELS.values()}
@@ -221,6 +254,302 @@ def test_accepts_every_openmed_registry_model_name() -> None:
         except ValueError:
             rejected.append(name)
     assert not rejected, sorted(rejected)[:10]
+
+
+# --- model_name allowlists (per capability) ---------------------------------
+
+# A format-valid model_name that could be a pasted MRN; no rejection may quote it.
+_SENTINEL = "SECRET-MRN-4471"
+
+# Every PII entry point, keyed for test ids; each forwards a model_name to the engine.
+_PII_CALLS = {
+    "extract": lambda **kw: service.extract(ENGINE, "x", **kw),
+    "deidentify": lambda **kw: service.deidentify(ENGINE, "x", **kw),
+    "deidentify_batch": lambda **kw: service.deidentify_batch(ENGINE, ["x"], **kw),
+    "anonymize_policy": lambda **kw: service.anonymize_policy(
+        ENGINE, "x", policy="hipaa_safe_harbor", **kw
+    ),
+}
+
+
+def _ner(**kw):
+    return service.analyze(ENGINE, "x", **kw)
+
+
+def _zero_shot(**kw):
+    return service.extract_zero_shot(ENGINE, "x", labels=["Problem"], **kw)
+
+
+# Format-valid names no PII field may accept.
+_DISALLOWED_PII_NAMES = [
+    # openmed routes these to create_privacy_filter_pipeline, which loads with
+    # trust_remote_code=True and no revision pin, and its prefix check is
+    # case-INsensitive — so every casing must fail here, not just the canonical one.
+    "openai/privacy-filter",
+    "OpenAI/Privacy-Filter",
+    "OpenMed/privacy-filter-multilingual",
+    "openmed/privacy-filter-multilingual",
+    "OPENMED/PRIVACY-FILTER-MULTILINGUAL",
+    "OpenMed/Privacy-Filter-Multilingual",
+    "OpenMed/privacy-filter-nemotron",
+    "OpenMed/privacy-filter-mlx",
+    "privacy-filter",  # openmed's bare family aliases route there too
+    "openai-privacy-filter",
+    # -mlx builds other than the default's own
+    "OpenMed/OpenMed-NER-DiseaseDetect-SuperClinical-141M-mlx",
+    "OpenMed/OpenMed-PII-SuperClinical-Large-434M-v1-mlx",
+    # case-variants of the allowed names (openmed's registry lookup is exact)
+    engine.DEFAULT_PII_MODEL.lower(),
+    engine.DEFAULT_PII_MLX_MODEL.upper(),
+    # a registry alias of the default: one accepted spelling per model
+    "pii_superclinical_small",
+    # a language default: openmed swaps it in for lang="fr"; it isn't requested by name
+    "OpenMed/OpenMed-PII-French-SuperClinical-Small-44M-v1",
+    # arbitrary Hub ids
+    "attacker/pii-model",
+    "bert-base-uncased",
+    _SENTINEL,
+    # other capabilities' models
+    engine.DEFAULT_NER_MODEL,
+    engine.DEFAULT_ZERO_SHOT_MODEL,
+]
+
+
+@pytest.mark.parametrize(
+    "name", [None, engine.DEFAULT_PII_MODEL, engine.DEFAULT_PII_MLX_MODEL]
+)
+@pytest.mark.parametrize("call", sorted(_PII_CALLS))
+def test_pii_fields_accept_the_default_and_its_mlx_build(call, name) -> None:
+    # None (openmed's default, per language) and the two spellings of the default model
+    # reach the stub engine.
+    _PII_CALLS[call](model_name=name)
+
+
+@pytest.mark.parametrize("name", _DISALLOWED_PII_NAMES)
+def test_pii_fields_reject_every_other_model(name) -> None:
+    for call in _PII_CALLS.values():
+        with pytest.raises(ServiceError) as excinfo:
+            call(model_name=name)
+        assert excinfo.value.kind == "validation"
+        assert "not an allowed PII model" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("alias", sorted(m.alias for m in engine.NER_MODELS.values()))
+def test_ner_accepts_every_curated_alias(alias) -> None:
+    assert _ner(model_name=alias) == {"entities": []}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # the Disease alias's own repo id: NER accepts aliases only (see NER_MODEL_NAMES)
+        "OpenMed/OpenMed-NER-DiseaseDetect-SuperClinical-141M",
+        engine.DEFAULT_NER_MODEL.upper(),
+        "disease_detection_superclinical",  # a registry alias outside the curated ten
+        engine.DEFAULT_PII_MODEL,  # a PII model on the NER field
+        engine.DEFAULT_ZERO_SHOT_MODEL,
+        "openai/privacy-filter",
+        "attacker/ner-model",
+    ],
+)
+def test_ner_rejects_every_other_model(name) -> None:
+    with pytest.raises(ServiceError) as excinfo:
+        _ner(model_name=name)
+    assert excinfo.value.kind == "validation"
+    assert "not an allowed clinical NER model" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "alias", sorted(m.alias for m in engine.ZERO_SHOT_MODELS.values())
+)
+def test_zero_shot_accepts_every_curated_alias(alias) -> None:
+    assert _zero_shot(model_name=alias) == {"entities": []}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "zeroshot_disease_large_459m",  # a zero-shot registry alias outside the curated ten
+        "OpenMed/OpenMed-ZeroShot-NER-Disease-Small-166M",  # a curated alias's repo id
+        engine.DEFAULT_ZERO_SHOT_MODEL.upper(),
+        engine.DEFAULT_NER_MODEL,  # a token-classification model forced into GLiNER
+        engine.DEFAULT_PII_MODEL,
+        "attacker/gliner-model",
+    ],
+)
+def test_zero_shot_rejects_every_other_model(name) -> None:
+    with pytest.raises(ServiceError) as excinfo:
+        _zero_shot(model_name=name)
+    assert excinfo.value.kind == "validation"
+    assert "not an allowed zero-shot model" in str(excinfo.value)
+
+
+def test_allowlist_rejection_does_not_echo_the_model_name() -> None:
+    # The allowlist message names the rule and the env var, never the value (nor the
+    # allowed ids) — a model_name field is one stray paste away from holding note text.
+    for call in (*_PII_CALLS.values(), _ner, _zero_shot):
+        for name in (_SENTINEL, f"org/{_SENTINEL}"):
+            with pytest.raises(ServiceError) as excinfo:
+                call(model_name=name)
+            message = str(excinfo.value)
+            assert "SECRET" not in message
+            assert validation.EXTRA_MODELS_ENV in message
+
+
+def test_allowlists_admit_only_the_curated_names_of_openmeds_registry() -> None:
+    # Of openmed's ~3,300 registry aliases and their HF model ids, each capability admits
+    # exactly its curated names; every other entry — the privacy-filter and -mlx ones,
+    # the other domains', the other sizes' — fails before the engine. (Before the
+    # allowlist, POST /zero-shot resolved ANY of them and forced it into GLiNER.)
+    # Registry metadata only — no model download.
+    import openmed
+
+    catalog = openmed.get_all_models()  # dict[alias -> ModelInfo]
+    names = set(catalog) | {info.model_id for info in catalog.values()}
+    extras = validation.EXTRA_MODELS & names  # empty unless the env var is set
+    expected = {
+        validation.PiiModelName: {
+            engine.DEFAULT_PII_MODEL,
+            engine.DEFAULT_PII_MLX_MODEL,
+        },
+        validation.NerModelName: {m.alias for m in engine.NER_MODELS.values()},
+        validation.ZeroShotModelName: {
+            m.alias for m in engine.ZERO_SHOT_MODELS.values()
+        },
+    }
+    for field_type, curated in expected.items():
+        adapter = TypeAdapter(field_type)
+        admitted = set()
+        for name in names:
+            try:
+                adapter.validate_python(name)
+            except ValidationError:
+                continue
+            admitted.add(name)
+        assert admitted == curated | extras
+
+
+def test_default_pii_mlx_model_is_a_registry_model() -> None:
+    # The two default PII ids are openmed registry model ids, so openmed verifies their
+    # downloads against its registry hashes (an unregistered id downloads unverified).
+    import openmed
+
+    model_ids = {info.model_id for info in openmed.get_all_models().values()}
+    assert engine.DEFAULT_PII_MODEL in model_ids
+    assert engine.DEFAULT_PII_MLX_MODEL in model_ids
+
+
+def test_no_default_allowlist_entry_is_a_privacy_filter_model() -> None:
+    # openmed loads a name its privacy-filter predicate matches with
+    # trust_remote_code=True. No name the allowlists admit by default may match it —
+    # nor any registry model id a curated alias resolves to. Uses openmed's own
+    # (private) predicate, so a widened prefix list upstream fails here.
+    import openmed
+    from openmed.core.pii import _looks_like_privacy_filter_identifier
+
+    catalog = openmed.get_all_models()
+    admitted = (
+        validation.PII_MODEL_NAMES
+        | validation.NER_MODEL_NAMES
+        | validation.ZERO_SHOT_MODEL_NAMES
+    ) - validation.EXTRA_MODELS
+    resolved = {catalog[name].model_id for name in admitted if name in catalog}
+    matches = sorted(
+        n for n in admitted | resolved if _looks_like_privacy_filter_identifier(n)
+    )
+    assert not matches, matches
+
+
+# --- OPENMED_STUDIO_EXTRA_MODELS (the operator's escape hatch) --------------
+
+
+def test_extra_models_env_parsing(monkeypatch) -> None:
+    # Comma-separated, whitespace-trimmed, empty entries dropped (a trailing comma is
+    # harmless); unset or empty means no extras. Mirrors the MAX_TEXT_LENGTH knob test:
+    # the reader is called directly, since the module ran it once at import.
+    env = validation.EXTRA_MODELS_ENV
+    monkeypatch.delenv(env, raising=False)
+    assert validation._extra_models() == frozenset()
+    monkeypatch.setenv(env, "")
+    assert validation._extra_models() == frozenset()
+    monkeypatch.setenv(env, " , ,")
+    assert validation._extra_models() == frozenset()
+    monkeypatch.setenv(env, " acme/pii-model , ,zeroshot_extra,, Acme/Other-Model ,")
+    assert validation._extra_models() == {
+        "acme/pii-model",
+        "zeroshot_extra",
+        "Acme/Other-Model",  # casing kept: the allowlist matches exactly
+    }
+
+
+@pytest.mark.parametrize(
+    "raw", ["acme/ok,../escape", "acme/ok, two words", "a/b/c", ".venv", "~/model"]
+)
+def test_extra_models_env_rejects_a_malformed_entry(monkeypatch, raw) -> None:
+    # A malformed entry fails loudly, naming the env var, rather than being dropped
+    # (which would silently refuse the model the operator meant to allow).
+    monkeypatch.setenv(validation.EXTRA_MODELS_ENV, raw)
+    with pytest.raises(ValueError, match=validation.EXTRA_MODELS_ENV):
+        validation._extra_models()
+
+
+def _import_with_extra_models(value: str, code: str) -> subprocess.CompletedProcess:
+    """Run ``code`` in a fresh interpreter with OPENMED_STUDIO_EXTRA_MODELS=value.
+
+    A subprocess, because the env var is read once at import: a fresh process proves
+    that wiring without reloading modules other tests hold references into.
+    """
+    env = {**os.environ, validation.EXTRA_MODELS_ENV: value}
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def test_extra_models_are_read_at_import_and_allowed_on_every_field() -> None:
+    code = """
+from openmed_studio import main, validation
+
+extra = "Acme/Custom-Model"
+assert validation.EXTRA_MODELS == {extra, "other/model"}, validation.EXTRA_MODELS
+payloads = {
+    validation.ExtractRequest: {"text": "x"},
+    validation.DeidentifyRequest: {"text": "x"},
+    validation.DeidentifyBatchRequest: {"items": ["x"]},
+    validation.AnonymizePolicyRequest: {"text": "x", "policy": "hipaa_safe_harbor"},
+    validation.NerRequest: {"text": "x"},
+    validation.ZeroShotRequest: {"text": "x", "labels": ["Problem"]},
+    main.CompatExtractRequest: {"text": "x"},
+    main.CompatDeidentifyRequest: {"text": "x"},
+}
+for model, body in payloads.items():
+    assert model.model_validate({**body, "model_name": extra}).model_name == extra
+    try:
+        model.model_validate({**body, "model_name": extra.lower()})
+    except Exception:
+        pass
+    else:
+        raise AssertionError(f"{model.__name__} accepted a case-variant extra")
+print("OK")
+"""
+    result = _import_with_extra_models(" Acme/Custom-Model, other/model ,", code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "OK"
+
+
+def test_malformed_extra_models_stop_the_app_at_import() -> None:
+    # Both surfaces import validation at startup (the UI via service, the API via
+    # main), so a bad entry stops the app there instead of being ignored.
+    result = _import_with_extra_models(
+        "acme/ok,../escape", "import openmed_studio.main"
+    )
+    assert result.returncode != 0
+    assert validation.EXTRA_MODELS_ENV in result.stderr
+    assert "ValueError" in result.stderr
 
 
 # --- zero-shot (GLiNER) request guards --------------------------------------
@@ -397,9 +726,9 @@ def test_reidentify_rejects_oversize_mapping() -> None:
 
 
 def test_accepts_lang_and_model_name() -> None:
-    assert service.extract(ENGINE, "x", lang="fr", model_name="OpenMed/Some-Model") == {
-        "entities": []
-    }
+    assert service.extract(
+        ENGINE, "x", lang="fr", model_name=engine.DEFAULT_PII_MODEL
+    ) == {"entities": []}
 
 
 @pytest.mark.parametrize("lang", ["ar", "ja", "tr"])

@@ -1,22 +1,34 @@
 """Pydantic request models for de-identification (and the other capabilities).
 
-These import only ``pydantic``/``os``/``re`` (no web framework), so they serve double duty:
+These import only ``pydantic`` and the standard library, plus the registry data baked into
+``openmed_studio.engine`` (no web framework, no ``openmed``), so they serve double duty:
 the in-process seam (``openmed_studio.service``) uses ``model_validate`` to enforce the
-text/batch/mapping caps and value checks before any engine call, and the FastAPI service
-(``openmed_studio.main``) declares them directly as request bodies (free OpenAPI schemas +
-automatic 422s). The HTTP-only *response*/error/health/compat models live in ``main.py``,
-not here, so this module stays framework-free.
+text/batch/mapping caps, value checks and per-capability ``model_name`` allowlists before
+any engine call, and the FastAPI service (``openmed_studio.main``) declares them directly
+as request bodies (free OpenAPI schemas + automatic 422s). The HTTP-only
+*response*/error/health/compat models live in ``main.py``, not here, so this module stays
+framework-free.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
-from .engine import DeidMethod, Policy
+from .engine import (
+    DEFAULT_PII_MLX_MODEL,
+    DEFAULT_PII_MODEL,
+    NER_MODELS,
+    ZERO_SHOT_MODELS,
+    DeidMethod,
+    Policy,
+)
+
+EXTRA_MODELS_ENV = "OPENMED_STUDIO_EXTRA_MODELS"
 
 
 def _max_text_chars() -> int:
@@ -75,14 +87,17 @@ ClinicalText = Annotated[
 ]
 
 # The shape of an HF repo id ("org/model") or an openmed registry alias ("model"): one or
-# two "/"-separated segments of [A-Za-z0-9._-]. _check_model_name adds one rule on top:
-# no segment may start with "." (see ModelName for why).
+# two "/"-separated segments of [A-Za-z0-9._-]. _model_name_format adds one rule on top:
+# no segment may start with ".". The charset has no "~", "\", ":" or space and a name
+# can't open with "/", so no absolute or home-relative path passes, and the one-"/" cap
+# bounds the depth. The dot rule then rejects "." and ".." segments ("..", "../x", "x/..")
+# and hidden entries (".venv", ".streamlit/config.toml"). It costs no real model: the Hub
+# forbids a leading "." in a repo id, and no openmed registry alias or model id has one
+# (the tests pin it). Both messages name the rule, never the value.
 _MODEL_NAME_RE = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?")
 
 
-def _check_model_name(value: str | None) -> str | None:
-    if value is None:
-        return None
+def _model_name_format(value: str) -> str:
     value = value.strip()
     if not _MODEL_NAME_RE.fullmatch(value):
         raise ValueError("model_name must look like 'org/model' or 'model'")
@@ -91,27 +106,128 @@ def _check_model_name(value: str | None) -> str | None:
     return value
 
 
-# An optional HF/registry model id, format-checked. Both messages name the rule, never the
-# value. The charset has no "~", "\", ":" or space and a name can't open with "/", so no
-# absolute or home-relative path passes, and the one-"/" cap bounds the depth. The dot
-# rule then rejects "." and ".." segments ("..", "../x", "x/..") and hidden entries
-# (".venv", ".streamlit/config.toml"). It costs no real model: the Hub forbids a leading
-# "." in a repo id, and no openmed registry alias or model id has one (the tests pin it).
-#
-# RESIDUAL — this confines local loading, it doesn't forbid it. openmed resolves a name
-# against the filesystem BEFORE its registry (core/models.py::_resolve_model_name), so any
-# name that exists relative to the process's working directory — "tests", "models/x",
-# even a directory named like a registry alias, which then shadows the alias — loads as a
-# local model (local_files_only=True), while one that doesn't is a Hub id; nothing here
-# can tell them apart. It matters beyond a failed load: on the PII routes, a local dir
-# whose config.json names the privacy-filter family is loaded with
-# trust_remote_code=True (core/backends.py::create_privacy_filter_pipeline).
-ModelName = Annotated[str | None, AfterValidator(_check_model_name)]
+def _check_model_name(value: str | None) -> str | None:
+    """The format check every ``model_name`` field (and every extra model) runs first."""
+    if value is None:
+        return None
+    return _model_name_format(value)
 
-# A *required* model id (same format check, but not optional): clinical NER is one model
-# per domain, so an absent model_name would silently fall back to openmed's disease-only
-# default — make callers pick one explicitly.
-RequiredModelName = Annotated[str, AfterValidator(_check_model_name)]
+
+def _extra_models() -> frozenset[str]:
+    """Operator-added model ids, from ``OPENMED_STUDIO_EXTRA_MODELS`` (comma-separated).
+
+    Read once at import, like :func:`_max_text_chars` (set the env var before launching
+    the app). Entries are whitespace-trimmed and empty ones dropped, so a trailing comma
+    is harmless; each must then pass :func:`_check_model_name`. Unlike the text cap, where
+    a typo falls back to a safe default, a malformed entry raises and so stops the app at
+    startup: an allowlist has no safe guess to fall back to — dropping the entry would
+    silently refuse a model the operator meant to allow. The error names the entry (it is
+    the operator's own config, printed to the operator's console, never to a caller).
+
+    Every id listed here is accepted on EVERY ``model_name`` field, matched exactly (case
+    included), and the operator owns what it loads: openmed downloads an unregistered Hub
+    id without an integrity check, and adding a first-party privacy-filter repo
+    (``openai/privacy-filter``, ``OpenMed/privacy-filter-*``) re-opens openmed's
+    ``trust_remote_code=True`` path (``core/pii.py`` routes those names to
+    ``create_privacy_filter_pipeline``).
+    """
+    names: set[str] = set()
+    for entry in os.environ.get(EXTRA_MODELS_ENV, "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            names.add(_model_name_format(entry))
+        except ValueError as exc:
+            raise ValueError(
+                f"{EXTRA_MODELS_ENV} entry {entry!r} is not a valid model id: {exc}"
+            ) from None
+    return frozenset(names)
+
+
+# The operator's extra model ids and, from them plus engine.py's baked registry data, the
+# per-capability allowlists every model_name field is checked against (after the format
+# check). Exact string match, case included: openmed's registry lookup
+# (core/model_registry.py::get_model_info) is exact, so a case-variant of an allowed id
+# isn't recognized as that registry model — it would skip openmed's registry-backed
+# integrity check and get its own cache entry — while openmed's privacy-filter trust check
+# matches case-INsensitively. No variant slips through to a different resolution.
+EXTRA_MODELS = _extra_models()
+# PII (every de-identification route and both /compat bodies): the default model plus its
+# pre-converted MLX build. model_name=None still means "the default" — including openmed's
+# per-language default, which it swaps in for the default model when lang != "en".
+PII_MODEL_NAMES = frozenset({DEFAULT_PII_MODEL, DEFAULT_PII_MLX_MODEL}) | EXTRA_MODELS
+# Clinical NER: the curated NER_MODELS aliases only — not also each alias's HF repo id.
+# The UI sends aliases, and the baked NerModel (pinned by the drift guard) carries only the
+# alias, so accepting repo ids would mean baking a second id per model (or importing
+# openmed here) for a spelling no caller uses; one accepted name per model also keeps the
+# allowlist auditable at a glance. An API caller who wants a repo id gets it through
+# OPENMED_STUDIO_EXTRA_MODELS.
+NER_MODEL_NAMES = frozenset(m.alias for m in NER_MODELS.values()) | EXTRA_MODELS
+# Zero-shot: the curated ZERO_SHOT_MODELS aliases. PIIEngine.extract_zero_shot re-checks
+# this same set, since it would otherwise resolve any of openmed's registry aliases.
+ZERO_SHOT_MODEL_NAMES = (
+    frozenset(m.alias for m in ZERO_SHOT_MODELS.values()) | EXTRA_MODELS
+)
+
+
+def _allowed_in(
+    allowed: frozenset[str], capability: str
+) -> Callable[[str | None], str | None]:
+    """Build one capability's allowlist check (it runs after :func:`_check_model_name`)."""
+
+    def check(value: str | None) -> str | None:
+        if value is None or value in allowed:
+            return value
+        # Name the rule and the knob, never the value: a model_name field is one stray
+        # paste away from holding note text. The allowed ids aren't listed either — the
+        # operator's extras are their own business, not an anonymous caller's.
+        raise ValueError(
+            f"model_name is not an allowed {capability} model (an operator can allow "
+            f"more with {EXTRA_MODELS_ENV})"
+        )
+
+    return check
+
+
+# The per-capability model_name types. Each runs the format check FIRST (charset, one "/",
+# no "."-leading segment — its messages name the rule, never the value) and the allowlist
+# SECOND. The format check alone left any format-valid Hub id loadable — a download openmed
+# doesn't verify and ModelLoader._pipelines never evicts — and, on the PII routes, the
+# first-party privacy-filter names (openai/privacy-filter, OpenMed/privacy-filter-*, in any
+# casing) that openmed loads with trust_remote_code=True.
+#
+# RESIDUAL — the allowlist fixes the NAME, not what it resolves to. openmed resolves a
+# name against the filesystem BEFORE its registry or the Hub
+# (core/models.py::_resolve_model_name), relative to the process's working directory, so
+# a directory named like an allowed model shadows it — and on the PII routes a local dir
+# whose config.json names the privacy-filter family is loaded with trust_remote_code=True
+# (core/backends.py::create_privacy_filter_pipeline). Nothing in a request can tell the
+# two apart, so run the app from a directory nobody else can write to.
+#
+# An optional PII model id; None means openmed's default.
+PiiModelName = Annotated[
+    str | None,
+    AfterValidator(_check_model_name),
+    AfterValidator(_allowed_in(PII_MODEL_NAMES, "PII")),
+]
+
+# A *required* clinical-NER model id (not optional): NER is one model per domain, so an
+# absent model_name would silently fall back to openmed's disease-only default — make
+# callers pick one explicitly.
+NerModelName = Annotated[
+    str,
+    AfterValidator(_check_model_name),
+    AfterValidator(_allowed_in(NER_MODEL_NAMES, "clinical NER")),
+]
+
+# A *required* zero-shot model id, for the same reason (each GLiNER checkpoint is
+# domain-tuned).
+ZeroShotModelName = Annotated[
+    str,
+    AfterValidator(_check_model_name),
+    AfterValidator(_allowed_in(ZERO_SHOT_MODEL_NAMES, "zero-shot")),
+]
 
 
 _LOCALE_RE = re.compile(r"[A-Za-z]{2,3}(?:_[A-Za-z0-9]{2,8})?")
@@ -179,20 +295,21 @@ class ExtractRequest(_Strict):
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     use_smart_merging: bool = True
     lang: Lang = "en"
-    model_name: ModelName = None
+    model_name: PiiModelName = None
 
 
 class NerRequest(_Strict):
     """Clinical NER (token-classification) detection request.
 
-    Reuses ``ClinicalText`` and the ``model_name`` format guard, but its field set
-    differs from de-identification: ``model_name`` is required (NER is one model per
-    domain), the confidence default is ``0.0`` (openmed's NER default keeps all), and
-    there is no ``lang``/``use_smart_merging`` (``analyze_text`` has neither).
+    Reuses ``ClinicalText``, but its field set differs from de-identification:
+    ``model_name`` is required and must be a curated
+    :data:`~openmed_studio.engine.NER_MODELS` alias (NER is one model per domain), the
+    confidence default is ``0.0`` (openmed's NER default keeps all), and there is no
+    ``lang``/``use_smart_merging`` (``analyze_text`` has neither).
     """
 
     text: ClinicalText
-    model_name: RequiredModelName
+    model_name: NerModelName
     confidence_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     aggregation_strategy: Literal["simple", "first", "average", "max"] = "simple"
     group_entities: bool = False
@@ -202,14 +319,14 @@ class ZeroShotRequest(_Strict):
     """Zero-shot (GLiNER) extraction request: arbitrary labels + a domain-tuned model.
 
     Like :class:`NerRequest`, ``model_name`` is required (each GLiNER checkpoint is
-    domain-tuned; the UI passes a :data:`~openmed_studio.engine.ZERO_SHOT_MODELS` alias) and
+    domain-tuned) and must be a :data:`~openmed_studio.engine.ZERO_SHOT_MODELS` alias, and
     there is no ``lang``. Unlike it, the user supplies ``labels`` — normalized, deduped, and
     capped by ``ZeroShotLabels`` — and the confidence default is ``0.6`` (GLiNER's own
     recommendation), not NER's ``0.0``.
     """
 
     text: ClinicalText
-    model_name: RequiredModelName
+    model_name: ZeroShotModelName
     labels: ZeroShotLabels
     confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
 
@@ -223,7 +340,7 @@ class AnonymizePolicyRequest(_Strict):
     ``keep_mapping``**: reversibility is the policy's decision (by the profile's own flag — some
     surrogate profiles keep no key), so the seam surfaces whatever mapping the policy yields.
     ``policy`` is a required closed :data:`~openmed_studio.engine.Policy` Literal (mirroring
-    ``RequiredModelName``'s "make the caller choose" rationale), so an unknown/typo'd policy —
+    ``NerModelName``'s "make the caller choose" rationale), so an unknown/typo'd policy —
     or one of openmed's :data:`~openmed_studio.engine.HIDDEN_POLICIES` — is rejected here, with a
     PHI-safe message, before the engine. The surrogate knobs ``consistent``/``seed``/``locale``
     apply to the ``replace``-based policies.
@@ -234,7 +351,7 @@ class AnonymizePolicyRequest(_Strict):
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     use_smart_merging: bool = True
     lang: Lang = "en"
-    model_name: ModelName = None
+    model_name: PiiModelName = None
     consistent: bool = False
     seed: int | None = None
     locale: LocaleName = None
@@ -250,7 +367,7 @@ class _DeidentifyOptions(_Strict):
     # Detect tab / extract_pii, which exposes this too. Defaults on, as openmed does.
     use_smart_merging: bool = True
     lang: Lang = "en"
-    model_name: ModelName = None
+    model_name: PiiModelName = None
     keep_mapping: bool = False
     consistent: bool = False
     seed: int | None = None
@@ -282,14 +399,21 @@ class ReidentifyRequest(_Strict):
 
 
 __all__ = [
+    "EXTRA_MODELS",
+    "NER_MODEL_NAMES",
+    "PII_MODEL_NAMES",
+    "ZERO_SHOT_MODEL_NAMES",
     "AnonymizePolicyRequest",
     "DeidMethod",
     "DeidentifyBatchRequest",
     "DeidentifyRequest",
     "ExtractRequest",
     "Lang",
+    "NerModelName",
     "NerRequest",
+    "PiiModelName",
     "Policy",
     "ReidentifyRequest",
+    "ZeroShotModelName",
     "ZeroShotRequest",
 ]

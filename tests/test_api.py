@@ -301,6 +301,84 @@ def test_unknown_field_is_rejected(client) -> None:
     assert resp.status_code == 422
 
 
+# --- model_name allowlists ----------------------------------------------------
+
+_NOTE = "SENSITIVE-PATIENT-NAME-98765"
+
+# One body per route family that takes a model_name (all but the model_name itself).
+_MODEL_ROUTES = [
+    ("/pii/extract", {"text": _NOTE}),
+    ("/pii/deidentify", {"text": _NOTE}),
+    ("/pii/deidentify/batch", {"items": [_NOTE]}),
+    ("/pii/anonymize-policy", {"text": _NOTE, "policy": "hipaa_safe_harbor"}),
+    ("/ner", {"text": _NOTE}),
+    ("/zero-shot", {"text": _NOTE, "labels": ["Problem"]}),
+]
+
+# Names no route admits: two that openmed would load with trust_remote_code=True, an
+# arbitrary Hub id, and a pasted "MRN" that must not come back in the response.
+_DISALLOWED_MODELS = [
+    "openai/privacy-filter",
+    "OpenMed/Privacy-Filter-Multilingual",
+    "attacker/model",
+    "org/SECRET-MRN-4471",
+]
+
+
+def _assert_phi_safe_model_name_422(resp) -> None:
+    assert resp.status_code == 422
+    error = resp.json()["error"]
+    assert error["code"] == "validation_error"
+    assert any(
+        d["loc"][-1] == "model_name" and "is not an allowed" in d["msg"]
+        for d in error["details"]
+    )
+    assert _NOTE not in resp.text
+    assert "SECRET" not in resp.text
+
+
+@pytest.mark.parametrize("model_name", _DISALLOWED_MODELS)
+@pytest.mark.parametrize(("path", "body"), _MODEL_ROUTES)
+def test_disallowed_model_name_is_a_phi_safe_422(
+    client, path, body, model_name
+) -> None:
+    resp = client.post(path, json={**body, "model_name": model_name})
+    _assert_phi_safe_model_name_422(resp)
+
+
+@pytest.mark.parametrize("model_name", _DISALLOWED_MODELS)
+@pytest.mark.parametrize("path", ["/compat/pii/extract", "/compat/pii/deidentify"])
+def test_compat_disallowed_model_name_is_a_phi_safe_422(
+    monkeypatch, path, model_name
+) -> None:
+    # /compat relaxes unknown fields for OpenMed-REST parity, but not model_name: it
+    # calls the engine directly, so it takes the same PII allowlist.
+    with _client(target=_compat_app(monkeypatch)) as override:
+        resp = override.post(path, json={"text": _NOTE, "model_name": model_name})
+    _assert_phi_safe_model_name_422(resp)
+
+
+def test_default_pii_mlx_build_is_accepted(client) -> None:
+    from openmed_studio.engine import DEFAULT_PII_MLX_MODEL
+
+    resp = client.post(
+        "/pii/extract", json={"text": "x", "model_name": DEFAULT_PII_MLX_MODEL}
+    )
+    assert resp.status_code == 200
+
+
+def test_ner_rejects_an_aliass_repo_id(client) -> None:
+    # NER admits the curated aliases only, not their HF repo ids.
+    resp = client.post(
+        "/ner",
+        json={
+            "text": "x",
+            "model_name": "OpenMed/OpenMed-NER-DiseaseDetect-SuperClinical-141M",
+        },
+    )
+    assert resp.status_code == 422
+
+
 # --- auth (X-API-Key) --------------------------------------------------------
 
 

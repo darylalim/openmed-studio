@@ -28,6 +28,13 @@ if TYPE_CHECKING:
     from openmed import ModelLoader
 
 DEFAULT_PII_MODEL = "OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1"
+# The default model's pre-converted MLX build — a Hub repo openmed downloads as-is on the MLX
+# backend instead of converting DEFAULT_PII_MODEL on first run. With the default it is the
+# only PII model_name the app accepts unless an operator adds more through
+# OPENMED_STUDIO_EXTRA_MODELS (see validation.PII_MODEL_NAMES). It is an openmed registry
+# model id, so its download is integrity-checked like the default's;
+# tests/test_validation.py::test_default_pii_mlx_model_is_a_registry_model pins that.
+DEFAULT_PII_MLX_MODEL = "OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1-mlx"
 
 
 class NerModel(NamedTuple):
@@ -767,18 +774,33 @@ class PIIEngine:
         separately. ``infer`` also defaults to a on-disk model index that isn't shipped, so
         a one-entry :class:`~openmed.ner.ModelIndex` is fabricated in memory to point it at
         the resolved HF repo id.
+
+        ``model_name`` must be one the zero-shot allowlist admits
+        (:data:`~openmed_studio.validation.ZERO_SHOT_MODEL_NAMES`: the curated aliases plus
+        any ``OPENMED_STUDIO_EXTRA_MODELS``). The request model already enforces that, but this
+        method resolves *any* registry alias and forces ``family="gliner"`` onto it, so it
+        re-checks rather than trust every caller to have validated: without it the engine
+        would reach all ~3,300 openmed registry aliases. Both refusals are ``ValueError``s
+        (the seam's ``bad_options``) whose messages never quote ``model_name``.
         """
         from openmed import get_all_models
         from openmed.ner import ModelIndex, ModelRecord, NerRequest, infer
 
+        # Imported here, not at module level: validation imports this module, and it owns
+        # the allowlist (it bakes the curated aliases from ZERO_SHOT_MODELS above and adds
+        # the operator's extras), so the engine reads the very set requests are checked
+        # against rather than a copy that could drift from it.
+        from .validation import ZERO_SHOT_MODEL_NAMES
+
+        if model_name not in ZERO_SHOT_MODEL_NAMES:
+            raise ValueError("model_name is not an allowed zero-shot model")
         info = get_all_models().get(model_name)
         if info is None:
-            # model_name passed the format check but isn't a registry alias. The UI only ever
-            # sends a curated ZERO_SHOT_MODELS alias (pinned by the drift guard), so this is
-            # unreachable from the app — but a direct service caller (or an openmed rename)
-            # gets a clear message instead of an opaque "failed unexpectedly" (ValueError maps
-            # to a pass-through ServiceError in the seam).
-            raise ValueError(f"unknown zero-shot model: {model_name!r}")
+            # Allowed, but not an openmed registry alias: an operator extra that is a repo id
+            # rather than an alias, or a curated alias openmed renamed (the drift guard
+            # test_zero_shot_models_resolve_in_openmed catches that in CI). A clear message
+            # beats an opaque "failed unexpectedly".
+            raise ValueError("zero-shot model_name must be an openmed registry alias")
         model_id = info.model_id
         index = ModelIndex(
             models=(ModelRecord(id=model_id, family="gliner"),),

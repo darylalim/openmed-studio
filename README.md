@@ -114,6 +114,14 @@ Open `http://127.0.0.1:8080/docs` for interactive OpenAPI docs. Endpoints:
 Every non-2xx response uses one envelope: `{"error": {"code", "message", "details"}}`. Validation
 errors are PHI-safe — the offending request text is never echoed back.
 
+`model_name` is allowlisted per capability. The PII routes (and `/compat`) accept only the default
+model — omit `model_name` to get it, or OpenMed's own default for a non-English `lang` — or its
+pre-converted MLX build (see [Apple Silicon (MLX)](#apple-silicon-mlx)); `/ner` and `/zero-shot`
+accept only the ten curated aliases of their domain pickers (`NER_MODELS` / `ZERO_SHOT_MODELS` in
+[`engine.py`](openmed_studio/engine.py)). Anything else — another Hugging Face repo, another
+OpenMed registry alias, a different casing — is a 422 that doesn't echo the name. An operator can
+widen every allowlist with `OPENMED_STUDIO_EXTRA_MODELS` (below).
+
 ### Auth & configuration
 
 Authentication is off by default for local use (the service logs a startup warning). Set
@@ -132,6 +140,7 @@ curl -H "X-API-Key: secret" -H "Content-Type: application/json" \
 | `OPENMED_STUDIO_PRELOAD` | Truthy = warm the model at startup (in a worker thread) so the first request isn't slow. |
 | `OPENMED_STUDIO_COMPAT` | Truthy = mount an opt-in `/compat/pii/{extract,deidentify}` surface matching OpenMed's own REST shape (echoes the original text — off by default). |
 | `OPENMED_STUDIO_BACKEND` / `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Same as for the UI — backend pin and per-request text cap. |
+| `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids to accept as `model_name` on every route, in addition to the curated ones (exact match, case included; read at startup, and a malformed entry stops the app). You own what these load: OpenMed downloads an unregistered repo without an integrity check, and adding one of OpenMed's privacy-filter repos (`openai/privacy-filter`, `OpenMed/privacy-filter-*`) makes it run that repo's code (`trust_remote_code=True`). |
 
 > **Run it locally.** Like the UI, the API is a single-user / small-scale tool. An unset API key means
 > **no auth** — put it behind your own auth, TLS, or reverse proxy before exposing it or processing real
@@ -150,7 +159,8 @@ guards; the API adds only HTTP concerns (routing, auth, status codes) on top.
 - **Validation.** The Pydantic models in [`openmed_studio/validation.py`](openmed_studio/validation.py)
   gate every request before it reaches the model: the per-request text cap (50k chars, override with
   `OPENMED_STUDIO_MAX_TEXT_LENGTH`), the batch (≤100) and mapping (≤5,000) bounds, the language/method
-  enums, and the confidence range. On a rejection the service seam builds the error from only the
+  enums, the confidence range, and a per-capability allowlist on every `model_name` (widen it with
+  `OPENMED_STUDIO_EXTRA_MODELS`). On a rejection the service seam builds the error from only the
   field's location and message — never Pydantic's echoed input — so the offending text (PHI) isn't
   shown.
 - **Backend.** Inference is auto-detected: MLX on Apple Silicon when the `mlx` extra is installed,
@@ -186,10 +196,11 @@ uv sync --extra mlx
 OpenMed doesn't map the default model to a pre-converted MLX build, so it converts it on the fly on
 first run and caches the result beside the downloaded models, in
 `~/.cache/openmed/OpenMed_OpenMed-PII-SuperClinical-Small-44M-v1/` (each Clinical NER model gets a
-sibling directory the same way). To skip the conversion, pass a pre-converted `-mlx` Hugging Face
-repo — e.g. `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1-mlx`, the default model's own build —
-as `model_name` in an [HTTP API](#http-api-fastapi) request; OpenMed downloads it as-is. The UI has
-no PII-model picker. See the [MLX backend docs](https://openmed.life/docs/mlx-backend/).
+sibling directory the same way). To skip the conversion, pass the default model's own
+pre-converted build, `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1-mlx`, as `model_name` in an
+[HTTP API](#http-api-fastapi) request; OpenMed downloads it as-is. It is the only `-mlx` repo the
+API accepts unless an operator adds others with `OPENMED_STUDIO_EXTRA_MODELS`. The UI has no
+PII-model picker. See the [MLX backend docs](https://openmed.life/docs/mlx-backend/).
 
 ### Zero-shot (GLiNER)
 
@@ -248,8 +259,8 @@ open a network endpoint, so put it behind your own auth, TLS, or a reverse proxy
 don't run it on a network with real PHI as-is. The guards that protect the model are enforced in-process
 by the service seam — so **both** the UI and the API inherit them:
 
-- The text / batch / mapping caps, the value / enum / format checks, backend pinning, and not echoing
-  request input on a validation error.
+- The text / batch / mapping caps, the value / enum / format checks, the per-capability
+  `model_name` allowlists, backend pinning, and not echoing request input on a validation error.
 - Concurrent API requests are serialized on the shared model (one inference at a time).
 
 The API layer adds the HTTP-only protections back on top: **`X-API-Key` auth** (via

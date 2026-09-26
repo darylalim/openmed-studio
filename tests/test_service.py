@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 
 from openmed_studio import PIIEngine, service
+from openmed_studio.engine import DEFAULT_PII_MLX_MODEL
 from openmed_studio.service import ServiceError
 
 
@@ -536,9 +537,12 @@ def test_run_classifies_model_load_error_as_bad_options() -> None:
     # A model_name that fails to load is the caller's to fix, so _run must catch ValueError
     # BEFORE ImportError — swap them and this becomes a "dependency" 503 telling the caller
     # to install something. openmed's message is PHI-free by contract, so it passes through.
-    message = "Could not load model org/missing. Verify the model ID or local path."
+    # e.g. the default's pre-converted MLX build requested on a host without MLX.
+    message = f"Could not load model {DEFAULT_PII_MLX_MODEL}. Verify the model ID."
     with pytest.raises(ServiceError) as excinfo:
-        service.extract(_raising(_LoadError(message)), "x", model_name="org/missing")
+        service.extract(
+            _raising(_LoadError(message)), "x", model_name=DEFAULT_PII_MLX_MODEL
+        )
     assert excinfo.value.kind == "bad_options"
     assert str(excinfo.value) == message
 

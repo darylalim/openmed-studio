@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from openmed_studio import DEFAULT_PII_MODEL, HIDDEN_POLICIES, POLICY_MODELS, PIIEngine
+from openmed_studio.engine import DEFAULT_PII_MLX_MODEL
 
 if TYPE_CHECKING:
     from openmed import ModelLoader
@@ -255,7 +256,7 @@ def test_deidentify_forwards_every_openmed_param_or_allowlists_it(monkeypatch) -
     engine = PIIEngine(loader=cast("ModelLoader", object()))
     # Pass model_name so the optional model_name kwarg is actually threaded through
     # (_model_kwargs only adds it when set); every other forwarded kwarg is unconditional.
-    engine.deidentify("x", model_name="OpenMed/Some-Model")
+    engine.deidentify("x", model_name=DEFAULT_PII_MLX_MODEL)
     forwarded = set(captured)  # includes "text", which is captured positionally
 
     # The guard: nothing openmed accepts is left unaccounted for.
@@ -540,18 +541,80 @@ def test_extract_zero_shot_delegates_to_openmed(monkeypatch) -> None:
     assert engine.is_loaded is False  # zero-shot never built the shared loader
 
 
-def test_extract_zero_shot_unknown_model_raises_value_error(monkeypatch) -> None:
-    # A model_name that passes validation's format check but isn't a registry alias must
-    # raise a clear ValueError (the seam maps it to a pass-through message) rather than a
-    # bare KeyError that surfaces as the opaque "failed unexpectedly".
+def test_extract_zero_shot_unregistered_alias_raises_value_error(monkeypatch) -> None:
+    # An allowed model_name that isn't (or is no longer) a registry alias must raise a
+    # clear ValueError (the seam maps it to a pass-through message) rather than a bare
+    # KeyError that surfaces as the opaque "failed unexpectedly".
     import openmed
 
     monkeypatch.setattr(openmed, "get_all_models", dict)  # empty registry
     engine = PIIEngine()
-    with pytest.raises(ValueError, match="unknown zero-shot model"):
+    with pytest.raises(ValueError, match="must be an openmed registry alias"):
         engine.extract_zero_shot(
-            "x", model_name="org/not-a-real-alias", labels=["Problem"]
+            "x", model_name="zeroshot_disease_small_166m", labels=["Problem"]
         )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "zeroshot_disease_large_459m",  # a registry zero-shot alias outside the ten
+        "disease_detection_superclinical_141m",  # a token-classification model
+        "OpenMed/OpenMed-ZeroShot-NER-Disease-Small-166M",  # a curated alias's repo id
+        "SECRET-MRN-4471",
+    ],
+)
+def test_extract_zero_shot_refuses_a_name_the_allowlist_does_not_admit(
+    monkeypatch, name
+) -> None:
+    # extract_zero_shot resolves ANY registry alias and forces family="gliner" onto it,
+    # so it re-checks validation's zero-shot allowlist itself: a caller that skips the
+    # request model still can't reach openmed's other ~3,300 aliases. openmed is never
+    # consulted — not its registry, not infer — and the message never quotes the name.
+    import openmed
+    import openmed.ner as ner
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("openmed was reached")
+
+    monkeypatch.setattr(openmed, "get_all_models", fail)
+    monkeypatch.setattr(ner, "infer", fail)
+    with pytest.raises(ValueError, match="not an allowed zero-shot model") as excinfo:
+        PIIEngine().extract_zero_shot("x", model_name=name, labels=["Problem"])
+    assert name not in str(excinfo.value)
+
+
+def test_extract_zero_shot_accepts_an_operator_extra(monkeypatch) -> None:
+    # The engine checks the same set requests are validated against, extras included —
+    # it doesn't keep a narrower copy of its own. (The set is built at import from
+    # OPENMED_STUDIO_EXTRA_MODELS; patching it stands in for a relaunch.)
+    import openmed
+    import openmed.ner as ner
+
+    from openmed_studio import validation
+
+    monkeypatch.setattr(
+        validation,
+        "ZERO_SHOT_MODEL_NAMES",
+        validation.ZERO_SHOT_MODEL_NAMES | {"zeroshot_disease_large_459m"},
+    )
+    repo_id = "OpenMed/OpenMed-ZeroShot-NER-Disease-Large-459M"
+    monkeypatch.setattr(
+        openmed,
+        "get_all_models",
+        lambda: {"zeroshot_disease_large_459m": SimpleNamespace(model_id=repo_id)},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_infer(request, *, index):
+        captured["model_id"] = request.model_id
+        return SimpleNamespace(entities=[])
+
+    monkeypatch.setattr(ner, "infer", fake_infer)
+    PIIEngine().extract_zero_shot(
+        "x", model_name="zeroshot_disease_large_459m", labels=["Problem"]
+    )
+    assert captured["model_id"] == repo_id
 
 
 def test_zero_shot_available_and_default_labels_delegate(monkeypatch) -> None:

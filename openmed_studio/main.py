@@ -47,8 +47,8 @@ from .validation import (
     DeidentifyBatchRequest,
     DeidentifyRequest,
     ExtractRequest,
-    ModelName,
     NerRequest,
+    PiiModelName,
     ReidentifyRequest,
     ZeroShotRequest,
 )
@@ -224,10 +224,15 @@ class ErrorResponse(_Strict):
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {
         "model": ErrorResponse,
-        "description": "Invalid options, including a model_name that fails to load.",
+        "description": "Invalid options, including an allowed model_name that fails "
+        "to load.",
     },
     401: {"model": ErrorResponse, "description": "Missing or invalid API key."},
-    422: {"model": ErrorResponse, "description": "Request failed schema validation."},
+    422: {
+        "model": ErrorResponse,
+        "description": "Request failed schema validation, including a model_name the "
+        "allowlist doesn't admit.",
+    },
     500: {"model": ErrorResponse, "description": "Unexpected server error."},
     503: {"model": ErrorResponse, "description": "Inference backend unavailable."},
 }
@@ -272,6 +277,8 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 # request carry upstream-only fields (notably `keep_alive`) without a 422, so an
 # OpenMed-REST client can post unchanged. `lang` is a plain str (not the Lang Literal)
 # for the same parity reason; an unsupported value still fails in the seam's engine call.
+# `model_name` is NOT relaxed for parity: it takes the same PII allowlist as the primary
+# routes, since these routes reach the engine directly.
 
 
 class CompatExtractRequest(BaseModel):
@@ -281,7 +288,7 @@ class CompatExtractRequest(BaseModel):
     lang: str = "en"
     use_smart_merging: bool = True
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    model_name: ModelName = None
+    model_name: PiiModelName = None
     keep_alive: str | int | None = Field(
         default=None,
         description="Accepted for OpenMed-REST parity; ignored (no model lifecycle).",
@@ -300,7 +307,7 @@ class CompatDeidentifyRequest(BaseModel):
     consistent: bool = False
     seed: int | None = None
     confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    model_name: ModelName = None
+    model_name: PiiModelName = None
     keep_alive: str | int | None = Field(
         default=None,
         description="Accepted for OpenMed-REST parity; ignored (no model lifecycle).",
