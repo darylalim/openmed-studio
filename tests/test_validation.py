@@ -621,7 +621,11 @@ _SCRUBBED_KNOBS = {
 
 def test_operator_knobs_are_absent_and_their_defaults_hold() -> None:
     # What the fast suite assumes: none of the scrubbed knobs is set, so the import-time
-    # ones took their defaults.
+    # ones took their defaults. The knob list here must be conftest's, or a knob added there
+    # would never be exercised by the subprocess test below.
+    import conftest
+
+    assert set(_SCRUBBED_KNOBS) == set(conftest.SCRUBBED_KNOBS)
     assert not set(_SCRUBBED_KNOBS) & set(os.environ)
     assert validation.EXTRA_MODELS == frozenset()
     assert validation.MAX_TEXT_CHARS == 50_000

@@ -16,7 +16,8 @@ to an HTTP status. ``ValueError`` from openmed (bad options — including an all
 openmed 2.3+'s ``ModelLoadError`` is a ``ValueError`` as well as an ``ImportError``) and
 ``RuntimeError``/``OSError`` (the backend itself is unavailable — e.g. openmed's
 model-integrity error when it can't complete the verified download of an uncached registry
-model under ``HF_HUB_OFFLINE=1``) map to distinct kinds/messages — the 400-vs-503 split, carried by ``.kind`` here rather than an HTTP status code. openmed's own
+model under ``HF_HUB_OFFLINE=1``) map to distinct kinds/messages — the 400-vs-503 split, carried by
+``.kind`` here rather than an HTTP status code. openmed's own
 internal-invariant errors are ``RuntimeError``s too, but they mean the request tripped a bug,
 not that the backend is down, so they are carved out as ``internal`` (500). :func:`_run`
 explains why its ``except`` order is load-bearing.
@@ -122,8 +123,9 @@ def working_directory_conflicts() -> tuple[str, ...]:
 def check_working_directory() -> bool:
     """Log a warning if the working directory would make the guard refuse model calls.
 
-    Both surfaces call this once at startup — ``main.create_app`` and the Streamlit app's
-    ``st.cache_resource``'d engine factory — so an operator learns at launch, rather than
+    Both surfaces call this once per process — ``main.create_app`` at startup, and the
+    Streamlit app's ``st.cache_resource``'d engine factory when the first session loads (not
+    at ``streamlit run``) — so an operator learns early, rather than
     from the first 503 (or, in the UI, "Model backend unavailable"), that a directory named
     like a model, or an ``OpenMed``/``openai`` entry (on a case-insensitive filesystem an
     ``openmed`` folder counts), sits where the app was started. The warning names the

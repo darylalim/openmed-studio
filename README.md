@@ -273,7 +273,8 @@ the model are enforced in-process by the service seam — so **both** the UI and
   as unavailable (503 over HTTP) and logging the path — when a name it would load, or an `OpenMed`
   or `openai` entry, exists in the directory the app was started from. Start it from a directory
   that has neither (the repo root is fine; on macOS and Windows an `openmed` folder counts too).
-  Both the UI and the API check at startup and log a warning naming any such entry, and the API's
+  The API checks at startup and the UI when its first session loads; both log a warning naming any
+  such entry, and the API's
   `/health` reports `working_directory_clean` (a yes/no, never the path).
 - Concurrent API requests are serialized on the shared model (one inference at a time).
 
@@ -288,7 +289,10 @@ uniform `{"error": {…}}` envelope, PHI-safe 422s, and the opt-in OpenMed-REST 
    port. That includes making the server download and keep in memory every model the app
    accepts — about 4.7B parameters (roughly 19 GB at 32-bit precision) of PII and NER models, by
    cycling `lang` and the `/ner` domains, plus the zero-shot models if the `gliner` extra is
-   installed. The allowlists cap that; only the key stops it.
+   installed. The allowlists cap that; for the API, only the key stops it. **The key protects
+   the API only — the Streamlit UI has no authentication of its own**, and its language and domain
+   pickers reach the same model loads, so keep the UI on `127.0.0.1` (item 2) or behind a reverse
+   proxy that authenticates.
 2. Keep the API's default `127.0.0.1` bind, or put TLS or a reverse proxy in front of it. **The
    Streamlit UI has no such default**: Streamlit listens on all interfaces unless told otherwise,
    and the shipped `.streamlit/config.toml` doesn't tell it. Start the UI with
@@ -298,7 +302,8 @@ uniform `{"error": {…}}` envelope, PHI-safe 422s, and the opt-in OpenMed-REST 
    the working directory before each model call, but it can't close the gap between its check and
    OpenMed's own, and a directory named like a model can make OpenMed run code from it. If the
    guard ever fires (a `LocalModelPathError` in the log, or `working_directory_clean: false`),
-   remove the entry **and restart** the app: OpenMed caches what it loads, so a model it already
+   remove the entry (or start from a directory without it) **and restart** the app: OpenMed caches
+   what it loads, so a model it already
    picked up from that directory keeps being served after the directory is gone.
 4. Optionally, once the models you serve are downloaded, set `HF_HUB_OFFLINE=1` (and OpenMed's
    `OPENMED_OFFLINE=1`) so no request can trigger a download.

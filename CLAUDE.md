@@ -486,7 +486,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       from only `loc`/`msg` (never Pydantic's `input`).
     - `_run()` — translates, **in this order**, `ValueError`→`kind="bad_options"` (including
       openmed's `ModelLoadError`, so an allowed `model_name` that fails to load is a 400, the
-      caller's to fix), `RuntimeError`/`OSError`→`kind="unavailable"` (the backend can't serve at all — e.g.
+      caller's to fix), `RuntimeError`/`OSError`→`kind="unavailable"` (the backend can't serve at
+      all — e.g.
       openmed's model-integrity error for an uncached registry model under `HF_HUB_OFFLINE=1`, or
       the engine's own `LocalModelPathError`)
       except openmed's own `InternalError`/`InferenceError`, which are `RuntimeError`s too but
@@ -537,7 +538,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `require_api_key` (a no-op unless `OPENMED_STUDIO_API_KEY` is set; `create_app` warns at startup when
     it's unset, and runs `service.check_working_directory()` once); `/health` adds
     `working_directory_clean` (checked per request, a bare boolean — `status` stays `"ok"`, since the
-    process is up and a restart from the same directory wouldn't help); an opt-in `OPENMED_STUDIO_PRELOAD` lifespan warms the model in a threadpool. The
+    process is up and a restart from the same directory wouldn't help); an opt-in
+    `OPENMED_STUDIO_PRELOAD` lifespan warms the model in a threadpool. The
     `/compat` surface (mounted only when `OPENMED_STUDIO_COMPAT` is truthy) mirrors OpenMed's own REST
     shape (`pii_entities`/`num_entities_redacted`/`timestamp`/echoed `original_text`, `keep_alive`
     ignored) for `/compat/pii/{extract,deidentify}` only; it calls the engine directly for the raw
@@ -546,7 +548,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `PiiModelName` allowlist and `lang` against the same `Lang` literal — unknown *fields* are
     relaxed for parity, those two are not: a plain-`str` `lang` let a caller name one of the 20
     languages whose openmed default is `OpenMed/privacy-filter-multilingual`, which openmed swaps in
-    for the default model and loads with `trust_remote_code=True`, with no `model_name` sent). Caveat: this compat shape is **hand-authored
+    for the default model and loads with `trust_remote_code=True`, with no `model_name` sent).
+    Caveat: this compat shape is **hand-authored
     against OpenMed's REST spec** and — unlike everything in "OpenMed API (verified against installed
     v…)" — cannot be pinned by a drift guard (those fields don't exist in the installed `openmed`
     package), so treat it as best-effort parity, not a verified contract. **FastAPI 0.139 includes
@@ -704,7 +707,9 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   (the README's "Security & notes" says the same for users):
   1. set `OPENMED_STUDIO_API_KEY` (unset = every model route open — including to the bounded
      model-download DoS the allowlists leave, see the gotcha's *(c)*; the key is its real
-     mitigation);
+     mitigation **for the API only** — the Streamlit UI has no auth of its own, and its
+     language/domain pickers reach the same loads, so it must stay on `127.0.0.1` (rule 2) or sit
+     behind an authenticating reverse proxy);
   2. keep the API's default `127.0.0.1` bind (`OPENMED_STUDIO_HOST`), or put TLS / a reverse proxy
      in front. **The Streamlit UI has no such default:** with `server.address` unset — and the
      shipped `.streamlit/config.toml` sets no `[server]` section — Streamlit binds `0.0.0.0`
@@ -901,15 +906,20 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   *gliner's backbone path — a CWD-relative name the guard neither lists nor covers by
   namespace.* gliner resolves the zero-shot repo id CWD-first too (that one the guard checks), but
   each checkpoint's `gliner_config.json` also names a backbone — `"model_name":
-  "microsoft/deberta-v3-small"` in the three cached curated checkpoints (Disease, Chemical,
-  Oncology) — and gliner 0.2.29's `modeling/encoder.py:139-149` checks
+  "microsoft/deberta-v3-small"` in all ten curated checkpoints (checked on the Hub) — and
+  gliner 0.2.29's `modeling/encoder.py:139-149` checks
   `Path(config.model_name) / "adapter_config.json"` relative to the CWD and, **only when `peft` is
   importable**, applies it (`LoraConfig.from_pretrained` + `get_peft_model`; without `peft` it only
   warns). It also calls `AutoConfig`/`AutoTokenizer.from_pretrained(config.model_name)`, which
   transformers resolves CWD-first, when a checkpoint lacks an `encoder_config`
   (`encoder.py:89-91`) or a `tokenizer_config.json` (`model.py:1213-1222`). Inert today: `peft` is
-  not in `uv.lock`, and those checkpoints ship both. So `microsoft/` is **not** guarded — re-check
-  all three conditions on every gliner bump, and before adding `peft` or a zero-shot checkpoint.
+  not in `uv.lock`, and those checkpoints ship both. One more line to watch: when the backbone is
+  loaded *by name* (`from_pretrained=True`, i.e. `backbone_from_pretrained`), `encoder.py:130-133`
+  calls `ModelClass.from_pretrained(model_name, trust_remote_code=True)` — CWD-first, with remote
+  code allowed; loading a trained checkpoint builds the DeBERTa-v2 backbone from its bundled
+  `encoder_config` instead (`encoder.py:119-124`, `136-137`). So `microsoft/` is **not** guarded —
+  re-check all four conditions on every gliner bump, and before adding `peft` or a zero-shot
+  checkpoint.
   *(c) Unverified, unevicted downloads.* Any other format-valid Hub id downloads without an
   integrity check (`core/model_integrity.py:167-175`; openmed's pipeline path exposes no
   `require_integrity` — only `ModelLoader.load_model` takes one, `core/models.py:168-172`) and
@@ -1104,7 +1114,8 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `ValueError`. `_run` catches `ValueError` first, so a load failure lands in `bad_options` (400,
   with openmed's "Could not load model <name>. Verify the model ID …" message, which is PHI-free
   only because nothing but an allowlisted name reaches openmed — it quotes the name it was given,
-  `core/models.py:330`; see the gotcha above) — and in `deidentify_batch`, one `{"ok": False}` row per note rather than an
+  `core/models.py:330`; see the gotcha above) — and in `deidentify_batch`, one `{"ok": False}` row
+  per note rather than an
   abort — as the plain `ValueError` it replaced did in 2.1, while an offline/integrity failure
   (`ModelIntegrityError`/`OfflineModeError`, both `RuntimeError`; e.g. an uncached *registry*
   model under `HF_HUB_OFFLINE=1`, whose verified download openmed can't complete) is

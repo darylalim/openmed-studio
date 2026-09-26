@@ -844,7 +844,7 @@ def test_guard_refusal_tells_the_operator_to_restart(monkeypatch, tmp_path) -> N
     with pytest.raises(LocalModelPathError) as excinfo:
         _call(PIIEngine(loader=cast("ModelLoader", object())), "extract")
     message = str(excinfo.value)
-    assert "restart the app from a clean directory" in message
+    assert "then restart the app" in message
     assert "caches" in message
 
 

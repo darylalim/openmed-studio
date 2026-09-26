@@ -622,8 +622,9 @@ class LocalModelPathError(RuntimeError):
 
 # The phrase every guard refusal and the startup warning end with (see LocalModelPathError).
 _RESTART_HINT = (
-    "remove the entry and restart the app from a clean directory (had openmed already "
-    "resolved it, its caches keep serving that resolution until the process restarts)"
+    "remove the entry or start from a directory without it, then restart the app (had "
+    "openmed already resolved it, its caches keep serving that resolution until the "
+    "process restarts)"
 )
 
 

@@ -750,7 +750,7 @@ def test_check_working_directory_warns_naming_the_entries(
     assert record.levelno == logging.WARNING
     assert "'openai'" in record.getMessage()
     assert os.getcwd() in record.getMessage()
-    assert "restart the app from a clean directory" in record.getMessage()
+    assert "then restart the app" in record.getMessage()
 
 
 def test_check_working_directory_is_silent_when_clean(

@@ -204,7 +204,8 @@ class HealthResponse(_Strict):
         description="False while the directory the service was started from holds an entry "
         "the engine's local-path guard refuses — a directory named like a model the service "
         "admits, or a top-level OpenMed/openai entry — so the model calls that could resolve "
-        "it fail with 503. Checked on each request; the entry itself is only logged. After "
+        "it fail with 503. Checked on each request; the entry itself is never reported "
+        "here — it is logged at startup and on each refused call. After "
         "it has been False, restart the service from a clean directory: a model openmed "
         "already resolved from the entry stays cached until the process restarts."
     )
