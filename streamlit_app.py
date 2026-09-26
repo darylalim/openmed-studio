@@ -907,6 +907,16 @@ def _render_reidentify() -> None:
             key="dl_reid",
             on_click=_toast_downloaded,
         )
+        # A {surrogate: original} mapping has no span offsets, so text that merely
+        # equals a surrogate is restored too (the strict xfail in tests/test_engine.py).
+        # A caption, like the de-identify tabs' export caveat: it is a standing "review
+        # the output" note, not a posture-weakening choice the user just made (that
+        # gets st.warning).
+        st.caption(
+            "Restoration swaps each surrogate back wherever its text appears, so a "
+            "short one (e.g. an age replaced by `2`) can also change matching text "
+            "elsewhere, even inside other numbers. Check the result."
+        )
 
 
 @st.fragment

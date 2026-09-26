@@ -868,7 +868,7 @@ class PIIEngine:
 
     @staticmethod
     def reidentify(deidentified_text: str, mapping: dict[str, str]) -> str:
-        """Restore originals from a kept mapping, in a single correct pass.
+        """Restore originals from a kept mapping, in a single pass.
 
         openmed.reidentify applies one ``str.replace`` per *plain* entry, which corrupts
         output two ways: a key that is a substring of another (``ALIAS_1`` vs ``ALIAS_10``,
@@ -889,6 +889,10 @@ class PIIEngine:
         (ordinals are assigned in entity order upstream, so ordinal order *is* document
         order), falling back to leaving the surface untouched once a group is exhausted —
         the same contract openmed's own reader has, minus its substring bug for plain keys.
+
+        One limit no mapping-only restore can avoid: the mapping has no span offsets, so text
+        that merely equals a surrogate (an age surrogated to ``6`` vs. "6 weeks") is restored
+        too — pinned by the strict xfail ``test_reidentify_restores_only_the_surrogate_spans``.
         """
         if not mapping:
             return deidentified_text

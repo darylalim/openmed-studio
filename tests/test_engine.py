@@ -348,6 +348,31 @@ def test_reidentify_treats_a_malformed_occurrence_key_as_literal_text() -> None:
     assert PIIEngine.reidentify(f"see {bad} here", {bad: "Ann"}) == "see Ann here"
 
 
+@pytest.mark.xfail(
+    reason="PIIEngine.reidentify restores from the mapping alone, which carries no "
+    "span offsets, so ordinary text equal to a plain surrogate key is 'restored' too "
+    "(here the dose '10 mg' becomes '40 mg'). An XPASS means the restore became "
+    "span-aware.",
+    raises=AssertionError,
+    strict=True,
+)
+def test_reidentify_restores_only_the_surrogate_spans() -> None:
+    # Real model output from the Anonymize tab's defaults (replace, Deterministic,
+    # seed 42): the model tags the age "40", whose surrogate is "10" — and the
+    # untouched dose is also "10". Nothing in {surrogate: original} says which "10"
+    # was the age, so the single pass restores both. Currently yields
+    # "... Started amlodipine 40 mg once daily. ...".
+    restored = PIIEngine.reidentify(
+        "Mr. Amanda Coffey, 10, reviewed in hypertension clinic. BP 150/95. "
+        "Started amlodipine 10 mg once daily. Recheck in 4 weeks.",
+        {"10": "40", "Coffey": "Brooks", "Amanda": "Daniel"},
+    )
+    assert restored == (
+        "Mr. Daniel Brooks, 40, reviewed in hypertension clinic. BP 150/95. "
+        "Started amlodipine 10 mg once daily. Recheck in 4 weeks."
+    )
+
+
 # --- analyze (clinical NER) delegation (no model) ---------------------------
 
 

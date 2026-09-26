@@ -146,7 +146,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
 | `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
-| `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
+| `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` plus a `strict` xfail (`test_reidentify_restores_only_the_surrogate_spans`) pinning its mapping-only limit, where text that merely equals a surrogate is restored too (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES` |
 | `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx2` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s (including one per `HIDDEN_POLICIES` name on `/pii/anonymize-policy`), `X-API-Key` auth (401/accept/reject + open `/health`), the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated), and that `TestClient` is built on `httpx2` (see "Known gotchas") |
@@ -747,7 +747,7 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   reversibility. This only surfaces under `--run-model` (a stub can't model openmed's OR), so
   `tests/test_engine.py::test_engine_deidentify_policy_masks_and_pseudonymizes` pins both branches
   (the reversible one for each offered key-keeping profile).
-- **Re-identification has TWO independent hazards, and each side owns one of them.**
+- **Re-identification has THREE hazards; the app closes two and can only warn about the third.**
   *(a) openmed mis-restores overlapping plain keys.* It applies `str.replace` per entry, so a key
   that is a prefix/substring of another (e.g. `ALIAS_1` vs `ALIAS_10`, or unbracketed
   `hash`/`replace` surrogates) corrupts the longer one, and a replacement value that contains
@@ -770,7 +770,26 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   group is exhausted. The prefix is **baked** in `engine.py` (`_OCCURRENCE_MAPPING_PREFIX`) rather
   than imported, because `reidentify` is a pure lock-free `@staticmethod` with no openmed import;
   `tests/test_pii_pure.py::test_occurrence_prefix_matches_openmed` pins the copy against openmed's
-  private constant so a rename fails CI. The two hazards are disjoint — both must be handled.
+  private constant so a rename fails CI. (a) and (b) are disjoint — both must be handled.
+  *(c) A plain key that also occurs as ordinary text is "restored" there too — and the mapping
+  alone can't fix that.* `{surrogate: original}` carries no span offsets and the single pass
+  matches each key as a raw substring, so text that merely equals a surrogate is
+  indistinguishable from it. `replace` hits it hardest: an age's surrogate is any integer 0–120
+  (`core/anonymizer/registry.py::_gen_age`) — a single digit 10 times in 121 — and under the
+  `Anonymize` tab's defaults (`Deterministic`, seed 42) it is fixed per age. Verified end-to-end
+  on synthetic notes: age 40 → `10`, so a 40-year-old who "started amlodipine 10 mg" comes back
+  on "40 mg"; age 65 → `2`, so "type 2 diabetes" / "review in 2 weeks" return as "type 65" /
+  "65 weeks" and — since a key matches mid-number too — "BP 122/80, HbA1c 7.2%" as
+  "BP 16565/80, HbA1c 7.65%". (GDPR Art. 9 health and China PIPL mask `AGE`/`DATE` to bracketed
+  placeholders and `format_preserve` masks ages, so that age case is a `replace`-method one.) A
+  word-boundary guard would stop only a match inside a digit run (`122` → `16565`); it misses
+  `7.2%` → `7.65%` (`.` is a boundary) and every whole-token match. Telling those apart needs
+  entity offsets into the de-identified text, which neither the Re-identify tab nor
+  `POST /pii/reidentify` takes (and pasted text may have been edited). So it is documented,
+  not fixed: `tests/test_engine.py::test_reidentify_restores_only_the_surrogate_spans` is a
+  `strict` xfail on the amlodipine output (an XPASS means the restore became span-aware), and
+  the Re-identify tab captions every restored result: a short surrogate can change matching
+  text elsewhere — check it.
 - **`locale` widens DETECTION in openmed 2.x, not just surrogate generation — in the UI through
   regional overlays, not the sweep's 28→35.** The `Advanced` → "Surrogate locale" box reads like
   a Faker knob, and through 1.x it was one. In 2.x the locale reaches both pattern stages:

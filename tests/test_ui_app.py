@@ -878,6 +878,8 @@ def test_reidentify_renders_text(monkeypatch):
 
     assert not at.exception
     assert "[[STUB-RESTORED]]" in _html(at)
+    # The collision caveat (a mapping-only restore also rewrites text equal to a surrogate).
+    assert any("Restoration swaps each surrogate" in c.value for c in at.caption)
 
 
 def test_reidentify_invalid_json_errors_without_call(monkeypatch):
