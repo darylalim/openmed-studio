@@ -222,7 +222,10 @@ class ErrorResponse(_Strict):
 
 # OpenAPI: document the envelope for the error statuses the model routes emit.
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    400: {"model": ErrorResponse, "description": "Invalid options for the request."},
+    400: {
+        "model": ErrorResponse,
+        "description": "Invalid options, including a model_name that fails to load.",
+    },
     401: {"model": ErrorResponse, "description": "Missing or invalid API key."},
     422: {"model": ErrorResponse, "description": "Request failed schema validation."},
     500: {"model": ErrorResponse, "description": "Unexpected server error."},

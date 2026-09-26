@@ -137,7 +137,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | File | Pins |
 |------|------|
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
-| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
+| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI), and the openmed-sync guards |
 | `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate, plus pins on the description prose the fast guard can't check — the sweep masking only what its patterns match under the four keep-dates profiles (and nothing with Clinical Minimal Redaction's optional sweep off), the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
@@ -379,12 +379,18 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       so the seam stays framework-free (no status codes) yet a served caller gets the right response.
     - `_validate()` — `model_validate()`, raising a **PHI-safe** `ServiceError` (`kind="validation"`)
       from only `loc`/`msg` (never Pydantic's `input`).
-    - `_run()` — translates `ValueError`→`kind="bad_options"`, `RuntimeError`/`OSError`→
-      `kind="unavailable"`, `ImportError`→`kind="dependency"`+pass-the-message (openmed's
-      `MissingDependencyError` subclasses `ImportError`; the zero-shot tab/route surfaces its "run
-      `uv sync --extra gliner`" hint through this branch), and any other exception→`kind="internal"`
-      (generic message, detail to the log) into `ServiceError` (the old 400/503 split, now carried by
-      `.kind` and capability-neutral since NER/zero-shot flow through it).
+    - `_run()` — translates, **in this order**, `ValueError`→`kind="bad_options"` (including
+      openmed's `ModelLoadError`, so a `model_name` that fails to load is a 400, the caller's to
+      fix), `RuntimeError`/`OSError`→`kind="unavailable"` (the backend can't serve at all — e.g.
+      openmed's model-integrity error for an uncached registry model under `HF_HUB_OFFLINE=1`),
+      `ImportError`→`kind="dependency"`+pass-the-message (openmed's `MissingDependencyError`
+      subclasses `ImportError`; `POST /zero-shot` without the `gliner` extra passes through
+      openmed's own "Install with `pip install openmed[gliner]`." — the Streamlit tab never gets
+      that far, since it checks `zero_shot_available()` first and shows its own
+      `uv sync --extra gliner` hint), and any other exception→`kind="internal"` (generic message,
+      detail to the log) into `ServiceError` (the old 400/503 split, now carried by `.kind` and
+      capability-neutral since NER/zero-shot flow through it). The order is load-bearing — see
+      "Known gotchas" → *openmed's error taxonomy*.
     - the dict adapters (`_entity_dict`, `_deidentify_dict`) and the entry points
       `extract`/`analyze`/`extract_zero_shot`/`deidentify`/`anonymize_policy`/`deidentify_batch`/
       `reidentify`, which validate → call the engine → adapt to plain dicts. `analyze` and
@@ -397,8 +403,10 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       policy name in the `method` slot). Because it routes through `engine.deidentify`, **no test stub
       needs a new method**.
     - `deidentify_batch` isolates each note: a per-note `ValueError` becomes an `{"ok": False}` row
-      so one bad note doesn't abort the batch, while a backend `RuntimeError`/`OSError` propagates
-      through `_run` and aborts the whole batch.
+      so one bad note doesn't abort the batch — openmed's `ModelLoadError` included, so a
+      `model_name` that fails to load yields one identical failed row per note, not an abort — while
+      a backend `RuntimeError`/`OSError` (offline-mode/model-integrity) propagates through `_run`
+      and aborts the whole batch.
   - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`, `DEFAULT_ZERO_SHOT_MODEL`,
     `DEFAULT_POLICY_MODEL`, `NER_MODELS`, `ZERO_SHOT_MODELS`, `POLICY_MODELS`, `PIIEngine`, and
     `__version__`.
@@ -831,11 +839,21 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   load-bearing.** `openmed.core.errors.InputError` is a `ValueError` *and* `TypeError`, and
   `ModelLoadError` (raised when `from_pretrained` fails, e.g. an unknown model id) is an
   `ImportError` *and* a `ValueError`. `_run` catches `ValueError` first, so a load failure
-  lands in `bad_options` (400) — and in `deidentify_batch`, one `{"ok": False}` row per note
-  rather than an abort — as the plain `ValueError` it replaced did in 2.1, while an
-  offline/integrity failure (`ModelIntegrityError`/`OfflineModeError`, both `RuntimeError`; e.g.
-  an uncached model under `HF_HUB_OFFLINE=1`) is `unavailable` (503) and aborts a batch. Moving `except ImportError` above `except ValueError`
-  would silently reclassify every load failure as `dependency`.
+  lands in `bad_options` (400, with openmed's PHI-free "Could not load model … Verify the model
+  ID" message) — and in `deidentify_batch`, one `{"ok": False}` row per note rather than an
+  abort — as the plain `ValueError` it replaced did in 2.1, while an offline/integrity failure
+  (`ModelIntegrityError`/`OfflineModeError`, both `RuntimeError`; e.g. an uncached *registry*
+  model under `HF_HUB_OFFLINE=1`, whose verified download openmed can't complete) is
+  `unavailable` (503) and aborts a batch. So a *missing* model can land on either side: an
+  unregistered id skips the integrity step and fails in `from_pretrained`, so it is a
+  `ModelLoadError` (400) — and so is an uncached registry model under openmed's own
+  `OPENMED_OFFLINE=1`, which (absent `OPENMED_MODEL_VERIFY_STRICT`) skips the verified download
+  with a warning instead of failing it. Moving `except ImportError` above `except ValueError`
+  would silently reclassify every single-call load failure as `dependency` (503, an install
+  problem). `tests/test_service.py` pins both halves without importing openmed, via a local
+  `ImportError`+`ValueError` stand-in: `test_run_classifies_model_load_error_as_bad_options`
+  fails under exactly that swap, and `test_batch_isolates_model_load_error_per_note` pins the
+  per-note rows.
 - **`st.dataframe(key=…)` is inert unless selection is activated** (re-verified on Streamlit 1.64.0). The
   performance guidance to give a dataframe a stable `key` so it doesn't remount when its data
   changes applies only to a *selectable* one: `streamlit/elements/arrow.py` sets

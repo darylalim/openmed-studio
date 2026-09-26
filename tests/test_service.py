@@ -443,8 +443,13 @@ def test_zero_shot_forwards_options_to_engine() -> None:
 
 def test_zero_shot_missing_gliner_maps_to_actionable_service_error() -> None:
     # openmed raises an ImportError subclass (MissingDependencyError) when the gliner extra
-    # isn't installed; _run passes its message through so the UI can show the install hint.
-    hint = "Optional dependency 'gliner' is required. Run `uv sync --extra gliner`."
+    # isn't installed; _run passes its message through, so a /zero-shot caller sees
+    # openmed's own install hint (the Streamlit tab checks zero_shot_available() first and
+    # shows its own `uv sync --extra gliner` hint). The text mirrors openmed 2.5's.
+    hint = (
+        "Optional dependency 'gliner' is required for this operation. "
+        "Install with `pip install openmed[gliner]`."
+    )
     with pytest.raises(ServiceError, match="gliner") as excinfo:
         service.extract_zero_shot(
             _raising(ImportError(hint)),
@@ -452,7 +457,8 @@ def test_zero_shot_missing_gliner_maps_to_actionable_service_error() -> None:
             model_name="zeroshot_disease_small_166m",
             labels=["Problem"],
         )
-    assert "uv sync --extra gliner" in str(excinfo.value)
+    assert excinfo.value.kind == "dependency"
+    assert str(excinfo.value) == hint
 
 
 def test_zero_shot_backend_failure_does_not_leak() -> None:
@@ -509,11 +515,44 @@ def test_batch_isolates_per_item_value_error() -> None:
 
 
 def test_batch_backend_failure_aborts_and_does_not_leak() -> None:
-    # A backend-load failure isn't note-specific (it fails every note identically), so it
-    # aborts the whole batch via _run rather than spamming N failed rows — and never leaks.
+    # A RuntimeError backend failure (openmed's offline-mode/model-integrity errors) isn't
+    # note-specific (it fails every note identically), so it aborts the whole batch via
+    # _run rather than spamming N failed rows — and never leaks.
     with pytest.raises(ServiceError) as excinfo:
         service.deidentify_batch(_raising(RuntimeError("kaboom")), ["x", "y"])
     assert "kaboom" not in str(excinfo.value)
+
+
+class _LoadError(ImportError, ValueError):
+    """Stand-in for openmed's ``ModelLoadError`` — an ``ImportError`` *and* ``ValueError``.
+
+    Mirrors only the two builtin bases that decide ``_run``'s ``except`` routing, so these
+    tests pin that order without importing openmed. The real class (2.3+) also has
+    openmed's ``CapabilityError``/``OpenMedError`` bases, which no ``except`` here names.
+    """
+
+
+def test_run_classifies_model_load_error_as_bad_options() -> None:
+    # A model_name that fails to load is the caller's to fix, so _run must catch ValueError
+    # BEFORE ImportError — swap them and this becomes a "dependency" 503 telling the caller
+    # to install something. openmed's message is PHI-free by contract, so it passes through.
+    message = "Could not load model org/missing. Verify the model ID or local path."
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract(_raising(_LoadError(message)), "x", model_name="org/missing")
+    assert excinfo.value.kind == "bad_options"
+    assert str(excinfo.value) == message
+
+
+def test_batch_isolates_model_load_error_per_note() -> None:
+    # In a batch the same error meets the per-note `except ValueError` net first, so every
+    # note gets its own ok=False row instead of the batch aborting (unlike the RuntimeError
+    # above). Guards against an `except ImportError: raise` sneaking in ahead of that net.
+    result = service.deidentify_batch(
+        _raising(_LoadError("could not load")), ["x", "y"], method="mask"
+    )
+    results = result["results"]
+    assert [r["ok"] for r in results] == [False, False]
+    assert all(r["error"] == "could not load" for r in results)
 
 
 def test_reidentify_error_maps_to_service_error() -> None:

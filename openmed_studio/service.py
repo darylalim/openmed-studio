@@ -11,9 +11,13 @@ API routes consume.
 Errors are normalized to a single :class:`ServiceError` carrying a user-facing, PHI-safe
 message (validation messages never echo the offending input) plus a transport-neutral
 ``.kind``: the Streamlit UI renders only the message, while the FastAPI layer maps ``.kind``
-to an HTTP status. ``ValueError`` from openmed (bad options) and ``RuntimeError``/``OSError``
-(model download/load failure) map to distinct kinds/messages — the 400-vs-503 split, carried
-by ``.kind`` here rather than an HTTP status code.
+to an HTTP status. ``ValueError`` from openmed (bad options — including a ``model_name`` that
+fails to load, since openmed 2.3+'s ``ModelLoadError`` is a ``ValueError`` as well as an
+``ImportError``) and ``RuntimeError``/``OSError`` (the backend itself is unavailable — e.g.
+openmed's model-integrity error when it can't complete the verified download of an uncached
+registry model under ``HF_HUB_OFFLINE=1``) map to distinct kinds/messages — the 400-vs-503
+split, carried by ``.kind`` here rather than an HTTP status code. :func:`_run` explains why
+its ``except`` order is load-bearing.
 """
 
 from __future__ import annotations
@@ -108,23 +112,40 @@ def _validate(model: type[BaseModel], data: dict[str, Any]) -> Any:
 
 
 def _run(call: Callable[[], Any]) -> Any:
-    """Run a model call, translating failures into ``ServiceError``."""
+    """Run a model call, translating failures into ``ServiceError``.
+
+    The ``except`` order is load-bearing, because openmed 2.3+'s error taxonomy
+    multiply-inherits: ``ModelLoadError`` (``from_pretrained`` failed, e.g. an unknown
+    ``model_name``) is an ``ImportError`` *and* a ``ValueError``, and ``InputError`` is a
+    ``ValueError`` *and* a ``TypeError``. Catching ``ValueError`` first keeps a load failure
+    a caller-fixable ``bad_options`` (400) carrying openmed's PHI-free message, as openmed
+    2.1's plain ``ValueError`` was; moving ``except ImportError`` above it would recast every
+    such failure as a missing ``dependency``. A backend that can't serve at all — e.g.
+    openmed's model-integrity error (a ``RuntimeError``, like its offline-mode error) for
+    a registry model that isn't cached under ``HF_HUB_OFFLINE=1`` — lands in
+    ``unavailable`` (503).
+    """
     try:
         return call()
-    except ValueError as exc:  # invalid options, e.g. date_shift_days w/o shift_dates
+    except ValueError as exc:
+        # Bad options (e.g. date_shift_days w/o shift_dates) or a model_name that fails to
+        # load (openmed's ModelLoadError) — the docstring says why this branch comes first.
         raise ServiceError(str(exc), kind="bad_options") from exc
-    except (RuntimeError, OSError) as exc:  # model download/load failure on first call
+    except (RuntimeError, OSError) as exc:  # e.g. openmed's offline/integrity errors
         logger.exception("model backend failure")
         raise ServiceError(
             "Model backend unavailable (the model failed to load).", kind="unavailable"
         ) from exc
     except ImportError as exc:
         # An optional backend isn't installed — e.g. openmed's MissingDependencyError when
-        # the Zero-shot tab is used without the `gliner` extra. The message is a safe,
-        # actionable install hint (no PHI), so pass it straight through. We log the traceback
-        # too (like the branches above): a *different* ImportError — an installed-but-broken
-        # optional dep — would otherwise reach the UI as a bare message with no server-side
-        # trail to diagnose the real import regression.
+        # POST /zero-shot runs without the `gliner` extra (the Streamlit tab checks
+        # zero_shot_available() first and shows its own `uv sync` hint instead). The message
+        # is openmed's safe, actionable install hint (no PHI), so pass it straight through.
+        # ModelLoadError is an ImportError too, but never gets here: the ValueError branch
+        # has already claimed it. We log the traceback too (like the backend branch above):
+        # a *different* ImportError — an installed-but-broken optional dep — would otherwise
+        # reach the UI as a bare message with no server-side trail to diagnose the real
+        # import regression.
         logger.exception("optional dependency import failure")
         raise ServiceError(str(exc), kind="dependency") from exc
     except Exception as exc:  # any other engine/pipeline error — never surface raw
@@ -294,9 +315,13 @@ def deidentify_batch(
     Each result is tagged ``ok``: a success is ``{"ok": True, **deidentify dict}``; a note
     that trips a ``ValueError`` (bad options/content for *that* note) is isolated as
     ``{"ok": False, "error": <message>}`` so one bad note doesn't abort the whole batch.
-    A backend-load failure (``RuntimeError``/``OSError``) is *not* note-specific — it would
-    fail every note identically — so it propagates through ``_run`` and aborts the batch,
-    surfacing one ``ServiceError`` rather than N identical failed rows.
+    That net also catches openmed's ``ModelLoadError`` (a ``ValueError`` too — see
+    :func:`_run`), so a ``model_name`` that fails to load yields one identical failed row
+    per note rather than an abort, as openmed 2.1's plain ``ValueError`` did. A backend that
+    can't serve at all (``RuntimeError``/``OSError`` — e.g. openmed's offline-mode or
+    model-integrity error) is *not* note-specific — it would fail every note identically —
+    so it propagates through ``_run`` and aborts the batch, surfacing one ``ServiceError``
+    rather than N identical failed rows.
     """
     req = _validate(validation.DeidentifyBatchRequest, {"items": items, **opts})
 
