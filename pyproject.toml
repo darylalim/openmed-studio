@@ -1,6 +1,6 @@
 [project]
 name = "openmed-studio"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpenMed Studio — a clinical-NLP app over the OpenMed library: PII/PHI de-identification (surrogate and policy-driven anonymization), clinical NER, and zero-shot (GLiNER) extraction."
 readme = "README.md"
 # <3.15: torch 2.14 (like triton and cuda-bindings) ships wheels only through cp314 and
