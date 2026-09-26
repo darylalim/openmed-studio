@@ -142,7 +142,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate, plus pins on the description prose the fast guard can't check — the sweep masking only what its patterns match under the four keep-dates profiles (and nothing with Clinical Minimal Redaction's optional sweep off), the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub) |
-| `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s, `X-API-Key` auth (401/accept/reject + open `/health`), and the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated) |
+| `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx2` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s, `X-API-Key` auth (401/accept/reject + open `/health`), the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated), and that `TestClient` is built on `httpx2` (see "Known gotchas") |
 | `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, that those same names are in `.gitignore` (the other half of the invariant), and that `.claude/settings.json` still registers the hook under `PreToolUse`. The whole file `skipif`s when `sh` or `python3` is missing |
 
 Named guards worth knowing — each **fails CI when openmed drifts**:
@@ -567,7 +567,7 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
 - **They are parallel, not layered:** both import `service.py`; neither calls the other, and the
   Streamlit app runs the model **in-process** — there is **no HTTP client and no `requests` dependency
   in the UI, and re-adding one is a regression.** `main.py`/`__main__.py` + `fastapi`/`uvicorn` (core)
-  and `httpx` (dev, for `TestClient`) exist for what a *served* surface needs and the UI doesn't:
+  and `httpx2` (dev, for `TestClient`) exist for what a *served* surface needs and the UI doesn't:
   API-key auth (`OPENMED_STUDIO_API_KEY` / `X-API-Key`), the `{"error":{code,message,details}}` JSON
   envelope + PHI-safe 422, `/health`, the opt-in `/compat` OpenMed-REST surface
   (`OPENMED_STUDIO_COMPAT`), and the startup preload (`OPENMED_STUDIO_PRELOAD`) — env knobs are
@@ -886,11 +886,12 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `app.openapi()["paths"]` instead. Requests route correctly regardless; only `.path`-based
   introspection is affected. (`test_api.py` sidesteps this entirely — it verifies the `/compat` mount
   *behaviorally*, e.g. a 404 when unmounted, rather than by listing routes.)
-- **The FastAPI `TestClient` warns about `httpx` vs `httpx2`.** `starlette.testclient` emits a
-  `StarletteDeprecationWarning` ("install `httpx2` instead") on import; at runtime it is harmless
-  and `httpx` still works (starlette 1.7 still falls back to it). One cost since starlette 1.7: it
-  dropped `TestClient`'s typed `get`/`post` overrides, and because its (unchanged) `TYPE_CHECKING`
-  branch imports `httpx2`, without `httpx2` installed ty sees those methods as `Unknown` and
-  `test_api.py`'s client calls go un-type-checked (ty still passes). Swapping deps is therefore a type-coverage
-  decision, not just a noise fix — don't do it silently.
+- **The FastAPI `TestClient` runs on `httpx2`, and the `dev` group depends on it.**
+  `starlette.testclient` imports `httpx2` first and falls back to plain `httpx` with only a
+  `StarletteDeprecationWarning`. The fallback is quiet in the worst way: starlette 1.7 dropped
+  `TestClient`'s typed `get`/`post` overrides and its `TYPE_CHECKING` branch imports `httpx2` alone,
+  so without it ty sees every `test_api.py` client call as `Unknown` and still passes. `httpx2` is
+  Pydantic's maintained continuation of `httpx` (floor `>=2.0.0`, starlette's own `full`-extra floor);
+  `test_testclient_is_backed_by_httpx2` fails CI if it goes missing. Plain `httpx` stays in
+  `uv.lock` regardless — `huggingface-hub` depends on it — so it isn't a leftover.
 - The `.venv` here is ~1.2 GB (Torch + Transformers) and is gitignored.

@@ -86,8 +86,12 @@ conflicts = [[{ extra = "gliner" }, { extra = "hf-latest" }]]
 
 [dependency-groups]
 dev = [
-    # httpx backs fastapi.testclient.TestClient used in tests/test_api.py.
-    "httpx>=0.27",
+    # httpx2 backs fastapi.testclient.TestClient used in tests/test_api.py. starlette's
+    # testclient imports it first (plain httpx still works but emits a deprecation
+    # warning) and types TestClient against it alone, so without it ty sees every client
+    # call as Unknown. The floor is starlette's own (`httpx2>=2.0.0` in its `full`
+    # extra). Plain httpx stays in uv.lock regardless: huggingface-hub depends on it.
+    "httpx2>=2.0.0",
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "ty>=0.0.49",

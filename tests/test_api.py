@@ -365,3 +365,16 @@ def test_compat_requires_auth(monkeypatch) -> None:
     with _client(target=_compat_app(monkeypatch)) as override:
         resp = override.post("/compat/pii/extract", json={"text": "x"})
     assert resp.status_code == 401
+
+
+# --- tooling: the TestClient's HTTP backend ----------------------------------
+
+
+def test_testclient_is_backed_by_httpx2() -> None:
+    # starlette's TestClient subclasses httpx2.Client when httpx2 is installed, and
+    # otherwise falls back to plain httpx with only a StarletteDeprecationWarning. That
+    # fallback is quiet in the worst way: starlette types TestClient against httpx2
+    # alone, so without it ty sees every client call here as Unknown and still passes.
+    import httpx2
+
+    assert issubclass(TestClient, httpx2.Client)
