@@ -131,6 +131,98 @@ def test_ner_rejects_unknown_field() -> None:
         service.analyze(ENGINE, "x", model_name=_NER_MODEL, bogus=1)
 
 
+# --- model_name path guard --------------------------------------------------
+
+# Names that fit the one-"/" cap but have a segment opening with ".". openmed checks the
+# filesystem before its registry, so any of them that exists would otherwise load as a
+# local path: the parent dir, the working dir, a sibling, or a hidden entry.
+_DOT_SEGMENT_NAMES = [
+    "..",
+    ".",
+    "../x",
+    "x/..",
+    "./x",
+    "x/.",
+    ".venv",
+    ".streamlit/config.toml",
+]
+
+
+@pytest.mark.parametrize("name", _DOT_SEGMENT_NAMES)
+def test_rejects_dot_segment_model_name(name) -> None:
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract(ENGINE, "x", model_name=name)
+    assert "must not start with '.'" in str(excinfo.value)
+
+
+def test_three_segment_model_name_fails_the_format_check_first() -> None:
+    # "a/./b" (like "../etc/passwd" above) is three segments, which the one-"/" cap
+    # already rejects; it never reaches the dot rule.
+    with pytest.raises(ServiceError) as excinfo:
+        service.extract(ENGINE, "x", model_name="a/./b")
+    assert "must look like 'org/model' or 'model'" in str(excinfo.value)
+
+
+def test_model_name_rejection_does_not_echo_input() -> None:
+    # Both messages (dot rule, format) name the rule, never the value — a model_name
+    # field is one stray paste away from holding note text.
+    for name in ("../SECRET-MRN-4471", "SECRET MRN 4471"):
+        with pytest.raises(ServiceError) as excinfo:
+            service.extract(ENGINE, "x", model_name=name)
+        assert "SECRET" not in str(excinfo.value)
+
+
+def test_every_model_name_field_applies_the_dot_rule() -> None:
+    # One rule on every surface: each request model that declares a model_name — the
+    # seam's and the /compat bodies in main.py — must route it through
+    # _check_model_name, so a new model can't reopen "../x" with a bare `str` field.
+    from pydantic import BaseModel, ValidationError
+
+    from openmed_studio import main
+
+    models = {
+        obj
+        for module in (validation, main)
+        for obj in vars(module).values()
+        if isinstance(obj, type)
+        and issubclass(obj, BaseModel)
+        and "model_name" in obj.model_fields
+    }
+    found = {model.__name__ for model in models}
+    assert {"ExtractRequest", "NerRequest", "CompatExtractRequest"} <= found
+    for model in models:
+        with pytest.raises(ValidationError) as excinfo:
+            model.model_validate({"model_name": "../x"})
+        messages = {e["loc"]: e["msg"] for e in excinfo.value.errors()}
+        assert "must not start with '.'" in messages.get(("model_name",), ""), (
+            f"{model.__name__}.model_name skips the dot rule"
+        )
+
+
+def test_accepts_every_openmed_registry_model_name() -> None:
+    # The dot rule must cost no real model: every alias and HF model id in openmed's
+    # registry, plus the ids engine.py bakes, passes unchanged. (The Hub itself forbids
+    # a leading "." in a repo id.) Registry metadata only — no model download.
+    import openmed
+
+    from openmed_studio import engine
+
+    catalog = openmed.get_all_models()  # dict[alias -> ModelInfo]
+    names = set(catalog) | {info.model_id for info in catalog.values()}
+    names |= {engine.DEFAULT_PII_MODEL, engine.DEFAULT_NER_MODEL}
+    names |= {engine.DEFAULT_ZERO_SHOT_MODEL}
+    names |= {model.alias for model in engine.NER_MODELS.values()}
+    names |= {model.alias for model in engine.ZERO_SHOT_MODELS.values()}
+    rejected = []
+    for name in names:
+        try:
+            if validation._check_model_name(name) != name:
+                rejected.append(name)
+        except ValueError:
+            rejected.append(name)
+    assert not rejected, sorted(rejected)[:10]
+
+
 # --- zero-shot (GLiNER) request guards --------------------------------------
 
 _ZERO_SHOT_MODEL = "zeroshot_disease_small_166m"

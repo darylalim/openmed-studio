@@ -145,7 +145,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 |------|------|
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
 | `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
-| `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
+| `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `model_name` path guard (no `.`-leading segment, so `..`/`.`/hidden entries fail on every request model incl. `/compat`, while every openmed registry alias/model id still passes), the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
 | `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` plus a `strict` xfail (`test_reidentify_restores_only_the_surrogate_spans`) pinning its mapping-only limit, where text that merely equals a surrogate is restored too (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES` |
@@ -171,9 +171,11 @@ download), `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (intr
 `policy` is now **forwarded**, not excluded), and — **the one exception** —
 `test_shift_dates_actually_shifts_dates`, which is `@pytest.mark.model` in `test_pii_model.py`, so it
 catches that drift only under `--run-model`, never in CI (see "Known gotchas").
-Two more openmed-drift guards live outside this list:
+Three more openmed-drift guards live outside this list:
 `test_analyze_forwards_every_openmed_param_or_allowlists_it` (see "OpenMed API" — it matters *more*
-than its `deidentify` twin) and `test_occurrence_prefix_matches_openmed` (see "Known gotchas").
+than its `deidentify` twin), `test_occurrence_prefix_matches_openmed` (see "Known gotchas"), and
+`test_accepts_every_openmed_registry_model_name` (every registry alias/model id must still pass
+`_check_model_name`, so a dot-leading alias upstream fails CI instead of becoming unreachable).
 
 One guard tracks the **repo's own tooling** instead of openmed. `.claude/hooks/block-phi-paths.sh`
 is a PreToolUse hook that denies reads/writes of the gitignored files which can carry PHI (the app's
@@ -366,8 +368,13 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `extra="forbid"`) plus
     the bound primitives: `ClinicalText`/`MAX_TEXT_CHARS` (from `OPENMED_STUDIO_MAX_TEXT_LENGTH` via
     `_max_text_chars` at import), `MAX_BATCH_ITEMS`, `MAX_MAPPING_ENTRIES`, `Lang`,
-    `_check_model_name`, `RequiredModelName` (the non-optional model id `NerRequest`/`ZeroShotRequest`
-    require), and `_check_locale` (a format guard on the optional `replace` `locale`). `ZeroShotRequest`
+    `_check_model_name` (the one check behind every `model_name` field, `/compat` bodies included:
+    one or two `/`-separated `[A-Za-z0-9._-]` segments, **none starting with `.`**, so `..`, `.` and
+    hidden dot-entries are refused — openmed resolves a name against the filesystem *before* its
+    registry. That confines local loading without forbidding it: a name that exists relative to the
+    process's working directory still loads as a local model, as the `ModelName` comment details),
+    `RequiredModelName` (the non-optional model id `NerRequest`/`ZeroShotRequest` require), and
+    `_check_locale` (a format guard on the optional `replace` `locale`). `ZeroShotRequest`
     adds `labels` — a `ZeroShotLabels` type whose `_check_zero_shot_labels` `AfterValidator` strips,
     drops blanks, bounds each label to `MAX_ZERO_SHOT_LABEL_CHARS` (80), dedups case-insensitively
     (harmless duplicates collapse; unknown *fields* still fail via `extra="forbid"`), and caps the set

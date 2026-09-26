@@ -74,6 +74,9 @@ ClinicalText = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TEXT_CHARS),
 ]
 
+# The shape of an HF repo id ("org/model") or an openmed registry alias ("model"): one or
+# two "/"-separated segments of [A-Za-z0-9._-]. _check_model_name adds one rule on top:
+# no segment may start with "." (see ModelName for why).
 _MODEL_NAME_RE = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?")
 
 
@@ -83,10 +86,26 @@ def _check_model_name(value: str | None) -> str | None:
     value = value.strip()
     if not _MODEL_NAME_RE.fullmatch(value):
         raise ValueError("model_name must look like 'org/model' or 'model'")
+    if any(segment.startswith(".") for segment in value.split("/")):
+        raise ValueError("model_name segments must not start with '.'")
     return value
 
 
-# An optional HF/registry model id, format-validated (no path traversal / spaces).
+# An optional HF/registry model id, format-checked. Both messages name the rule, never the
+# value. The charset has no "~", "\", ":" or space and a name can't open with "/", so no
+# absolute or home-relative path passes, and the one-"/" cap bounds the depth. The dot
+# rule then rejects "." and ".." segments ("..", "../x", "x/..") and hidden entries
+# (".venv", ".streamlit/config.toml"). It costs no real model: the Hub forbids a leading
+# "." in a repo id, and no openmed registry alias or model id has one (the tests pin it).
+#
+# RESIDUAL — this confines local loading, it doesn't forbid it. openmed resolves a name
+# against the filesystem BEFORE its registry (core/models.py::_resolve_model_name), so any
+# name that exists relative to the process's working directory — "tests", "models/x",
+# even a directory named like a registry alias, which then shadows the alias — loads as a
+# local model (local_files_only=True), while one that doesn't is a Hub id; nothing here
+# can tell them apart. It matters beyond a failed load: on the PII routes, a local dir
+# whose config.json names the privacy-filter family is loaded with
+# trust_remote_code=True (core/backends.py::create_privacy_filter_pipeline).
 ModelName = Annotated[str | None, AfterValidator(_check_model_name)]
 
 # A *required* model id (same format check, but not optional): clinical NER is one model
