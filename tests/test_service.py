@@ -347,6 +347,17 @@ def test_reidentify_restores() -> None:
     assert result["text"] == "Hi John."
 
 
+def test_reidentify_accepts_and_skips_an_empty_key() -> None:
+    # The seam admits an empty key rather than rejecting the whole mapping (the Re-identify
+    # tab's auto-filled mapping comes straight from openmed), and the real engine — not the
+    # str.replace stub — skips it instead of splicing "Ann" between every character.
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    result = service.reidentify(
+        engine, "Hi [first_name].", {"": "Ann", "[first_name]": "John"}
+    )
+    assert result["text"] == "Hi John."
+
+
 def test_analyze_returns_entity_dicts() -> None:
     # NER flows through the same _entity_dict adapter; UPPERCASE labels are preserved.
     result = service.analyze(

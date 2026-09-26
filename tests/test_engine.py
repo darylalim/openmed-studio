@@ -351,6 +351,21 @@ def test_reidentify_treats_a_malformed_occurrence_key_as_literal_text() -> None:
     assert PIIEngine.reidentify(f"see {bad} here", {bad: "Ann"}) == "see Ann here"
 
 
+@pytest.mark.parametrize(
+    ("mapping", "expected"),
+    [
+        ({"": "Ann"}, "Hi [first_name]."),
+        ({"": "Ann", "[first_name]": "John"}, "Hi John."),
+    ],
+    ids=["only-empty", "empty-beside-a-real-key"],
+)
+def test_reidentify_skips_an_empty_key(mapping, expected) -> None:
+    # An empty key marks no position. As a regex alternative it matched between every pair
+    # of characters and spliced its original in everywhere ("abc" -> "AnnaAnnbAnncAnn"),
+    # and validation admits it, so a pasted or API-sent mapping could shred the output.
+    assert PIIEngine.reidentify("Hi [first_name].", mapping) == expected
+
+
 @pytest.mark.xfail(
     reason="PIIEngine.reidentify restores from the mapping alone, which carries no "
     "span offsets, so ordinary text equal to a plain surrogate key is 'restored' too "

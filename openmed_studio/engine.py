@@ -1062,13 +1062,16 @@ class PIIEngine:
         One limit no mapping-only restore can avoid: the mapping has no span offsets, so text
         that merely equals a surrogate (an age surrogated to ``6`` vs. "6 weeks") is restored
         too — pinned by the strict xfail ``test_reidentify_restores_only_the_surrogate_spans``.
-        """
-        if not mapping:
-            return deidentified_text
 
+        An empty key is skipped: it marks no position in the text, and as a regex
+        alternative it would match between every pair of characters, splicing its original
+        in everywhere (openmed's ``str.replace`` does the same).
+        """
         regular: dict[str, str] = {}
         occurrences: dict[str, list[tuple[int, str]]] = {}
         for key, original in mapping.items():
+            if not key:
+                continue
             parsed = _parse_occurrence_key(key)
             if parsed is None:
                 regular[key] = original
@@ -1080,9 +1083,11 @@ class PIIEngine:
             surface: iter([original for _, original in sorted(items)])
             for surface, items in occurrences.items()
         }
-        # Non-empty: `mapping` is, and every key lands in `regular` or `pending` (a
-        # malformed occurrence key counts as a plain one).
         surfaces = set(regular) | set(pending)
+        if not surfaces:
+            # An empty mapping, or only empty keys: joining no keys gives an empty
+            # pattern, which also matches at every position.
+            return deidentified_text
 
         def restore(match: re.Match[str]) -> str:
             surface = match.group(0)
