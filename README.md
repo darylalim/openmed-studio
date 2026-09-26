@@ -144,7 +144,8 @@ curl -H "X-API-Key: secret" -H "Content-Type: application/json" \
 
 > **Run it locally.** Like the UI, the API is a single-user / small-scale tool. An unset API key means
 > **no auth** — put it behind your own auth, TLS, or reverse proxy before exposing it or processing real
-> PHI. Concurrent requests are serialized on the shared model (one inference at a time).
+> PHI, and start it from a clean directory (the checklist is under [Security & notes](#security--notes)).
+> Concurrent requests are serialized on the shared model (one inference at a time).
 
 ## How it works
 
@@ -273,6 +274,21 @@ The API layer adds the HTTP-only protections back on top: **`X-API-Key` auth** (
 `OPENMED_STUDIO_API_KEY` — unset means the service runs **unauthenticated**, with a startup warning), a
 uniform `{"error": {…}}` envelope, PHI-safe 422s, and the opt-in OpenMed-REST `/compat` surface
 (`OPENMED_STUDIO_COMPAT`, which echoes the original text — off by default).
+
+**Before you expose the API or process real PHI:**
+
+1. Set `OPENMED_STUDIO_API_KEY`. Without it every model route is open to anyone who can reach the
+   port.
+2. Keep the default `127.0.0.1` bind, or put TLS or a reverse proxy in front of it.
+3. Start the app from a clean directory that nobody else can write to. The local-path guard checks
+   the working directory before each model call, but it can't close the gap between its check and
+   OpenMed's own, and a directory named like a model can make OpenMed run code from it.
+4. Optionally, once the models you serve are downloaded, set `HF_HUB_OFFLINE=1` (and OpenMed's
+   `OPENMED_OFFLINE=1`) so no request can trigger a download.
+
+Anything you add to `OPENMED_STUDIO_EXTRA_MODELS` is your call: OpenMed downloads an unregistered
+repo without an integrity check, and it runs the code in its privacy-filter repos. Don't set
+OpenMed's own `OPENMED_TRUSTED_REMOTE_CODE_MODELS` for this app.
 
 Other things to keep in mind:
 

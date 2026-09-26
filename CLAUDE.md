@@ -66,7 +66,7 @@ OPENMED_STUDIO_PRELOAD=1 OPENMED_STUDIO_COMPAT=1 uv run python -m openmed_studio
 |---|---|
 | `OPENMED_STUDIO_BACKEND` | Pin `hf`/`mlx` (`service.resolve_backend`); unset = openmed auto-detects. `mlx` raises off-Apple. |
 | `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Per-request text cap; read **at import** by `validation._max_text_chars` (default 50,000). |
-| `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids added to **every** `model_name` allowlist; read **at import** by `validation._extra_models` (trimmed, empties dropped, each format-checked — a malformed entry stops the app at startup). Exact match, case included. The operator owns what an entry loads: an unregistered Hub id downloads unverified, and a first-party privacy-filter repo (`openai/privacy-filter`, `OpenMed/privacy-filter-*`) loads with `trust_remote_code=True`. |
+| `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids added to **every** `model_name` allowlist; read **at import** by `validation._extra_models` (trimmed, empties dropped, each format-checked — a malformed entry stops the app at startup). Exact match, case included. The operator owns what an entry loads: an unregistered Hub id downloads unverified, and a first-party privacy-filter repo (`openai/privacy-filter`, `OpenMed/privacy-filter-*`) loads with `trust_remote_code=True` (see "Known gotchas" → *openmed resolves model names against the filesystem first*). |
 | `OPENMED_STUDIO_API_KEY` | Require `X-API-Key` on every model route; unset = unauthenticated + a startup warning. |
 | `OPENMED_STUDIO_PRELOAD` | Truthy = warm the model in a threadpool at FastAPI startup. |
 | `OPENMED_STUDIO_COMPAT` | Truthy = mount the two-route `/compat` OpenMed-REST surface. |
@@ -312,7 +312,7 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       curated NER alias resolves to), `_MLX_MODEL_MAP` swaps, the privacy-filter Torch fallback
       `openai/privacy-filter` — at the price of a false positive when the app runs from a directory
       holding such an entry (on macOS/Windows a case-insensitive `openmed` counts); the repo root
-      has none.
+      has none. See "Known gotchas" → *openmed resolves model names against the filesystem first*.
     - *De-identify options* (per-call, surfaced in each de-identifying tab's `Advanced` expander,
       conditioned on the method): `consistent`/`seed`/`locale` are the surrogate-method
       (`replace`/`format_preserve`) determinism knobs
@@ -671,12 +671,21 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   (`OPENMED_STUDIO_COMPAT`), and the startup preload (`OPENMED_STUDIO_PRELOAD`) — env knobs are
   tabled under "Commands".
   Security posture: still a **local / small-scale** tool — an unset API key runs
-  the service **unauthenticated** (with a loud startup warning), so set the key (and use TLS or your own
-  reverse proxy) before exposing it or processing real PHI. The guarantees that protect the *model*
-  regardless of surface are enforced in-process by `service.py` (text/batch/mapping caps,
+  the service **unauthenticated** (with a loud startup warning). The guarantees that protect the
+  *model* regardless of surface are enforced in-process by `service.py` (text/batch/mapping caps,
   value/enum/format checks, the per-capability `model_name` allowlists, backend pinning, no input echo
-  on a validation error) plus the engine's
-  concurrency lock — so both the UI and the API inherit them.
+  on a validation error) plus the engine's concurrency lock and local-path guard — so both the UI
+  and the API inherit them. **Deployment rules** before exposing the API or processing real PHI
+  (the README's "Security & notes" says the same for users):
+  1. set `OPENMED_STUDIO_API_KEY` (unset = every model route open);
+  2. keep the default `127.0.0.1` bind (`OPENMED_STUDIO_HOST`), or put TLS / a reverse proxy in
+     front;
+  3. start the process from a clean directory nobody else can write to — openmed resolves model
+     names against the working directory first, and the engine's guard can't close the race
+     between its check and openmed's (see "Known gotchas" → *openmed resolves model names against
+     the filesystem first*);
+  4. optionally, once the served models are cached, set `HF_HUB_OFFLINE=1` (and openmed's
+     `OPENMED_OFFLINE=1`) so no request can start a download.
 
 ## OpenMed API (verified against installed v2.5.0)
 
@@ -811,6 +820,53 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
 
 ## Known gotchas
 
+- **openmed resolves model names against the filesystem first, and loads some with
+  `trust_remote_code=True` — why every `model_name` is allowlisted and the engine guards the
+  working directory** (openmed 2.5.0 source; no openmed setting restricts loading to known models
+  or turns local-path resolution off):
+  *(a) Trust routing.* `extract_pii` hands a name to `create_privacy_filter_pipeline`
+  (`core/pii.py:1218-1232`) when `_looks_like_privacy_filter_identifier` (`:375`) matches it —
+  **case-insensitively**, the bare `privacy-filter`/`openai-privacy-filter` or anything starting
+  `openai/privacy-filter`/`openmed/privacy-filter-` (`:363`) — or when
+  `_is_privacy_filter_artifact_path` (`:388-418`) finds a local directory whose
+  `config.json`/`openmed-mlx.json` names that family. `torch/privacy_filter.py:34-76` trusts the
+  three first-party repos (plus openmed's own `OPENMED_TRUSTED_REMOTE_CODE_MODELS` — never set it
+  for this app) or any such local artifact, and `:151-168` loads it with `trust_remote_code=True`,
+  no revision pin and no integrity check; an `-mlx` privacy-filter name is swapped for its Torch
+  sibling off-Mac (`core/backends.py:357-372`, `:436-448`). Before the allowlist all of that was
+  reachable, unauthenticated by default, on every PII route and `/compat` — and through
+  `/compat`'s plain-`str` `lang` with no `model_name` at all, because `core/pii.py:644-649` swaps
+  exactly the default English model for `DEFAULT_PII_MODELS[lang]`, and 20 languages (fa, sv, ru,
+  zu, …) default to `OpenMed/privacy-filter-multilingual`.
+  *(b) Filesystem first.* `core/models.py:664-679::_resolve_model_name` returns a local path when
+  `Path(name).expanduser().exists()` (`:780-792`) — relative to the working directory — before it
+  tries the registry or the Hub, and transformers' `from_pretrained` does the same. So a CWD
+  directory named like a model is loaded in its place: one named like a trusted repo gets
+  `trust_remote_code=True` with no metadata at all, one whose `config.json` names the
+  privacy-filter family gets it under *any* name (and its `auto_map` `"org/repo--module.Class"`
+  makes transformers fetch and run code from any Hub repo), and one named like the default model
+  hijacks every request that sends no `model_name` — the Streamlit UI's included.
+  `_is_privacy_filter_artifact_path` is `lru_cache(32)` (`core/pii.py:388`), so a trust decision
+  can outlive the directory. gliner resolves the zero-shot repo id CWD-first too.
+  *(c) Unverified, unevicted downloads.* Any other format-valid Hub id downloads without an
+  integrity check (`core/model_integrity.py:167-175`; the app never sets `require_integrity`) and
+  stays in `ModelLoader._pipelines` for the life of the process (`core/models.py:507`) — a disk,
+  bandwidth and RAM DoS — and openmed's `ModelLoadError` quotes the name ("Could not load model
+  <name>…"), so a pasted value came back in a 400; `extract_zero_shot` also resolved any of the
+  3,311 registry aliases and forced `family="gliner"` onto it.
+  **What the app does:** the per-capability allowlists in `validation.py` (exact match, case
+  included — `get_model_info` is exact, the trust check isn't; `None` still means the default);
+  `extract_zero_shot` re-checking the zero-shot set; the engine's local-path guard
+  (`LocalModelPathError`, a 503 whose detail is only logged), which checks the effective names
+  (incl. the `lang` swap) plus any top-level `OpenMed`/`openai` entry, since openmed swaps names
+  into those namespaces on its own; and `Lang` on `/compat`. `OPENMED_STUDIO_EXTRA_MODELS` is the
+  operator's call — an unregistered id downloads unverified, and a privacy-filter repo re-opens
+  (a) (the guard still applies). What's left is the race between the guard's check and openmed's
+  own, which is why the process must start from a directory nobody else can write to ("The two
+  surfaces" → deployment rules). Pinned by `test_no_default_allowlist_entry_is_a_privacy_filter_model`,
+  `test_guard_refuses_a_privacy_filter_shaped_dir_openmed_would_trust` (a harmless `config.json`
+  fixture, checked with `_is_privacy_filter_artifact_path.__wrapped__` so the test can't poison
+  that cache), and the allowlist/guard tests listed under "Test layout".
 - **`shift_dates` was fixed in openmed 1.6.0.** Earlier versions shifted only entities labelled
   exactly `"DATE"`, but the default `OpenMed-PII-SuperClinical-Small-44M-v1` model emits lowercase
   `"date"`, so they masked dates instead. openmed 1.6.0 matches dates by canonical label
