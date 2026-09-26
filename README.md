@@ -9,6 +9,11 @@ under regulatory compliance profiles like HIPAA Safe Harbor and GDPR), clinical 
 (GLiNER) extraction; deeper policy tooling (custom policies, cross-document consistency) is on the
 roadmap.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/single-note-dark.png">
+  <img alt="The Single note tab: the synthetic example note on the left, its masked de-identified output on the right with 13 entities found" src="docs/screenshots/single-note-light.png">
+</picture>
+
 ## Quickstart
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.10–3.14 (PyTorch has no 3.15 wheels yet).
