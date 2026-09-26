@@ -455,8 +455,10 @@ def test_allowlists_admit_only_the_curated_names_of_openmeds_registry() -> None:
 
 
 def test_default_pii_mlx_model_is_a_registry_model() -> None:
-    # The two default PII ids are openmed registry model ids, so openmed verifies their
-    # downloads against its registry hashes (an unregistered id downloads unverified).
+    # The two default PII ids stay openmed registry model ids. That buys a registry hash
+    # only on openmed's HF path (core/models.py::prepare_model_reference): its MLX path —
+    # the only one that can load the -mlx build — verifies no model, this one or the
+    # default (see engine.DEFAULT_PII_MLX_MODEL). An unregistered id is verified nowhere.
     import openmed
 
     model_ids = {info.model_id for info in openmed.get_all_models().values()}

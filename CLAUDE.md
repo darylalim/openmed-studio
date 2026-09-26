@@ -65,8 +65,8 @@ OPENMED_STUDIO_PRELOAD=1 OPENMED_STUDIO_COMPAT=1 uv run python -m openmed_studio
 | Env var | Effect |
 |---|---|
 | `OPENMED_STUDIO_BACKEND` | Pin `hf`/`mlx` (`service.resolve_backend`); unset = openmed auto-detects. `mlx` raises off-Apple. |
-| `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Per-request text cap; read **at import** by `validation._max_text_chars` (default 50,000). |
-| `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids added to **every** `model_name` allowlist; read **at import** by `validation._extra_models` (trimmed, empties dropped, each format-checked — a malformed entry stops the app at startup). Exact match, case included. The operator owns what an entry loads: an unregistered Hub id downloads unverified, and a first-party privacy-filter repo (`openai/privacy-filter`, `OpenMed/privacy-filter-*`) loads with `trust_remote_code=True` (see "Known gotchas" → *openmed resolves model names against the filesystem first*). |
+| `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Per-request text cap; read **at import** by `validation._max_text_chars` (default 50,000). `tests/conftest.py` scrubs it (with `_EXTRA_MODELS`, `_API_KEY`, `_COMPAT`, `_PRELOAD`) before anything imports the app, so an exported value can't leak into the suite. |
+| `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids added to **every** `model_name` allowlist; read **at import** by `validation._extra_models` (trimmed, empties dropped, each format-checked — a malformed entry stops the app at startup). Exact match, case included. The operator owns what an entry loads: an unregistered Hub id downloads unverified, and a name matching openmed's privacy-filter prefixes (`openai/privacy-filter…`, `OpenMed/privacy-filter-…`) reaches the pipeline that loads the three first-party repos `openai/privacy-filter`, `OpenMed/privacy-filter-multilingual` and `OpenMed/privacy-filter-nemotron` with `trust_remote_code=True` — any other such name loads untrusted, except that an `-mlx` one is swapped for one of those three whenever openmed's MLX backend is unavailable (see "Known gotchas" → *openmed resolves model names against the filesystem first*). |
 | `OPENMED_STUDIO_API_KEY` | Require `X-API-Key` on every model route; unset = unauthenticated + a startup warning. |
 | `OPENMED_STUDIO_PRELOAD` | Truthy = warm the model in a threadpool at FastAPI startup. |
 | `OPENMED_STUDIO_COMPAT` | Truthy = mount the two-route `/compat` OpenMed-REST surface. |
@@ -146,12 +146,12 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | File | Pins |
 |------|------|
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
-| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), the engine's `LocalModelPathError` through every entry point (a real `PIIEngine` with openmed patched to fail: `unavailable` + the generic message, the path/CWD only in the log, a batch aborts), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), openmed's internal errors (a local `RuntimeError` stand-in carrying `.code` `internal_error`/`inference_error` must classify as `internal` with the generic message, its detail only in the log, and get its own row in a batch, while a code-less `RuntimeError` or `budget_exceeded` stays `unavailable`; `test_openmed_internal_codes_match_openmed` pins the baked codes against openmed's real error classes, no model), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
-| `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `model_name` path guard (no `.`-leading segment, so `..`/`.`/hidden entries fail on every request model incl. `/compat`, while every openmed registry alias/model id still passes), the per-capability `model_name` allowlists (every request model incl. `/compat` has one; PII admits only `None`/the default/its `-mlx` build and rejects the privacy-filter names in every casing, other `-mlx` repos, case-variants, arbitrary Hub ids and other capabilities' models; NER/zero-shot admit only their curated aliases — of openmed's whole registry each capability admits exactly its curated names; no rejection echoes the value), that every `lang` field — `/compat` included — is the `Lang` literal, the `OPENMED_STUDIO_EXTRA_MODELS` parser (trim/drop-empty/format-check, a malformed entry raises) plus two subprocess tests that it is read at import onto every field and that a bad entry stops the app, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
-| `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), that `extract_zero_shot` itself refuses a name validation's zero-shot allowlist doesn't admit (another registry alias, an NER alias, a repo id) without consulting openmed's registry or `infer` and without quoting the name, while honoring an operator extra, the local-path guard (via `monkeypatch.chdir(tmp_path)` with openmed's entry points patched to fail: a CWD `OpenMed`/`openai` entry refuses all four model methods, as does a directory named like the effective PII model — incl. the default when none is sent — like the `lang="fr"` language default (not for `lang="en"`), like a zero-shot alias or its repo id, or like an NER alias; a dangling symlink counts; a privacy-filter-shaped fixture openmed's own artifact check would trust is refused; a clean directory passes; plus pins that `_pii_model_names` contains what `_resolve_effective_pii_model` resolves for every `Lang` and that every curated/language-default/`_MLX_MODEL_MAP` repo lives in a guarded namespace), a `--run-model` test that the real engine refuses a poisoned CWD then works again from a clean one, the one-pass `reidentify` plus a `strict` xfail (`test_reidentify_restores_only_the_surrogate_spans`) pinning its mapping-only limit, where text that merely equals a surrogate is restored too (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
+| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), the engine's `LocalModelPathError` through every entry point (a real `PIIEngine` with openmed patched to fail: `unavailable` + the generic message, the path/CWD only in the log, a batch aborts), the startup check (`check_working_directory` logs one warning naming the entries, the CWD and the restart, and stays silent in a clean directory; `working_directory_conflicts` includes the operator's extras), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), openmed's internal errors (a local `RuntimeError` stand-in carrying `.code` `internal_error`/`inference_error` must classify as `internal` with the generic message, its detail only in the log, and get its own row in a batch, while a code-less `RuntimeError` or `budget_exceeded` stays `unavailable`; `test_openmed_internal_codes_match_openmed` pins the baked codes against openmed's real error classes, no model), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
+| `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `model_name` path guard (no `.`-leading segment, so `..`/`.`/hidden entries fail on every request model incl. `/compat`, while every openmed registry alias/model id still passes the format check, `_check_model_name`), the per-capability `model_name` allowlists (every request model incl. `/compat` has one; PII admits only `None`/the default/its `-mlx` build and rejects the privacy-filter names in every casing, other `-mlx` repos, case-variants, arbitrary Hub ids and other capabilities' models; NER/zero-shot admit only their curated aliases — of openmed's whole registry each capability admits exactly its curated names; no rejection echoes the value), that the OpenAPI schema lists each capability's curated names in `model_name`'s `description` and `examples` (no `enum`, and never an operator extra — checked in a subprocess with one set), that every `lang` field — `/compat` included — is the `Lang` literal, the `OPENMED_STUDIO_EXTRA_MODELS` parser (trim/drop-empty/format-check, a malformed entry raises) plus two subprocess tests that it is read at import onto every field and that a bad entry stops the app, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that `tests/conftest.py` scrubs the operator knobs before import (a subprocess `pytest` with all five exported — a malformed extra included, which would otherwise stop collection — still sees the defaults), that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
+| `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), that `extract_zero_shot` itself refuses a name validation's zero-shot allowlist doesn't admit (another registry alias, an NER alias, a repo id) without consulting openmed's registry or `infer` and without quoting the name, while honoring an operator extra, the local-path guard (via `monkeypatch.chdir(tmp_path)` with openmed's entry points patched to fail: a CWD `OpenMed`/`openai` entry refuses all four model methods, as does a directory named like the effective PII model — incl. the default when none is sent — like the `lang="fr"` language default (not for `lang="en"`), like a zero-shot alias or its repo id, or like an NER alias; a dangling symlink counts; a privacy-filter-shaped fixture openmed's own artifact check would trust is refused; a clean directory passes; the refusal says to restart from a clean directory; `local_model_path_conflicts` — the startup check's source — names each default/curated/extra name and namespace that exists, each once, names first, and nothing in a clean directory; plus pins that `_pii_model_names` contains what `_resolve_effective_pii_model` resolves for every `Lang` and that every curated/language-default/`_MLX_MODEL_MAP` repo lives in a guarded namespace), a `--run-model` test that the real engine refuses a poisoned CWD then works again from a clean one, the one-pass `reidentify` plus a `strict` xfail (`test_reidentify_restores_only_the_surrogate_spans`) pinning its mapping-only limit, where text that merely equals a surrogate is restored too (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
-| `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES` |
-| `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx2` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s (including one per `HIDDEN_POLICIES` name on `/pii/anonymize-policy`, and one per route family — `/compat` included — for a `model_name` the allowlist doesn't admit, echoing neither the note nor the name), the local-path guard as a 503 that names neither the path nor the model, `X-API-Key` auth (401/accept/reject + open `/health`), the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated, and a PHI-safe 422 for a `lang` outside the app's `Lang` — privacy-filter-default languages, a different casing, junk — while a supported one reaches the engine), and that `TestClient` is built on `httpx2` (see "Known gotchas") |
+| `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES`; the cached `get_engine` runs the working-directory check exactly once across reruns |
+| `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx2` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s (including one per `HIDDEN_POLICIES` name on `/pii/anonymize-policy`, and one per route family — `/compat` included — for a `model_name` the allowlist doesn't admit, echoing neither the note nor the name), the local-path guard as a 503 that names neither the path nor the model, `create_app`'s one startup warning for a poisoned working directory (and silence for a clean one), `/health`'s `working_directory_clean` flipping per request without naming the entry (`status` stays `"ok"`), `X-API-Key` auth (401/accept/reject + open `/health`), the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated, and a PHI-safe 422 for a `lang` outside the app's `Lang` — privacy-filter-default languages, a different casing, junk — while a supported one reaches the engine), and that `TestClient` is built on `httpx2` (see "Known gotchas") |
 | `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, that those same names are in `.gitignore` (the other half of the invariant), and that `.claude/settings.json` still registers the hook under `PreToolUse`. The whole file `skipif`s when `sh` or `python3` is missing |
 
 Named guards worth knowing — each **fails CI when openmed drifts**:
@@ -174,21 +174,23 @@ download), `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (intr
 `test_shift_dates_actually_shifts_dates`, which is `@pytest.mark.model` in `test_pii_model.py`, so it
 catches that drift only under `--run-model`, never in CI (see "Known gotchas").
 Nine more openmed-drift guards live outside this list:
-`test_analyze_forwards_every_openmed_param_or_allowlists_it` (see "OpenMed API" — it matters *more*
-than its `deidentify` twin), `test_occurrence_prefix_matches_openmed` and
-`test_openmed_internal_codes_match_openmed` (both under "Known gotchas"), and
-`test_accepts_every_openmed_registry_model_name` (every registry alias/model id must still pass
-`_check_model_name`, so a dot-leading alias upstream fails CI instead of becoming unreachable),
-`test_allowlists_admit_only_the_curated_names_of_openmeds_registry` (of every registry alias and
-model id, each capability admits exactly its curated names),
-`test_no_default_allowlist_entry_is_a_privacy_filter_model` (no default-allowed name, nor the model
-id a curated alias resolves to, matches openmed's own privacy-filter predicate), and
-`test_default_pii_mlx_model_is_a_registry_model` (both default PII ids stay integrity-backed
-registry ids), `test_pii_model_names_match_openmeds_resolution` (the guard's language-default rule
-still matches `_resolve_effective_pii_model`, and `DEFAULT_PII_MODEL` is still openmed's
-`_DEFAULT_EN_MODEL`/signature default), and
-`test_guarded_namespaces_cover_every_model_the_app_resolves` (the namespaces still contain every
-repo the curated models, language defaults and `_MLX_MODEL_MAP` resolve to).
+- `test_analyze_forwards_every_openmed_param_or_allowlists_it` (see "OpenMed API" — it matters
+  *more* than its `deidentify` twin);
+- `test_occurrence_prefix_matches_openmed` and `test_openmed_internal_codes_match_openmed` (both
+  under "Known gotchas");
+- `test_accepts_every_openmed_registry_model_name` (every registry alias/model id must still pass
+  `_check_model_name`, so a dot-leading alias upstream fails CI instead of becoming unreachable);
+- `test_allowlists_admit_only_the_curated_names_of_openmeds_registry` (of every registry alias and
+  model id, each capability admits exactly its curated names);
+- `test_no_default_allowlist_entry_is_a_privacy_filter_model` (no default-allowed name, nor the
+  model id a curated alias resolves to, matches openmed's own privacy-filter predicate);
+- `test_default_pii_mlx_model_is_a_registry_model` (both default PII ids stay registry ids — which
+  buys a hash check only on openmed's HF backend; see "Known gotchas" → *(c)*);
+- `test_pii_model_names_match_openmeds_resolution` (the guard's language-default rule still matches
+  `_resolve_effective_pii_model`, and `DEFAULT_PII_MODEL` is still openmed's
+  `_DEFAULT_EN_MODEL`/signature default);
+- `test_guarded_namespaces_cover_every_model_the_app_resolves` (the namespaces still contain every
+  repo the curated models, language defaults and `_MLX_MODEL_MAP` resolve to).
 
 One guard tracks the **repo's own tooling** instead of openmed. `.claude/hooks/block-phi-paths.sh`
 is a PreToolUse hook that denies reads/writes of the gitignored files which can carry PHI (the app's
@@ -203,7 +205,11 @@ against accidental reads, not as containment.
 Model tests (`test_pii_model.py` + the `@pytest.mark.model` tests in `test_engine.py` and
 `test_service.py`) are **skipped by default** and drive the real engine via the shared `loader` fixture; `--run-model` opts
 in, wired in `tests/conftest.py` (`pytest_addoption` + `pytest_collection_modifyitems`, plus the
-session-scoped `loader` and a `note` fixture). The zero-shot model test
+session-scoped `loader` and a `note` fixture). That file also pops `SCRUBBED_KNOBS` —
+`OPENMED_STUDIO_EXTRA_MODELS`/`_MAX_TEXT_LENGTH` (read at import) and `_API_KEY`/`_COMPAT`/`_PRELOAD`
+(the last would make every `TestClient` load the real model) — before any test module imports the
+app, so a value exported in the shell can't skew the suite; a test that needs a knob sets it
+itself. `OPENMED_STUDIO_BACKEND` is left alone. The zero-shot model test
 (`test_engine_extract_zero_shot_detects_user_labels`) is **doubly gated** — `@pytest.mark.model`
 *and* `pytest.importorskip("gliner")` — so CI (neither flag nor extra) never downloads it; it also
 skips the `loader` fixture, since the GLiNER path bypasses the shared loader.
@@ -308,11 +314,19 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       (mirroring `core/pii.py::_resolve_effective_pii_model` via openmed's own
       `get_default_pii_model`, so the UI's no-`model_name` calls are covered); for NER the alias;
       for zero-shot the alias **and** its resolved repo id. The namespace check covers what the
-      engine can't enumerate — every registry repo id (all 3,311 are `OpenMed/…`, incl. the repo a
-      curated NER alias resolves to), `_MLX_MODEL_MAP` swaps, the privacy-filter Torch fallback
-      `openai/privacy-filter` — at the price of a false positive when the app runs from a directory
-      holding such an entry (on macOS/Windows a case-insensitive `openmed` counts); the repo root
-      has none. See "Known gotchas" → *openmed resolves model names against the filesystem first*.
+      engine can't enumerate — every registry repo id (all 2,266 of them, behind 3,311 aliases, are
+      under `OpenMed/`, incl. the repo a curated NER alias resolves to), `_MLX_MODEL_MAP` swaps, the
+      privacy-filter Torch fallback `openai/privacy-filter` — at the price of a false positive when
+      the app runs from a directory holding such an entry (on macOS/Windows a case-insensitive
+      `openmed` counts); the repo root has none. The refusal's message (log only) ends with
+      `_RESTART_HINT`: remove the entry **and restart**, because what openmed already resolved
+      stays cached (see the gotcha's *(b)*). **Startup check:** `local_model_path_conflicts(extra)`
+      runs the same `lexists` test, with no openmed import, over the default PII model and its
+      `-mlx` build, every curated NER/zero-shot alias, the caller's extras and both namespaces;
+      `service.check_working_directory()` (called once by `main.create_app` and by the Streamlit
+      `get_engine` factory) logs one warning naming what it finds, and `/health` reports
+      `working_directory_clean` from `service.working_directory_conflicts()` on each request. See
+      "Known gotchas" → *openmed resolves model names against the filesystem first*.
     - *De-identify options* (per-call, surfaced in each de-identifying tab's `Advanced` expander,
       conditioned on the method): `consistent`/`seed`/`locale` are the surrogate-method
       (`replace`/`format_preserve`) determinism knobs
@@ -433,12 +447,15 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     aliases only — deliberately **not** their repo ids, see the comment there) and
     `ZeroShotModelName` (required; `ZERO_SHOT_MODEL_NAMES` = the `ZERO_SHOT_MODELS` aliases), each
     widened by `EXTRA_MODELS` (`_extra_models`, read from `OPENMED_STUDIO_EXTRA_MODELS` at import;
-    a malformed entry raises there, so the app refuses to start rather than silently dropping it).
-    The allowlist fixes the *name*, not what it resolves to — openmed resolves a name against the
-    filesystem before its registry or the Hub — so the engine's local-path guard closes that half,
-    as the `PiiModelName` comment's RESIDUAL details —
-    and
-    `_check_locale` (a format guard on the optional `replace` `locale`). `ZeroShotRequest`
+    a malformed entry raises there, so the app refuses to start rather than silently dropping it)
+    — and `_check_locale` (a format guard on the optional `replace` `locale`). The allowlist fixes
+    the *name*, not what it resolves to (openmed resolves a name against the filesystem before its
+    registry or the Hub), so the engine's local-path guard closes that half, as the `PiiModelName`
+    comment's RESIDUAL details. Each `model_name` type also carries OpenAPI metadata
+    (`_model_name_schema`, built from the `_CURATED_*_MODELS` tuples): a `description` and
+    `examples` listing that capability's curated names, since a 422 names no allowed id — never
+    the operator's extras, and no `enum`, which would make a schema-validating client refuse an
+    extra the server accepts. `ZeroShotRequest`
     adds `labels` — a `ZeroShotLabels` type whose `_check_zero_shot_labels` `AfterValidator` strips,
     drops blanks, bounds each label to `MAX_ZERO_SHOT_LABEL_CHARS` (80), dedups case-insensitively
     (harmless duplicates collapse; unknown *fields* still fail via `extra="forbid"`), and caps the set
@@ -456,6 +473,11 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     via the `Compat*` models and reuse `service._run`) — so nothing bypasses validation:
     - `resolve_backend()` (reads `OPENMED_STUDIO_BACKEND`) and `build_engine()` (the `PIIEngine`
       factory both the UI's `st.cache_resource` and the API's `get_engine` wrap).
+    - `working_directory_conflicts()` (`engine.local_model_path_conflicts` plus
+      `validation.EXTRA_MODELS`) and `check_working_directory()`, the startup check both surfaces
+      run once: it logs one warning naming the entries, the working directory and the restart
+      hint, and returns whether the directory is clean. The names are server paths, so they reach
+      only the log; `/health` gets just the boolean.
     - `ServiceError` carries a transport-neutral `.kind`
       (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, `ServiceErrorKind`): the
       Streamlit UI ignores it (renders only the message), while `main.py` maps it to an HTTP status —
@@ -513,7 +535,9 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     routes need no try/except); handlers for `StarletteHTTPException` (401 etc.) and
     `RequestValidationError` (**PHI-safe** — drops Pydantic's `input`) reuse the same envelope. Auth is
     `require_api_key` (a no-op unless `OPENMED_STUDIO_API_KEY` is set; `create_app` warns at startup when
-    it's unset); an opt-in `OPENMED_STUDIO_PRELOAD` lifespan warms the model in a threadpool. The
+    it's unset, and runs `service.check_working_directory()` once); `/health` adds
+    `working_directory_clean` (checked per request, a bare boolean — `status` stays `"ok"`, since the
+    process is up and a restart from the same directory wouldn't help); an opt-in `OPENMED_STUDIO_PRELOAD` lifespan warms the model in a threadpool. The
     `/compat` surface (mounted only when `OPENMED_STUDIO_COMPAT` is truthy) mirrors OpenMed's own REST
     shape (`pii_entities`/`num_entities_redacted`/`timestamp`/echoed `original_text`, `keep_alive`
     ignored) for `/compat/pii/{extract,deidentify}` only; it calls the engine directly for the raw
@@ -538,7 +562,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
 
 - **UI structure:** the Streamlit app lives at the repo root in `streamlit_app.py`; the pure,
   Streamlit-free render helpers live in `ui_helpers.py` so they unit-test without a browser.
-  - *App + tabs:* `get_engine` is `service.build_engine` wrapped in `st.cache_resource`; `_call`
+  - *App + tabs:* `get_engine` is `service.build_engine` wrapped in `st.cache_resource` (it first
+    runs `service.check_working_directory()`, so the startup warning logs once per process); `_call`
     runs a `service.*` function in a spinner and renders any `ServiceError`. `main()` titles the
     page/heading "OpenMed Studio" and lays out the eight tabs (`Detect`→`service.extract`,
     `Clinical NER`→`service.analyze`, `Zero-shot`→`service.extract_zero_shot`,
@@ -675,15 +700,25 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   *model* regardless of surface are enforced in-process by `service.py` (text/batch/mapping caps,
   value/enum/format checks, the per-capability `model_name` allowlists, backend pinning, no input echo
   on a validation error) plus the engine's concurrency lock and local-path guard — so both the UI
-  and the API inherit them. **Deployment rules** before exposing the API or processing real PHI
+  and the API inherit them. **Deployment rules** before exposing either surface or processing real PHI
   (the README's "Security & notes" says the same for users):
-  1. set `OPENMED_STUDIO_API_KEY` (unset = every model route open);
-  2. keep the default `127.0.0.1` bind (`OPENMED_STUDIO_HOST`), or put TLS / a reverse proxy in
-     front;
+  1. set `OPENMED_STUDIO_API_KEY` (unset = every model route open — including to the bounded
+     model-download DoS the allowlists leave, see the gotcha's *(c)*; the key is its real
+     mitigation);
+  2. keep the API's default `127.0.0.1` bind (`OPENMED_STUDIO_HOST`), or put TLS / a reverse proxy
+     in front. **The Streamlit UI has no such default:** with `server.address` unset — and the
+     shipped `.streamlit/config.toml` sets no `[server]` section — Streamlit binds `0.0.0.0`
+     (`streamlit/web/server/starlette/starlette_server_config.py:60`, `DEFAULT_SERVER_ADDRESS`),
+     upgraded to the dual-stack `::` when IPv6 is available (`starlette_server.py:80-98`), so the
+     unauthenticated UI is reachable from the network. Run it with
+     `uv run streamlit run streamlit_app.py --server.address 127.0.0.1`, or add
+     `[server]` / `address = "127.0.0.1"` to a local `.streamlit/config.toml`;
   3. start the process from a clean directory nobody else can write to — openmed resolves model
      names against the working directory first, and the engine's guard can't close the race
      between its check and openmed's (see "Known gotchas" → *openmed resolves model names against
-     the filesystem first*);
+     the filesystem first*). Heed the startup warning and `/health`'s `working_directory_clean`,
+     and if the guard ever fires (a `LocalModelPathError` in the log), remove the entry **and
+     restart** — openmed's caches keep serving anything it already resolved from it;
   4. optionally, once the served models are cached, set `HF_HUB_OFFLINE=1` (and openmed's
      `OPENMED_OFFLINE=1`) so no request can start a download.
 
@@ -829,11 +864,17 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   **case-insensitively**, the bare `privacy-filter`/`openai-privacy-filter` or anything starting
   `openai/privacy-filter`/`openmed/privacy-filter-` (`:363`) — or when
   `_is_privacy_filter_artifact_path` (`:388-418`) finds a local directory whose
-  `config.json`/`openmed-mlx.json` names that family. `torch/privacy_filter.py:34-76` trusts the
-  three first-party repos (plus openmed's own `OPENMED_TRUSTED_REMOTE_CODE_MODELS` — never set it
-  for this app) or any such local artifact, and `:151-168` loads it with `trust_remote_code=True`,
-  no revision pin and no integrity check; an `-mlx` privacy-filter name is swapped for its Torch
-  sibling off-Mac (`core/backends.py:357-372`, `:436-448`). Before the allowlist all of that was
+  `config.json`/`openmed-mlx.json` names that family. Routing is not trust:
+  `torch/privacy_filter.py:34-76` trusts exactly three repos — `openai/privacy-filter`,
+  `OpenMed/privacy-filter-multilingual` and `OpenMed/privacy-filter-nemotron` (`:34-40`, compared
+  lowercased) — plus openmed's own `OPENMED_TRUSTED_REMOTE_CODE_MODELS` (never set it for this
+  app) and any such local artifact, and `:151-168` loads those with `trust_remote_code=True`, no
+  revision pin and no integrity check; any other routed name loads untrusted
+  (`core/backends.py:480`). But an `-mlx` privacy-filter name is swapped for one of the three
+  (`_torch_fallback_for`, `core/backends.py:363-372`, `:436-448`) whenever openmed's MLX backend
+  is unavailable (`select_privacy_filter_backend`, `:398-419`) — on a Mac without the `mlx` extra
+  too, not only off-Mac — so the trusted code that runs is that repo's, not the requested name's
+  (`OpenMed/privacy-filter-mlx` → `openai/privacy-filter`). Before the allowlist all of that was
   reachable, unauthenticated by default, on every PII route and `/compat` — and through
   `/compat`'s plain-`str` `lang` with no `model_name` at all, because `core/pii.py:644-649` swaps
   exactly the default English model for `DEFAULT_PII_MODELS[lang]`, and 20 languages (fa, sv, ru,
@@ -846,24 +887,63 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   privacy-filter family gets it under *any* name (and its `auto_map` `"org/repo--module.Class"`
   makes transformers fetch and run code from any Hub repo), and one named like the default model
   hijacks every request that sends no `model_name` — the Streamlit UI's included.
-  `_is_privacy_filter_artifact_path` is `lru_cache(32)` (`core/pii.py:388`), so a trust decision
-  can outlive the directory. gliner resolves the zero-shot repo id CWD-first too.
+  **Restart after the guard fires.** Whatever openmed resolves from such a directory outlives it:
+  `_is_privacy_filter_artifact_path` is `lru_cache(32)` (`core/pii.py:388`) and
+  `is_trusted_for_remote_code` consults it (`torch/privacy_filter.py:76`); `ModelLoader._pipelines`
+  is keyed by the resolved name, and `_resolve_model_name` returns `str(Path(name))` for a local
+  path (`core/models.py:664-668`) — byte-identical to the Hub id for a relative directory — so a
+  pipeline loaded from the directory is served for that name afterwards; zero-shot's
+  `ner/families/gliner.py:111` `_load_model` is an `lru_cache(4)` by repo id. A call that won the
+  race between the guard and openmed's own check poisons them until the process restarts, and once
+  the entry is gone the guard passes again, proving nothing — so if a `LocalModelPathError` ever
+  appears in the log, remove the entry **and restart from a clean directory** (the error's message
+  and the startup warning both say so).
+  *gliner's backbone path — a CWD-relative name the guard neither lists nor covers by
+  namespace.* gliner resolves the zero-shot repo id CWD-first too (that one the guard checks), but
+  each checkpoint's `gliner_config.json` also names a backbone — `"model_name":
+  "microsoft/deberta-v3-small"` in the three cached curated checkpoints (Disease, Chemical,
+  Oncology) — and gliner 0.2.29's `modeling/encoder.py:139-149` checks
+  `Path(config.model_name) / "adapter_config.json"` relative to the CWD and, **only when `peft` is
+  importable**, applies it (`LoraConfig.from_pretrained` + `get_peft_model`; without `peft` it only
+  warns). It also calls `AutoConfig`/`AutoTokenizer.from_pretrained(config.model_name)`, which
+  transformers resolves CWD-first, when a checkpoint lacks an `encoder_config`
+  (`encoder.py:89-91`) or a `tokenizer_config.json` (`model.py:1213-1222`). Inert today: `peft` is
+  not in `uv.lock`, and those checkpoints ship both. So `microsoft/` is **not** guarded — re-check
+  all three conditions on every gliner bump, and before adding `peft` or a zero-shot checkpoint.
   *(c) Unverified, unevicted downloads.* Any other format-valid Hub id downloads without an
-  integrity check (`core/model_integrity.py:167-175`; the app never sets `require_integrity`) and
+  integrity check (`core/model_integrity.py:167-175`; openmed's pipeline path exposes no
+  `require_integrity` — only `ModelLoader.load_model` takes one, `core/models.py:168-172`) and
   stays in `ModelLoader._pipelines` for the life of the process (`core/models.py:507`) — a disk,
   bandwidth and RAM DoS — and openmed's `ModelLoadError` quotes the name ("Could not load model
-  <name>…"), so a pasted value came back in a 400; `extract_zero_shot` also resolved any of the
-  3,311 registry aliases and forced `family="gliner"` onto it.
+  <name>…", `core/models.py:330`), so a pasted value came back in a 400; `extract_zero_shot` also
+  resolved any of the 3,311 registry aliases and forced `family="gliner"` onto it. Even a registry
+  id is hash-checked **only on the HF backend**: `prepare_model_reference` is called only from
+  `load_model` and `_create_hf_pipeline` (`core/models.py:200`, `:229`, `:436`), while the MLX
+  backend (`create_pipeline` → `mlx/inference.py:1366::create_mlx_pipeline` →
+  `:1211::_resolve_mlx_model`) fetches an `-mlx` repo with a plain `snapshot_download`
+  (`:1163-1195`) and converts anything else from a plain `from_pretrained`
+  (`mlx/convert.py:404-405`). So `DEFAULT_PII_MLX_MODEL` —
+  loadable only on MLX (its repo ships just `weights.safetensors`, which transformers doesn't
+  load) — is never verified, and on MLX neither is the default.
   **What the app does:** the per-capability allowlists in `validation.py` (exact match, case
   included — `get_model_info` is exact, the trust check isn't; `None` still means the default);
   `extract_zero_shot` re-checking the zero-shot set; the engine's local-path guard
   (`LocalModelPathError`, a 503 whose detail is only logged), which checks the effective names
   (incl. the `lang` swap) plus any top-level `OpenMed`/`openai` entry, since openmed swaps names
-  into those namespaces on its own; and `Lang` on `/compat`. `OPENMED_STUDIO_EXTRA_MODELS` is the
-  operator's call — an unregistered id downloads unverified, and a privacy-filter repo re-opens
-  (a) (the guard still applies). What's left is the race between the guard's check and openmed's
-  own, which is why the process must start from a directory nobody else can write to ("The two
-  surfaces" → deployment rules). Pinned by `test_no_default_allowlist_entry_is_a_privacy_filter_model`,
+  into those namespaces on its own — and, so an operator hears of it before the first 503, a
+  startup warning plus `/health`'s `working_directory_clean` over the same entries; and `Lang` on
+  `/compat`. `OPENMED_STUDIO_EXTRA_MODELS` is the operator's call — an unregistered id downloads
+  unverified, and a privacy-filter name re-opens (a) (the guard still applies). What's left is the
+  race between the guard's check and openmed's own, which is why the process must start from a
+  directory nobody else can write to ("The two surfaces" → deployment rules) — and the (c) DoS,
+  which the allowlists **bound but do not close**: an unauthenticated caller (the default) can
+  still cycle `lang` over the 12 `Lang` values on the PII routes and `model_name` over the ten
+  `/ner` aliases, making the process download and keep resident, never evicted, about 4.7B
+  parameters (≈19 GB at fp32; registry `param_count`: 3.31B for the language defaults plus the two
+  default PII ids, 1.41B for the NER models), and with the `gliner` extra 1.66B more of zero-shot
+  checkpoints, at most four loaded at a time (the `lru_cache(4)` above). `OPENMED_STUDIO_API_KEY`
+  is the real mitigation; `HF_HUB_OFFLINE=1` with only the needed models cached removes the
+  download half. Pinned by `test_no_default_allowlist_entry_is_a_privacy_filter_model`,
   `test_guard_refuses_a_privacy_filter_shaped_dir_openmed_would_trust` (a harmless `config.json`
   fixture, checked with `_is_privacy_filter_artifact_path.__wrapped__` so the test can't poison
   that cache), and the allowlist/guard tests listed under "Test layout".
@@ -980,7 +1060,9 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   the `gliner` extra and a marker `hf-latest = ["transformers>=5.17"]` extra, so uv **forks** the lock:
   the default resolution (and `--extra mlx`) stays on the latest transformers, and only
   `--extra gliner` (which combines with `--extra mlx`) downgrades. The `hf-latest` extra has no runtime
-  purpose; don't "clean it up" or the fork collapses. **Keep its floor at or above gliner's cap.** uv
+  purpose; don't "clean it up" or the fork collapses. (The same bump must re-check gliner's
+  CWD-relative backbone lookups — see *openmed resolves model names against the filesystem first*
+  → *gliner's backbone path*.) **Keep its floor at or above gliner's cap.** uv
   forks on the *declaration* alone and never checks that a declared conflict is real, and this has
   now drifted twice: gliner 0.2.28 raised its cap from `<5.7` to `<5.14`, making the old `>=5.7`
   floor satisfiable alongside it (5.7–5.13), and 0.2.29 raised it to `<5.17`, doing the same to
@@ -1017,15 +1099,18 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   after every torch/transformers bump.
 - **openmed's error taxonomy (2.3+) multiply-inherits, so `service._run`'s `except` order is
   load-bearing.** `openmed.core.errors.InputError` is a `ValueError` *and* `TypeError`, and
-  `ModelLoadError` (raised when `from_pretrained` fails, e.g. an unknown model id) is an
-  `ImportError` *and* a `ValueError`. `_run` catches `ValueError` first, so a load failure
-  lands in `bad_options` (400, with openmed's PHI-free "Could not load model … Verify the model
-  ID" message) — and in `deidentify_batch`, one `{"ok": False}` row per note rather than an
+  `ModelLoadError` (raised when `from_pretrained` fails — since the allowlists, only for a name
+  they admit, e.g. an operator extra that names no loadable model) is an `ImportError` *and* a
+  `ValueError`. `_run` catches `ValueError` first, so a load failure lands in `bad_options` (400,
+  with openmed's "Could not load model <name>. Verify the model ID …" message, which is PHI-free
+  only because nothing but an allowlisted name reaches openmed — it quotes the name it was given,
+  `core/models.py:330`; see the gotcha above) — and in `deidentify_batch`, one `{"ok": False}` row per note rather than an
   abort — as the plain `ValueError` it replaced did in 2.1, while an offline/integrity failure
   (`ModelIntegrityError`/`OfflineModeError`, both `RuntimeError`; e.g. an uncached *registry*
   model under `HF_HUB_OFFLINE=1`, whose verified download openmed can't complete) is
   `unavailable` (503) and aborts a batch. So a *missing* model can land on either side: an
-  unregistered id skips the integrity step and fails in `from_pretrained`, so it is a
+  unregistered id (reachable only as an operator extra now) skips the integrity step and fails in
+  `from_pretrained`, so it is a
   `ModelLoadError` (400) — and so is an uncached registry model under openmed's own
   `OPENMED_OFFLINE=1`, which (absent `OPENMED_MODEL_VERIFY_STRICT`) skips the verified download
   with a warning instead of failing it. Moving `except ImportError` above `except ValueError`

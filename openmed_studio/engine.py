@@ -34,8 +34,13 @@ DEFAULT_PII_MODEL = "OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1"
 # backend instead of converting DEFAULT_PII_MODEL on first run. With the default it is the
 # only PII model_name the app accepts unless an operator adds more through
 # OPENMED_STUDIO_EXTRA_MODELS (see validation.PII_MODEL_NAMES). It is an openmed registry
-# model id, so its download is integrity-checked like the default's;
-# tests/test_validation.py::test_default_pii_mlx_model_is_a_registry_model pins that.
+# model id (with a reproducibility_hash), which
+# tests/test_validation.py::test_default_pii_mlx_model_is_a_registry_model pins — but openmed
+# checks that hash only on its HF path (core/models.py calls prepare_model_reference only from
+# load_model and _create_hf_pipeline), where an MLX build can't load. The MLX path, the only
+# one that can load it, verifies no model: mlx/inference.py::_resolve_mlx_model fetches a
+# "-mlx" repo with a plain snapshot_download (_download_preconverted_mlx_model), and converts
+# DEFAULT_PII_MODEL from a plain transformers from_pretrained (mlx/convert.py).
 DEFAULT_PII_MLX_MODEL = "OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1-mlx"
 
 
@@ -574,10 +579,11 @@ def _parse_occurrence_key(key: str) -> tuple[int, str] | None:
     return int(ordinal_text), surface
 
 
-# The top-level namespaces openmed routes into on its own. Every openmed registry model id
-# is under "OpenMed/" — so is every model the allowlists admit by default, each curated
-# alias's resolved repo id, and every per-language default — and openmed swaps names it was
-# never given for others in these two: an MLX build from mlx/inference.py::_MLX_MODEL_MAP,
+# The top-level namespaces openmed routes into on its own. Every openmed registry repo id
+# (2,266 of them behind 3,311 aliases, as of openmed 2.5) is under "OpenMed/" — so is every
+# repo id the default allowlists resolve to (the two PII ids, each curated alias's repo) and
+# every per-language default — and openmed swaps names it was never given for others in
+# these two: an MLX build from mlx/inference.py::_MLX_MODEL_MAP,
 # the language default for lang != "en", and the privacy-filter Torch fallback
 # "openai/privacy-filter" (core/backends.py::_torch_fallback_for). A CWD entry named like
 # either would shadow names the engine can't enumerate, so its mere presence refuses every

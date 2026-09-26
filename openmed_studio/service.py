@@ -11,12 +11,12 @@ API routes consume.
 Errors are normalized to a single :class:`ServiceError` carrying a user-facing, PHI-safe
 message (validation messages never echo the offending input) plus a transport-neutral
 ``.kind``: the Streamlit UI renders only the message, while the FastAPI layer maps ``.kind``
-to an HTTP status. ``ValueError`` from openmed (bad options — including a ``model_name`` that
-fails to load, since openmed 2.3+'s ``ModelLoadError`` is a ``ValueError`` as well as an
-``ImportError``) and ``RuntimeError``/``OSError`` (the backend itself is unavailable — e.g.
-openmed's model-integrity error when it can't complete the verified download of an uncached
-registry model under ``HF_HUB_OFFLINE=1``) map to distinct kinds/messages — the 400-vs-503
-split, carried by ``.kind`` here rather than an HTTP status code. openmed's own
+to an HTTP status. ``ValueError`` from openmed (bad options — including an allowed
+``model_name`` that fails to load, e.g. an operator extra that names no loadable model, since
+openmed 2.3+'s ``ModelLoadError`` is a ``ValueError`` as well as an ``ImportError``) and
+``RuntimeError``/``OSError`` (the backend itself is unavailable — e.g. openmed's
+model-integrity error when it can't complete the verified download of an uncached registry
+model under ``HF_HUB_OFFLINE=1``) map to distinct kinds/messages — the 400-vs-503 split, carried by ``.kind`` here rather than an HTTP status code. openmed's own
 internal-invariant errors are ``RuntimeError``s too, but they mean the request tripped a bug,
 not that the backend is down, so they are carved out as ``internal`` (500). :func:`_run`
 explains why its ``except`` order is load-bearing.
@@ -173,12 +173,15 @@ def _run(call: Callable[[], Any]) -> Any:
     """Run a model call, translating failures into ``ServiceError``.
 
     The ``except`` order is load-bearing, because openmed 2.3+'s error taxonomy
-    multiply-inherits: ``ModelLoadError`` (``from_pretrained`` failed, e.g. an unknown
-    ``model_name``) is an ``ImportError`` *and* a ``ValueError``, and ``InputError`` is a
-    ``ValueError`` *and* a ``TypeError``. Catching ``ValueError`` first keeps a load failure
-    a caller-fixable ``bad_options`` (400) carrying openmed's PHI-free message, as openmed
-    2.1's plain ``ValueError`` was; moving ``except ImportError`` above it would recast every
-    such failure as a missing ``dependency``. A backend that can't serve at all — e.g.
+    multiply-inherits: ``ModelLoadError`` (``from_pretrained`` failed — since the allowlists,
+    only for a name they admit, e.g. an operator extra that names no loadable model) is an
+    ``ImportError`` *and* a ``ValueError``, and ``InputError`` is a ``ValueError`` *and* a
+    ``TypeError``. Catching ``ValueError`` first keeps a load failure a caller-fixable
+    ``bad_options`` (400) carrying openmed's message, as openmed 2.1's plain ``ValueError``
+    was. That message quotes the model name ("Could not load model <name>. …",
+    ``core/models.py``), so it is PHI-free only because nothing but an allowlisted name ever
+    reaches openmed. Moving ``except ImportError`` above ``except ValueError`` would recast
+    every such failure as a missing ``dependency``. A backend that can't serve at all — e.g.
     openmed's model-integrity error (a ``RuntimeError``, like its offline-mode error) for
     a registry model that isn't cached under ``HF_HUB_OFFLINE=1`` — lands in
     ``unavailable`` (503). openmed's ``InternalError``/``InferenceError`` are

@@ -109,7 +109,7 @@ Open `http://127.0.0.1:8080/docs` for interactive OpenAPI docs. Endpoints:
 | `POST /pii/deidentify/batch` | De-identify up to 100 notes; a bad note is isolated as `{"ok": false, …}`. |
 | `POST /pii/anonymize-policy` | Anonymize under a regulatory `policy` (the policy picks each action); the profiles the UI hides return 422. |
 | `POST /pii/reidentify` | Restore originals from a kept `mapping`. |
-| `GET /health` | Liveness + configured model/backend/limits (always unauthenticated). |
+| `GET /health` | Liveness + configured model/backend/limits, and `working_directory_clean` (see [Security & notes](#security--notes)); always unauthenticated. |
 
 Every non-2xx response uses one envelope: `{"error": {"code", "message", "details"}}`. Validation
 errors are PHI-safe — the offending request text is never echoed back.
@@ -119,8 +119,10 @@ model — omit `model_name` to get it, or OpenMed's own default for a non-Englis
 pre-converted MLX build (see [Apple Silicon (MLX)](#apple-silicon-mlx)); `/ner` and `/zero-shot`
 accept only the ten curated aliases of their domain pickers (`NER_MODELS` / `ZERO_SHOT_MODELS` in
 [`engine.py`](openmed_studio/engine.py)). Anything else — another Hugging Face repo, another
-OpenMed registry alias, a different casing — is a 422 that doesn't echo the name. An operator can
-widen every allowlist with `OPENMED_STUDIO_EXTRA_MODELS` (below).
+OpenMed registry alias, a different casing — is a 422 that doesn't echo the name. The OpenAPI
+schema (`/docs`, `/openapi.json`) lists each route's accepted names in the `model_name` field's
+description and examples. An operator can widen every allowlist with `OPENMED_STUDIO_EXTRA_MODELS`
+(below); those additions aren't listed.
 
 ### Auth & configuration
 
@@ -140,7 +142,7 @@ curl -H "X-API-Key: secret" -H "Content-Type: application/json" \
 | `OPENMED_STUDIO_PRELOAD` | Truthy = warm the model at startup (in a worker thread) so the first request isn't slow. |
 | `OPENMED_STUDIO_COMPAT` | Truthy = mount an opt-in `/compat/pii/{extract,deidentify}` surface matching OpenMed's own REST shape (echoes the original text — off by default). It ignores unknown fields like OpenMed's does, but `lang` and `model_name` follow the primary routes' rules (the 12 supported languages, the PII allowlist). |
 | `OPENMED_STUDIO_BACKEND` / `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Same as for the UI — backend pin and per-request text cap. |
-| `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids to accept as `model_name` on every route, in addition to the curated ones (exact match, case included; read at startup, and a malformed entry stops the app). You own what these load: OpenMed downloads an unregistered repo without an integrity check, and adding one of OpenMed's privacy-filter repos (`openai/privacy-filter`, `OpenMed/privacy-filter-*`) makes it run that repo's code (`trust_remote_code=True`). |
+| `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids to accept as `model_name` on every route, in addition to the curated ones (exact match, case included; read at startup, and a malformed entry stops the app). You own what these load: OpenMed downloads an unregistered repo without an integrity check, and a privacy-filter name (`openai/privacy-filter…`, `OpenMed/privacy-filter-…`) goes to a loader that runs repo code (`trust_remote_code=True`) for three first-party repos — `openai/privacy-filter`, `OpenMed/privacy-filter-multilingual` and `OpenMed/privacy-filter-nemotron` — and, when OpenMed's MLX backend is unavailable, swaps an `-mlx` name for one of them. |
 
 > **Run it locally.** Like the UI, the API is a single-user / small-scale tool. An unset API key means
 > **no auth** — put it behind your own auth, TLS, or reverse proxy before exposing it or processing real
@@ -241,7 +243,9 @@ openmed-registry sync guards), `PIIEngine`'s loading contract, the Streamlit UI 
 `streamlit.testing.v1.AppTest`), and the FastAPI service (via `fastapi.testclient.TestClient` — auth,
 the error envelope, status mapping, and `/compat`). The `--run-model` tests load real models to verify
 detection, masking, deterministic replacement, and round-trips; the zero-shot model test is
-additionally gated on the `gliner` extra, so CI never downloads it.
+additionally gated on the `gliner` extra, so CI never downloads it. The suite ignores the
+`OPENMED_STUDIO_EXTRA_MODELS`, `_MAX_TEXT_LENGTH`, `_API_KEY`, `_COMPAT` and `_PRELOAD` settings
+in your shell (`tests/conftest.py` clears them), so exporting them to run the app doesn't skew it.
 
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on every pull request: the tests across
 Python 3.10, 3.13 and 3.14, and the lint / format / type checks once on the 3.10 leg (they are
@@ -255,10 +259,11 @@ library.
 
 ## Security & notes
 
-**Run it locally.** This is a single-user / small-scale tool. The [HTTP API](#http-api-fastapi) *does*
-open a network endpoint, so put it behind your own auth, TLS, or a reverse proxy before exposing it, and
-don't run it on a network with real PHI as-is. The guards that protect the model are enforced in-process
-by the service seam — so **both** the UI and the API inherit them:
+**Run it locally.** This is a single-user / small-scale tool. Both surfaces open a network port —
+the [HTTP API](#http-api-fastapi) on `127.0.0.1` by default, the Streamlit UI on every interface
+unless you bind it (item 2 below) — so put them behind your own auth, TLS, or a reverse proxy
+before exposing them, and don't run them on a network with real PHI as-is. The guards that protect
+the model are enforced in-process by the service seam — so **both** the UI and the API inherit them:
 
 - The text / batch / mapping caps, the value / enum / format checks, the per-capability
   `model_name` allowlists, backend pinning, and not echoing request input on a validation error.
@@ -268,6 +273,8 @@ by the service seam — so **both** the UI and the API inherit them:
   as unavailable (503 over HTTP) and logging the path — when a name it would load, or an `OpenMed`
   or `openai` entry, exists in the directory the app was started from. Start it from a directory
   that has neither (the repo root is fine; on macOS and Windows an `openmed` folder counts too).
+  Both the UI and the API check at startup and log a warning naming any such entry, and the API's
+  `/health` reports `working_directory_clean` (a yes/no, never the path).
 - Concurrent API requests are serialized on the shared model (one inference at a time).
 
 The API layer adds the HTTP-only protections back on top: **`X-API-Key` auth** (via
@@ -275,20 +282,32 @@ The API layer adds the HTTP-only protections back on top: **`X-API-Key` auth** (
 uniform `{"error": {…}}` envelope, PHI-safe 422s, and the opt-in OpenMed-REST `/compat` surface
 (`OPENMED_STUDIO_COMPAT`, which echoes the original text — off by default).
 
-**Before you expose the API or process real PHI:**
+**Before you expose the API or the UI, or process real PHI:**
 
 1. Set `OPENMED_STUDIO_API_KEY`. Without it every model route is open to anyone who can reach the
-   port.
-2. Keep the default `127.0.0.1` bind, or put TLS or a reverse proxy in front of it.
+   port. That includes making the server download and keep in memory every model the app
+   accepts — about 4.7B parameters (roughly 19 GB at 32-bit precision) of PII and NER models, by
+   cycling `lang` and the `/ner` domains, plus the zero-shot models if the `gliner` extra is
+   installed. The allowlists cap that; only the key stops it.
+2. Keep the API's default `127.0.0.1` bind, or put TLS or a reverse proxy in front of it. **The
+   Streamlit UI has no such default**: Streamlit listens on all interfaces unless told otherwise,
+   and the shipped `.streamlit/config.toml` doesn't tell it. Start the UI with
+   `uv run streamlit run streamlit_app.py --server.address 127.0.0.1`, or add
+   `address = "127.0.0.1"` under a `[server]` section of your `.streamlit/config.toml`.
 3. Start the app from a clean directory that nobody else can write to. The local-path guard checks
    the working directory before each model call, but it can't close the gap between its check and
-   OpenMed's own, and a directory named like a model can make OpenMed run code from it.
+   OpenMed's own, and a directory named like a model can make OpenMed run code from it. If the
+   guard ever fires (a `LocalModelPathError` in the log, or `working_directory_clean: false`),
+   remove the entry **and restart** the app: OpenMed caches what it loads, so a model it already
+   picked up from that directory keeps being served after the directory is gone.
 4. Optionally, once the models you serve are downloaded, set `HF_HUB_OFFLINE=1` (and OpenMed's
    `OPENMED_OFFLINE=1`) so no request can trigger a download.
 
 Anything you add to `OPENMED_STUDIO_EXTRA_MODELS` is your call: OpenMed downloads an unregistered
-repo without an integrity check, and it runs the code in its privacy-filter repos. Don't set
-OpenMed's own `OPENMED_TRUSTED_REMOTE_CODE_MODELS` for this app.
+repo without an integrity check, and it runs the code in three first-party privacy-filter repos
+(`openai/privacy-filter`, `OpenMed/privacy-filter-multilingual`, `OpenMed/privacy-filter-nemotron`),
+and swaps an `-mlx` privacy-filter name for one of them when the MLX backend is unavailable.
+Don't set OpenMed's own `OPENMED_TRUSTED_REMOTE_CODE_MODELS` for this app.
 
 Other things to keep in mind:
 

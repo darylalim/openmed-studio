@@ -129,10 +129,15 @@ def _extra_models() -> frozenset[str]:
 
     Every id listed here is accepted on EVERY ``model_name`` field, matched exactly (case
     included), and the operator owns what it loads: openmed downloads an unregistered Hub
-    id without an integrity check, and adding a first-party privacy-filter repo
-    (``openai/privacy-filter``, ``OpenMed/privacy-filter-*``) re-opens openmed's
-    ``trust_remote_code=True`` path (``core/pii.py`` routes those names to
-    ``create_privacy_filter_pipeline``).
+    id without an integrity check, and a name matching openmed's privacy-filter prefixes
+    (``openai/privacy-filter*``, ``OpenMed/privacy-filter-*``, any casing) is routed to
+    ``create_privacy_filter_pipeline`` (``core/pii.py``), which loads with
+    ``trust_remote_code=True`` the three first-party repos ``openai/privacy-filter``,
+    ``OpenMed/privacy-filter-multilingual`` and ``OpenMed/privacy-filter-nemotron``
+    (``torch/privacy_filter.py::TRUSTED_REMOTE_CODE_MODELS``) — and, whenever openmed's MLX
+    backend is unavailable, swaps any ``-mlx`` name among them for one of those three
+    (``core/backends.py::resolve_privacy_filter_model``). So such an extra can run
+    first-party repo code.
     """
     names: set[str] = set()
     for entry in os.environ.get(EXTRA_MODELS_ENV, "").split(","):
@@ -213,9 +218,11 @@ def _model_name_schema(curated: tuple[str, ...], what: str) -> FieldInfo:
 # The per-capability model_name types. Each runs the format check FIRST (charset, one "/",
 # no "."-leading segment — its messages name the rule, never the value) and the allowlist
 # SECOND. The format check alone left any format-valid Hub id loadable — a download openmed
-# doesn't verify and ModelLoader._pipelines never evicts — and, on the PII routes, the
-# first-party privacy-filter names (openai/privacy-filter, OpenMed/privacy-filter-*, in any
-# casing) that openmed loads with trust_remote_code=True.
+# doesn't verify and ModelLoader._pipelines never evicts — and, on the PII routes, every
+# name matching openmed's privacy-filter prefixes (openai/privacy-filter*,
+# OpenMed/privacy-filter-*, in any casing), which reach the pipeline that loads its three
+# first-party repos (or, without MLX, the one an -mlx name is swapped for) with
+# trust_remote_code=True.
 #
 # RESIDUAL — the allowlist fixes the NAME, not what it resolves to. openmed resolves a
 # name against the filesystem BEFORE its registry or the Hub
