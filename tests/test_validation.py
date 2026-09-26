@@ -431,7 +431,7 @@ def test_allowlists_admit_only_the_curated_names_of_openmeds_registry() -> None:
 
     catalog = openmed.get_all_models()  # dict[alias -> ModelInfo]
     names = set(catalog) | {info.model_id for info in catalog.values()}
-    extras = validation.EXTRA_MODELS & names  # empty unless the env var is set
+    extras = validation.EXTRA_MODELS & names  # empty: tests/conftest.py scrubs the knob
     expected = {
         validation.PiiModelName: {
             engine.DEFAULT_PII_MODEL,
@@ -575,6 +575,80 @@ def test_malformed_extra_models_stop_the_app_at_import() -> None:
     assert result.returncode != 0
     assert validation.EXTRA_MODELS_ENV in result.stderr
     assert "ValueError" in result.stderr
+
+
+def test_openapi_lists_the_curated_model_names_but_no_extra() -> None:
+    # A 422 names no allowed id, so the schema is where an API caller discovers them:
+    # each capability's model_name lists exactly its curated names, in description and
+    # examples — and never the operator's extras (a fresh process, since the extras are
+    # read at import).
+    code = """
+import json
+from openmed_studio import engine, main
+
+spec = main.create_app().openapi()
+schemas = spec["components"]["schemas"]
+curated = {
+    "ExtractRequest": [engine.DEFAULT_PII_MODEL, engine.DEFAULT_PII_MLX_MODEL],
+    "NerRequest": [m.alias for m in engine.NER_MODELS.values()],
+    "ZeroShotRequest": [m.alias for m in engine.ZERO_SHOT_MODELS.values()],
+}
+for model, names in curated.items():
+    field = schemas[model]["properties"]["model_name"]
+    assert field["examples"] == names, (model, field)
+    assert all(name in field["description"] for name in names), model
+    assert "OPENMED_STUDIO_EXTRA_MODELS" in field["description"], model
+    assert "enum" not in json.dumps(field), model
+assert "Acme/Secret-Extra" not in json.dumps(spec)
+print("OK")
+"""
+    result = _import_with_extra_models("Acme/Secret-Extra", code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "OK"
+
+
+# The operator knobs tests/conftest.py scrubs before anything imports openmed_studio.
+_SCRUBBED_KNOBS = {
+    "OPENMED_STUDIO_EXTRA_MODELS": "acme/ok,../escape",  # malformed: stops collection
+    "OPENMED_STUDIO_MAX_TEXT_LENGTH": "1000",
+    "OPENMED_STUDIO_API_KEY": "exported-in-the-shell",
+    "OPENMED_STUDIO_COMPAT": "1",
+    "OPENMED_STUDIO_PRELOAD": "1",
+}
+
+
+def test_operator_knobs_are_absent_and_their_defaults_hold() -> None:
+    # What the fast suite assumes: none of the scrubbed knobs is set, so the import-time
+    # ones took their defaults.
+    assert not set(_SCRUBBED_KNOBS) & set(os.environ)
+    assert validation.EXTRA_MODELS == frozenset()
+    assert validation.MAX_TEXT_CHARS == 50_000
+
+
+def test_conftest_scrubs_operator_knobs_before_import() -> None:
+    # Export every scrubbed knob (a malformed extra included, which fails collection when
+    # read) and run the check above in a fresh pytest: it passes only if conftest.py pops
+    # them before any test module imports openmed_studio.
+    env = {**os.environ, **_SCRUBBED_KNOBS}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "tests/test_validation.py::"
+            "test_operator_knobs_are_absent_and_their_defaults_hold",
+        ],
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
 
 
 # --- zero-shot (GLiNER) request guards --------------------------------------

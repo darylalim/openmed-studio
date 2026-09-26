@@ -12,7 +12,32 @@ unless the option is passed.
 
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# Operator knobs the fast suite pins at their defaults, scrubbed so a value exported in the
+# developer's shell (to run the app) can't leak in. Two are read ONCE, at import, by
+# openmed_studio.validation — a non-default allowlist or text cap means spurious failures,
+# and a malformed extra a collection error — which is why this runs here: pytest imports
+# this file before any test module, so before anything imports openmed_studio. The other
+# three bite the API tests: main.py mounts /compat when its module-level `app =
+# create_app()` runs, checks the key on every request, and runs the preload in the lifespan
+# every TestClient enters — outside dependency_overrides, so it would load (and, uncached,
+# download) the real model, which a fast test must never do. OPENMED_STUDIO_BACKEND stays:
+# no fast test reads it unpatched, and it is a legitimate choice for --run-model.
+# Tests that exercise a knob set it themselves (monkeypatch, or an explicit subprocess env
+# whose {**os.environ, ...} copies this scrubbed environment);
+# tests/test_validation.py::test_conftest_scrubs_operator_knobs_before_import pins it.
+SCRUBBED_KNOBS = (
+    "OPENMED_STUDIO_EXTRA_MODELS",
+    "OPENMED_STUDIO_MAX_TEXT_LENGTH",
+    "OPENMED_STUDIO_API_KEY",
+    "OPENMED_STUDIO_COMPAT",
+    "OPENMED_STUDIO_PRELOAD",
+)
+for _knob in SCRUBBED_KNOBS:
+    os.environ.pop(_knob, None)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

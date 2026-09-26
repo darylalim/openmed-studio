@@ -602,23 +602,69 @@ class LocalModelPathError(RuntimeError):
     refuses the call instead. A ``RuntimeError``, so ``service._run`` reports it as
     ``unavailable`` (503) with its generic message: this message names the path and the
     working directory, which belong in the server log, not a response.
+
+    The message also says to RESTART, not just to clean up: had openmed ever seen the
+    entry (a call that won the race between this check and openmed's own), what it
+    resolved stays cached per model name for the life of the process —
+    ``ModelLoader._pipelines`` (``core/models.py``) is keyed by the resolved name, which
+    for a relative directory is the very string of the Hub id, and
+    ``core/pii.py::_is_privacy_filter_artifact_path`` (which
+    ``torch/privacy_filter.py::is_trusted_for_remote_code`` also consults) is
+    ``lru_cache``'d — so removing the directory doesn't evict it.
     """
+
+
+# The phrase every guard refusal and the startup warning end with (see LocalModelPathError).
+_RESTART_HINT = (
+    "remove the entry and restart the app from a clean directory (had openmed already "
+    "resolved it, its caches keep serving that resolution until the process restarts)"
+)
+
+
+def _existing_local_paths(names: Iterable[str]) -> tuple[str, ...]:
+    """The names, then the guarded namespaces, that exist relative to the working directory.
+
+    ``os.path.lexists`` rather than ``Path.exists``: a dangling symlink counts too (its
+    target can appear at any moment), and an ``OSError`` for an unusable name reads as
+    "absent" — as it does to openmed, which then treats the name as a Hub id. In order,
+    each name once.
+    """
+    candidates = dict.fromkeys((*names, *_OPENMED_NAMESPACES))
+    return tuple(name for name in candidates if os.path.lexists(name))
 
 
 def _refuse_local_model_paths(names: Iterable[str]) -> None:
-    """Raise :class:`LocalModelPathError` if any name, or a guarded namespace, exists locally.
+    """Raise :class:`LocalModelPathError` if any name, or a guarded namespace, exists locally."""
+    found = _existing_local_paths(names)
+    if found:
+        raise LocalModelPathError(
+            f"a local path named {found[0]!r} exists in the working directory "
+            f"{os.getcwd()!r}, and openmed would load it in place of the model; "
+            f"{_RESTART_HINT}"
+        )
 
-    ``os.path.lexists`` rather than ``Path.exists``: a dangling symlink is refused too (its
-    target can appear at any moment), and an ``OSError`` for an unusable name reads as
-    "absent" — as it does to openmed, which then treats the name as a Hub id.
+
+def local_model_path_conflicts(extra_names: Iterable[str] = ()) -> tuple[str, ...]:
+    """Working-directory entries the guard would refuse for a name the app admits.
+
+    The startup check (``service.check_working_directory``) and ``/health`` call this, so an
+    operator learns at launch — not from the first failing request — that model calls will
+    be refused. It checks the default PII model and its ``-mlx`` build, every curated NER
+    and zero-shot alias, ``extra_names`` (the caller passes the operator's
+    ``OPENMED_STUDIO_EXTRA_MODELS``) and the ``OpenMed``/``openai`` namespaces, which cover
+    every name the guard adds on its own (language defaults, resolved repo ids). Empty
+    means clean. No openmed import: a pure filesystem check the UI can reach through the
+    seam.
     """
-    for name in (*names, *_OPENMED_NAMESPACES):
-        if os.path.lexists(name):
-            raise LocalModelPathError(
-                f"a local path named {name!r} exists in the working directory "
-                f"{os.getcwd()!r}, and openmed would load it in place of the model; run "
-                "the server from a clean directory"
-            )
+    return _existing_local_paths(
+        (
+            DEFAULT_PII_MODEL,
+            DEFAULT_PII_MLX_MODEL,
+            *(m.alias for m in NER_MODELS.values()),
+            *(m.alias for m in ZERO_SHOT_MODELS.values()),
+            *extra_names,
+        )
+    )
 
 
 def _entities(result: Any) -> list[Any]:

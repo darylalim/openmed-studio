@@ -62,7 +62,13 @@ EXAMPLE_NOTE = (
 
 @st.cache_resource(show_spinner=False)
 def get_engine() -> PIIEngine:
-    """The process-wide engine, built once (model loads lazily on first call)."""
+    """The process-wide engine, built once (model loads lazily on first call).
+
+    Building it also runs the seam's startup check once, which logs a warning to the
+    server console if the working directory holds an entry the engine's local-path guard
+    would refuse — otherwise the first sign would be a "Model backend unavailable" error.
+    """
+    service.check_working_directory()
     return service.build_engine()
 
 

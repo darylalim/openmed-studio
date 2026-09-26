@@ -737,6 +737,46 @@ def test_local_model_path_is_unavailable_with_the_reason_only_logged(
     assert os.getcwd() in caplog.text
 
 
+def test_check_working_directory_warns_naming_the_entries(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    # The startup check both surfaces run: a poisoned working directory is logged once,
+    # naming the entries, the directory and the restart, and reported as not clean.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "openai").mkdir()
+    with caplog.at_level(logging.WARNING, logger="openmed_studio"):
+        assert service.check_working_directory() is False
+    [record] = caplog.records
+    assert record.levelno == logging.WARNING
+    assert "'openai'" in record.getMessage()
+    assert os.getcwd() in record.getMessage()
+    assert "restart the app from a clean directory" in record.getMessage()
+
+
+def test_check_working_directory_is_silent_when_clean(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="openmed_studio"):
+        assert service.check_working_directory() is True
+    assert not caplog.records
+    assert service.working_directory_conflicts() == ()
+
+
+def test_working_directory_conflicts_include_the_operator_extras(
+    monkeypatch, tmp_path
+) -> None:
+    # The guard refuses an extra's local namesake like any other name, so the startup
+    # check looks for it too. (validation reads the knob at import; patching the parsed
+    # set stands in for a relaunch.)
+    from openmed_studio import validation
+
+    monkeypatch.setattr(validation, "EXTRA_MODELS", frozenset({"acme/extra"}))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "acme" / "extra").mkdir(parents=True)
+    assert service.working_directory_conflicts() == ("acme/extra",)
+
+
 # --- ServiceError.kind (the transport-neutral classification the API maps) ---
 
 

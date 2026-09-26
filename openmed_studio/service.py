@@ -32,7 +32,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ValidationError
 
 from . import validation
-from .engine import Backend, PIIEngine
+from .engine import _RESTART_HINT, Backend, PIIEngine, local_model_path_conflicts
 
 logger = logging.getLogger("openmed_studio")
 
@@ -106,6 +106,43 @@ def build_engine() -> PIIEngine:
     Streamlit-free) so tests can substitute a stub engine.
     """
     return PIIEngine(backend=resolve_backend())
+
+
+def working_directory_conflicts() -> tuple[str, ...]:
+    """Entries in the working directory the engine's local-path guard would refuse.
+
+    :func:`~openmed_studio.engine.local_model_path_conflicts` over every name the app
+    admits — the curated ones plus the operator's ``OPENMED_STUDIO_EXTRA_MODELS``. Empty
+    means clean. The names are paths on the server, so they go to the log only: ``/health``
+    reports just whether this is empty.
+    """
+    return local_model_path_conflicts(validation.EXTRA_MODELS)
+
+
+def check_working_directory() -> bool:
+    """Log a warning if the working directory would make the guard refuse model calls.
+
+    Both surfaces call this once at startup — ``main.create_app`` and the Streamlit app's
+    ``st.cache_resource``'d engine factory — so an operator learns at launch, rather than
+    from the first 503 (or, in the UI, "Model backend unavailable"), that a directory named
+    like a model, or an ``OpenMed``/``openai`` entry (on a case-insensitive filesystem an
+    ``openmed`` folder counts), sits where the app was started. The warning names the
+    entries and the directory — operator config, printed to the operator's console, never
+    to a caller. Returns whether the directory is clean.
+    """
+    conflicts = working_directory_conflicts()
+    if conflicts:
+        logger.warning(
+            "The working directory %r holds %s. openmed resolves a model name against the "
+            "working directory before the Hub, so the engine's local-path guard refuses "
+            "every model call that could resolve one of these (a top-level 'OpenMed' or "
+            "'openai' entry refuses them all), reported as 'model backend unavailable'; "
+            "%s.",
+            os.getcwd(),
+            ", ".join(repr(name) for name in conflicts),
+            _RESTART_HINT,
+        )
+    return not conflicts
 
 
 def _validate(model: type[BaseModel], data: dict[str, Any]) -> Any:

@@ -135,6 +135,21 @@ def test_app_renders(monkeypatch):
     assert any("model loaded" in c.value for c in at.sidebar.caption)
 
 
+def test_engine_factory_runs_the_working_directory_check_once(monkeypatch):
+    # get_engine() (st.cache_resource) runs the seam's startup check when it builds the
+    # engine, so a poisoned working directory is logged once per process — not on every
+    # rerun, and not left for the first "Model backend unavailable" to reveal.
+    calls = []
+    monkeypatch.setattr(
+        service, "check_working_directory", lambda: calls.append(1) or True
+    )
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    at.run(timeout=30)  # a rerun reuses the cached engine
+    assert not at.exception
+    assert len(calls) == 1
+
+
 def test_sidebar_reports_lazy_load(monkeypatch):
     engine = _StubEngine()
     engine.is_loaded = False  # type: ignore[misc]  # instance override of class attr

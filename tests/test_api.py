@@ -133,12 +133,60 @@ def test_health_ok(client) -> None:
     assert body["max_text_chars"] == 50_000  # OPENMED_STUDIO_MAX_TEXT_LENGTH default
     assert body["model_loaded"] is True
     assert body["auth_required"] is False  # no OPENMED_STUDIO_API_KEY set in tests
+    assert body["working_directory_clean"] is True  # tests run from the repo root
 
 
 def test_health_reports_configured_backend() -> None:
     engine = SimpleNamespace(model_name=None, backend="mlx", is_loaded=False)
     with _client(engine) as override:
         assert override.get("/health").json()["backend"] == "mlx"
+
+
+def test_health_flags_a_poisoned_working_directory_without_naming_it(
+    monkeypatch, tmp_path
+) -> None:
+    # The guard 503s every model call while a CWD entry shadows a model; /health says so
+    # (checked per request) as a bare boolean — the entry and the directory stay in the
+    # server log. It stays a 200 "ok": the process is up, and a restart from the same
+    # directory wouldn't help.
+    monkeypatch.chdir(tmp_path)
+    with _client() as override:
+        assert override.get("/health").json()["working_directory_clean"] is True
+        (tmp_path / "OpenMed").mkdir()
+        resp = override.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["working_directory_clean"] is False
+    assert "OpenMed" not in resp.text
+    assert tmp_path.name not in resp.text
+
+
+def test_create_app_warns_once_about_a_poisoned_working_directory(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    # Logged at startup, before any request — without OPENMED_STUDIO_PRELOAD the guard
+    # would otherwise stay silent until the first model call 503s.
+    import logging
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "openai").mkdir()
+    with caplog.at_level(logging.WARNING, logger="openmed_studio"):
+        create_app()
+    warnings = [r for r in caplog.records if "working directory" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "'openai'" in warnings[0].getMessage()
+
+
+def test_create_app_is_quiet_about_a_clean_working_directory(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    import logging
+
+    monkeypatch.chdir(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="openmed_studio"):
+        create_app()
+    assert not [r for r in caplog.records if "working directory" in r.getMessage()]
 
 
 # --- success paths: each route reaches the right service function ------------

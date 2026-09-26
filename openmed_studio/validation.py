@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic.fields import FieldInfo
 
 from .engine import (
     DEFAULT_PII_MLX_MODEL,
@@ -158,19 +159,20 @@ EXTRA_MODELS = _extra_models()
 # PII (every de-identification route and both /compat bodies): the default model plus its
 # pre-converted MLX build. model_name=None still means "the default" — including openmed's
 # per-language default, which it swaps in for the default model when lang != "en".
-PII_MODEL_NAMES = frozenset({DEFAULT_PII_MODEL, DEFAULT_PII_MLX_MODEL}) | EXTRA_MODELS
+_CURATED_PII_MODELS = (DEFAULT_PII_MODEL, DEFAULT_PII_MLX_MODEL)
+PII_MODEL_NAMES = frozenset(_CURATED_PII_MODELS) | EXTRA_MODELS
 # Clinical NER: the curated NER_MODELS aliases only — not also each alias's HF repo id.
 # The UI sends aliases, and the baked NerModel (pinned by the drift guard) carries only the
 # alias, so accepting repo ids would mean baking a second id per model (or importing
 # openmed here) for a spelling no caller uses; one accepted name per model also keeps the
 # allowlist auditable at a glance. An API caller who wants a repo id gets it through
 # OPENMED_STUDIO_EXTRA_MODELS.
-NER_MODEL_NAMES = frozenset(m.alias for m in NER_MODELS.values()) | EXTRA_MODELS
+_CURATED_NER_MODELS = tuple(m.alias for m in NER_MODELS.values())
+NER_MODEL_NAMES = frozenset(_CURATED_NER_MODELS) | EXTRA_MODELS
 # Zero-shot: the curated ZERO_SHOT_MODELS aliases. PIIEngine.extract_zero_shot re-checks
 # this same set, since it would otherwise resolve any of openmed's registry aliases.
-ZERO_SHOT_MODEL_NAMES = (
-    frozenset(m.alias for m in ZERO_SHOT_MODELS.values()) | EXTRA_MODELS
-)
+_CURATED_ZERO_SHOT_MODELS = tuple(m.alias for m in ZERO_SHOT_MODELS.values())
+ZERO_SHOT_MODEL_NAMES = frozenset(_CURATED_ZERO_SHOT_MODELS) | EXTRA_MODELS
 
 
 def _allowed_in(
@@ -190,6 +192,22 @@ def _allowed_in(
         )
 
     return check
+
+
+def _model_name_schema(curated: tuple[str, ...], what: str) -> FieldInfo:
+    """OpenAPI metadata listing a capability's CURATED names (``description`` + ``examples``).
+
+    A 422 deliberately names no allowed id, so the schema is where an API caller discovers
+    them (``GET /openapi.json``, ``/docs``). Built from the curated tuples only: the
+    operator's ``OPENMED_STUDIO_EXTRA_MODELS`` stay out of the published schema, as they stay
+    out of the error message. No ``enum``: an extra is accepted too, and an enum would make
+    a schema-validating client refuse it.
+    """
+    return Field(
+        description=f"{what} One of: {', '.join(curated)}. The operator may allow more "
+        f"with {EXTRA_MODELS_ENV}; those are not listed here.",
+        examples=list(curated),
+    )
 
 
 # The per-capability model_name types. Each runs the format check FIRST (charset, one "/",
@@ -214,6 +232,11 @@ def _allowed_in(
 # An optional PII model id; None means openmed's default.
 PiiModelName = Annotated[
     str | None,
+    _model_name_schema(
+        _CURATED_PII_MODELS,
+        "PII model id; omit it for openmed's default (the per-language default when "
+        "lang isn't 'en').",
+    ),
     AfterValidator(_check_model_name),
     AfterValidator(_allowed_in(PII_MODEL_NAMES, "PII")),
 ]
@@ -223,6 +246,9 @@ PiiModelName = Annotated[
 # callers pick one explicitly.
 NerModelName = Annotated[
     str,
+    _model_name_schema(
+        _CURATED_NER_MODELS, "Clinical NER model: the alias of one domain's model."
+    ),
     AfterValidator(_check_model_name),
     AfterValidator(_allowed_in(NER_MODEL_NAMES, "clinical NER")),
 ]
@@ -231,6 +257,10 @@ NerModelName = Annotated[
 # domain-tuned).
 ZeroShotModelName = Annotated[
     str,
+    _model_name_schema(
+        _CURATED_ZERO_SHOT_MODELS,
+        "Zero-shot (GLiNER) model: the alias of one domain's checkpoint.",
+    ),
     AfterValidator(_check_model_name),
     AfterValidator(_allowed_in(ZERO_SHOT_MODEL_NAMES, "zero-shot")),
 ]

@@ -200,6 +200,14 @@ class HealthResponse(_Strict):
         "model request); not a guarantee the model is resident."
     )
     auth_required: bool
+    working_directory_clean: bool = Field(
+        description="False while the directory the service was started from holds an entry "
+        "the engine's local-path guard refuses — a directory named like a model the service "
+        "admits, or a top-level OpenMed/openai entry — so the model calls that could resolve "
+        "it fail with 503. Checked on each request; the entry itself is only logged. After "
+        "it has been False, restart the service from a clean directory: a model openmed "
+        "already resolved from the entry stays cached until the process restarts."
+    )
 
 
 class ErrorDetail(_Strict):
@@ -425,6 +433,9 @@ def create_app() -> FastAPI:
             API_KEY_ENV,
             API_KEY_ENV,
         )
+    # Log once, at startup, if the working directory would make the engine refuse model
+    # calls (the guard itself only reports it per failing request, as a generic 503).
+    service.check_working_directory()
 
     @app.exception_handler(ServiceError)
     async def _on_service_error(_request: Request, exc: ServiceError) -> JSONResponse:
@@ -469,6 +480,7 @@ def create_app() -> FastAPI:
             max_text_chars=validation.MAX_TEXT_CHARS,
             model_loaded=engine.is_loaded,
             auth_required=bool(os.environ.get(API_KEY_ENV)),
+            working_directory_clean=not service.working_directory_conflicts(),
         )
 
     @app.post(

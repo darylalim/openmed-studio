@@ -832,6 +832,78 @@ def test_guard_lets_a_clean_working_directory_through(
         _call(engine, method)
 
 
+def test_guard_refusal_tells_the_operator_to_restart(monkeypatch, tmp_path) -> None:
+    # Removing the entry isn't enough: had openmed already resolved it (a call that won
+    # the race), ModelLoader._pipelines and the lru_cache'd privacy-filter check keep
+    # serving it. The logged message says so.
+    from openmed_studio.engine import LocalModelPathError
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "openai").mkdir()
+    _fail_if_openmed_runs(monkeypatch)
+    with pytest.raises(LocalModelPathError) as excinfo:
+        _call(PIIEngine(loader=cast("ModelLoader", object())), "extract")
+    message = str(excinfo.value)
+    assert "restart the app from a clean directory" in message
+    assert "caches" in message
+
+
+def test_local_model_path_conflicts_is_empty_in_a_clean_directory(
+    monkeypatch, tmp_path
+) -> None:
+    from openmed_studio.engine import local_model_path_conflicts
+
+    for unrelated in ("models", "openmed_studio", "notes.txt"):
+        (tmp_path / unrelated).touch()
+    monkeypatch.chdir(tmp_path)
+    assert local_model_path_conflicts() == ()
+    assert local_model_path_conflicts(["acme/extra"]) == ()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        DEFAULT_PII_MODEL,
+        DEFAULT_PII_MLX_MODEL,
+        "disease_detection_superclinical_141m",  # a curated NER alias
+        "zeroshot_protein_small_166m",  # a curated zero-shot alias
+        "acme/extra",  # an operator extra, passed in by the caller
+        "OpenMed",
+        "openai",
+    ],
+)
+def test_local_model_path_conflicts_names_what_the_guard_would_refuse(
+    monkeypatch, tmp_path, entry
+) -> None:
+    # The startup check's source: every name the app admits (plus the caller's extras)
+    # and both guarded namespaces. With the namespace check off, each model name must be
+    # enumerated in its own right — as the guard would refuse it on a model call.
+    from openmed_studio.engine import _OPENMED_NAMESPACES, local_model_path_conflicts
+
+    if entry not in _OPENMED_NAMESPACES:
+        _no_namespace_check(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / entry).mkdir(parents=True)
+    assert local_model_path_conflicts(["acme/extra"]) == (entry,)
+
+
+def test_local_model_path_conflicts_lists_each_entry_once_in_order(
+    monkeypatch, tmp_path
+) -> None:
+    # A default-model directory also creates the "OpenMed" namespace entry; both are
+    # reported (names first, then namespaces), each once — and a dangling symlink counts.
+    from openmed_studio.engine import local_model_path_conflicts
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / DEFAULT_PII_MODEL).mkdir(parents=True)
+    (tmp_path / "openai").symlink_to(tmp_path / "not-there-yet")
+    assert local_model_path_conflicts([DEFAULT_PII_MODEL]) == (
+        DEFAULT_PII_MODEL,
+        "OpenMed",
+        "openai",
+    )
+
+
 def test_pii_model_names_match_openmeds_resolution() -> None:
     # The guard's language rule mirrors core/pii.py::_resolve_effective_pii_model: for
     # every language the app offers, and for both default PII ids, the names the engine
