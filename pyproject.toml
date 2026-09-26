@@ -97,6 +97,10 @@ dev = [
     # call as Unknown. The floor is starlette's own (`httpx2>=2.0.0` in its `full`
     # extra). Plain httpx stays in uv.lock regardless: huggingface-hub depends on it.
     "httpx2>=2.0.0",
+    # Drives a browser for scripts/capture_screenshots.py (the README screenshots). A dev
+    # dep rather than `uv run --with` so ty resolves the script's playwright types in CI.
+    # The wheel carries no browser: the script uses the installed Google Chrome.
+    "playwright>=1.63.0",
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "ty>=0.0.49",

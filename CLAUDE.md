@@ -95,6 +95,14 @@ uv run pytest                  # fast tests only; model tests are skipped
 uv run pytest --run-model      # also run the tests that load the OpenMed PII model
 ```
 
+Regenerate the README screenshots (`docs/screenshots/`) after a UI change with
+`uv run python scripts/capture_screenshots.py [--only <slug> …]`: it starts the app itself (spare
+loopback port, minimal toolbar, file watcher off), drives each tab with Playwright in the installed
+Google Chrome (`playwright` is a `dev` dep so ty resolves the script in CI; its wheel carries no
+browser), and quantizes the PNGs with `pngquant` when on PATH. Captures must show synthetic text
+only — the app's `EXAMPLE_NOTE`, plus the script's `NER_NOTE` for Clinical NER, since the example
+holds no conditions for the Disease model to find.
+
 ### CI
 
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and every PR: `pytest` across Python 3.10,

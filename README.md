@@ -285,6 +285,17 @@ additionally gated on the `gliner` extra, so CI never downloads it. The suite ig
 `OPENMED_STUDIO_EXTRA_MODELS`, `_MAX_TEXT_LENGTH`, `_API_KEY`, `_COMPAT` and `_PRELOAD` settings
 in your shell (`tests/conftest.py` clears them), so exporting them to run the app doesn't skew it.
 
+After a UI change, regenerate the screenshots above:
+
+```bash
+uv run python scripts/capture_screenshots.py              # all four tabs, dark + light
+uv run python scripts/capture_screenshots.py --only detect
+```
+
+It starts the app on a spare loopback port, drives each tab in headless Google Chrome via
+[Playwright](https://playwright.dev/python/), writes `docs/screenshots/<tab>-{dark,light}.png`, and
+compresses them with `pngquant` when it is installed. Every capture uses synthetic notes only.
+
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on every pull request: the tests across
 Python 3.10, 3.13 and 3.14, and the lint / format / type checks once on the 3.10 leg (they are
 interpreter-independent, so another run would only duplicate the work).
