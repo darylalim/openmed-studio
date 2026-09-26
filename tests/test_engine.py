@@ -806,14 +806,21 @@ def test_engine_mask_all_profiles_match_strict_no_leak(loader, policy) -> None:
 @pytest.mark.parametrize(
     ("policy", "surrogated", "masked"),
     [
-        (
-            "china_pipl",
-            {
-                "first_name": "Tom Hale",
-                "phone_number": "937-555-0142",
-                "ssn": "123-45-6789",
-            },
-            {"city": "Dayton", "date": "03/14/2024", "religious_belief": "Catholic"},
+        *(
+            (
+                twin,
+                {
+                    "first_name": "Tom Hale",
+                    "phone_number": "937-555-0142",
+                    "ssn": "123-45-6789",
+                },
+                {
+                    "city": "Dayton",
+                    "date": "03/14/2024",
+                    "religious_belief": "Catholic",
+                },
+            )
+            for twin in ("china_pipl", "gdpr_art9_health")  # identical action maps
         ),
         (
             "ng_ndpa",
@@ -847,7 +854,7 @@ def test_engine_surrogate_profiles_split_as_described(
 ) -> None:
     # Pins the surrogate-vs-mask split these three descriptions state, keyed label -> surface:
     # a surrogate removes the surface and leaves no "[label]" placeholder, a mask leaves one.
-    # Clinical text passes through all three, which is why none may say "mask all else".
+    # Clinical text passes through all of them, which is why none may say "mask all else".
     engine = PIIEngine(loader=loader)
     out = _anonymize_note(engine, policy).deidentified_text
     for label, surface in surrogated.items():

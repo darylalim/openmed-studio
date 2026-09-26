@@ -565,6 +565,18 @@ def test_hidden_policies_are_exactly_those_that_keep_other() -> None:
         "leaky (re-expose after a real run; their last descriptions are in commit "
         f"8e1e50f): {sorted(HIDDEN_POLICIES - keeps_other)}."
     )
+    # ...and every OFFERED profile keeps no label at all. The offered descriptions (and the
+    # engine.py comments) assume nothing is kept; a profile that starts keeping, say, DATE
+    # needs a real-run review of its description, even if its OTHER action is still "mask".
+    offered = set(typing.get_args(validation.Policy))
+    keeps_any = {
+        name: sorted(k for k, a in load_policy(name).actions.items() if a == "keep")
+        for name in offered
+    }
+    assert not any(keeps_any.values()), (
+        "an offered profile now keeps labels verbatim; review its description with a real "
+        f"run (and hide it if it leaks identifiers): { {n: k for n, k in keeps_any.items() if k} }"
+    )
 
 
 def test_policy_models_resolve_in_openmed() -> None:

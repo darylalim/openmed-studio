@@ -449,8 +449,8 @@ POLICY_MODELS: dict[str, PolicyModel] = {
     ),
     "GDPR Art. 9 Health": PolicyModel(
         "gdpr_art9_health",
-        "Special-category health data: surrogate identifiers with high-recall detection; "
-        "reversible (EU GDPR Art. 9).",
+        "Surrogate direct identifiers, mask every other detected span; high-recall, "
+        "reversible with a key — identical to China PIPL (EU GDPR Art. 9).",
         "replace",
         True,
         True,
@@ -482,7 +482,7 @@ POLICY_MODELS: dict[str, PolicyModel] = {
     "China PIPL": PolicyModel(
         "china_pipl",
         "Surrogate direct identifiers, mask every other detected span; high-recall, "
-        "reversible with a key (China PIPL).",
+        "reversible with a key — identical to GDPR Art. 9 Health (China PIPL).",
         "replace",
         True,
         True,

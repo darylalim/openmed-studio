@@ -924,8 +924,8 @@ def _render_detect(lang: str) -> None:
     st.caption(
         "Detect PII entities without redacting — audit what the model finds. De-identification "
         "may redact more than is shown here: it keeps smart merging on and runs a deterministic "
-        "structured-identifier safety sweep (toggleable per de-identification tab) that catches "
-        "IDs the model misses."
+        "structured-identifier safety sweep (on in every de-identification tab; Single note and "
+        "Batch can switch it off) that catches IDs the model misses."
     )
     with st.form("detect"):
         text = st.text_area("Clinical note to scan", value=EXAMPLE_NOTE, height=200)

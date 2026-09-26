@@ -287,7 +287,9 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       conditioned on the method): `consistent`/`seed`/`locale` are the surrogate-method
       (`replace`/`format_preserve`) determinism knobs
       (`locale` e.g. `pt_BR` overrides the locale openmed derives from `lang`);
-      `date_shift_days`/`keep_year` drive `shift_dates`; `use_safety_sweep` (default `True`) is a
+      `date_shift_days`/`keep_year` drive `shift_dates`; `use_safety_sweep` (default `True`; only
+      Single note and Batch expose it — Anonymize always passes `True`, and every offered policy
+      forces the sweep, so Policy de-ID's toggle is inert today) is a
       deterministic structured-identifier sweep run after detection that redacts identifiers
       `extract_pii` (no sweep) misses — the `Detect` caption flags this. `use_smart_merging`
       (default on) is forwarded too. Every method delegates straight to openmed (see "Known gotchas"
@@ -374,7 +376,12 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       "reversible" against `keep_mapping=False`), and four of the 2.x African profiles (Malabo,
       Kenya DPA, Egypt PDPL, Morocco 09-08) are `mask`-everything and behaviorally identical to
       `strict_no_leak` — their descriptions say so, and
-      `test_engine_mask_all_profiles_match_strict_no_leak` pins it.
+      `test_engine_mask_all_profiles_match_strict_no_leak` pins it. Likewise the two reversible
+      profiles on offer, GDPR Art. 9 Health and China PIPL, share one action map (33 `replace`,
+      106 `mask`) and produce byte-identical output; their descriptions call each other
+      identical, and `test_engine_surrogate_profiles_split_as_described` pins both. The
+      partition guard also asserts every offered profile keeps **no** label, so the offered
+      descriptions' "nothing is kept" premise fails CI rather than going stale.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`, `ZeroShotRequest`,
     `AnonymizePolicyRequest`, `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, all
     `extra="forbid"`) plus

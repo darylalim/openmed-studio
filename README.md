@@ -264,7 +264,8 @@ Other things to keep in mind:
 - Smart entity merging is on by default (`use_smart_merging=True`), recombining token-fragmented PII
   like dates and SSNs into whole spans.
 - De-identification runs a deterministic structured-identifier safety sweep after detection
-  (`use_safety_sweep=True`, toggleable per tab), so it may redact a few identifiers the Detect tab
+  (`use_safety_sweep=True`; Single note and Batch can switch it off, Anonymize always runs it, and
+  every offered Policy de-ID profile forces it), so it may redact a few identifiers the Detect tab
   (which doesn't run the sweep) doesn't surface.
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
