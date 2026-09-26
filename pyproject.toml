@@ -98,6 +98,10 @@ dev = [
     "pytest>=9.1.0",
     "ruff>=0.15.17",
     "ty>=0.0.49",
+    # streamlit depends on watchdog only off macOS (`sys_platform != 'darwin'`), so on a
+    # Mac it falls back to polling for file changes and prints an install hint. Dev-only:
+    # it speeds up the reload-on-save loop and does nothing for a served deployment.
+    "watchdog>=6.0.0",
 ]
 
 [tool.ruff.lint]
