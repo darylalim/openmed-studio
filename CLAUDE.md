@@ -135,8 +135,9 @@ commit pushed straight to `main`), so it returns nothing but a `**Full Changelog
 78 bytes, verified by dry-running the endpoint. The job therefore checks whether the generated body
 contains any `* ` entry and, when it doesn't, substitutes `git log --no-merges --reverse
 --format='* %s' "$prev..HEAD"` under a `## Commits` heading, keeping the generator's compare link
-(with no `v*` tag yet — the state today — the range is a bare `HEAD`, so the first release's notes
-list the entire history).
+(`$prev` is the newest `v*` tag; with none the range is a bare `HEAD`, which is how `v0.1.0`'s
+notes came to list the entire history — `v0.1.0`–`v0.3.0` exist now, so each release lists only
+the commits since the one before).
 Two consequences: the release job needs `fetch-depth: 0` (it runs `git log`), and **commit subjects
 are release notes now** — write them accordingly. If the repo ever moves to a PR workflow the
 fallback goes quiet on its own, since the generated body will have `* ` entries again.
@@ -231,8 +232,13 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
 
 ## Conventions when editing
 
-- **Never bypass `service.py`.** Both surfaces call `service.*`, never `PIIEngine` directly — the
-  sole exception is `main.py`'s `/compat`, which needs raw entity objects.
+- **Never bypass `service.py` for a model call.** Both surfaces call `service.*` to run a model,
+  never `PIIEngine` directly. The two model-calling exceptions are both in `main.py`: `/compat`,
+  which needs raw entity objects, and the `OPENMED_STUDIO_PRELOAD` lifespan, whose fixed
+  `"warm-up"` string calls `engine.extract` with no caller input to validate and catches its own
+  failure. Engine reads that run no model are fine on either surface: `/health` and the Streamlit
+  sidebar and `_call` read `model_name`/`backend`/`is_loaded`, and the Zero-shot tab calls
+  `engine.zero_shot_available()`/`engine.default_labels()`.
 - **The UI layer never imports `openmed`.** `streamlit_app.py`/`ui_helpers.py` import only
   `openmed_studio` + `streamlit`; registry metadata is baked into `engine.py` for exactly this
   reason, and the drift guards keep the baked copy honest.
@@ -478,9 +484,12 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `openmed` — so it doubles as the in-process validation layer.
     Re-exports `DeidMethod` and `Policy`.
   - `service.py` — the single in-process chokepoint (framework-free); **both** surfaces (the Streamlit
-    UI and the FastAPI service) funnel every engine call through it — the two opt-in `/compat` routes
-    are the one exception (they call the engine directly for the raw entity objects, but still validate
-    via the `Compat*` models and reuse `service._run`) — so nothing bypasses validation:
+    UI and the FastAPI service) funnel every request-driven model call through it — the two opt-in
+    `/compat` routes are the exception (they call the engine directly for the raw entity objects,
+    but still validate via the `Compat*` models and reuse `service._run`); the preload warm-up
+    calls `engine.extract` directly too, on a fixed string rather than caller input (see "Never
+    bypass `service.py` for a model call" for the engine reads that run no model) — so nothing
+    bypasses validation:
     - `resolve_backend()` (reads `OPENMED_STUDIO_BACKEND`) and `build_engine()` (the `PIIEngine`
       factory both the UI's `st.cache_resource` and the API's `get_engine` wrap).
     - `working_directory_conflicts()` (`engine.local_model_path_conflicts` plus
@@ -533,7 +542,8 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `DEFAULT_POLICY_MODEL`, `NER_MODELS`, `ZERO_SHOT_MODELS`, `POLICY_MODELS`, `HIDDEN_POLICIES`,
     `PIIEngine`, and `__version__`.
   - `main.py` — the FastAPI service (the only core module that imports a web framework): `create_app()`
-    (and the module-level `app`). Every route is a **thin wrapper over `service.*`** — it declares a
+    (and the module-level `app`). Every model route but the opt-in `/compat` pair (below) is a
+    **thin wrapper over `service.*`** — it declares a
     `validation.py` request model as the body (free OpenAPI + auto-422) and returns the seam's dict,
     coerced into a typed response model (`Entity`/`EntitiesResponse`/`DeidentifyResponse`/
     `BatchItemResult`+`DeidentifyBatchResponse`/`ReidentifyResponse`, all defined here). Seven model

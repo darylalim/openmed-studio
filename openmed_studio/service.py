@@ -1,8 +1,9 @@
 """In-process service seam over :class:`PIIEngine`: validate, call, adapt.
 
-This is the single chokepoint **both** delivery surfaces — the Streamlit app and the
-FastAPI service (:mod:`openmed_studio.main`) — funnel every engine call through, so neither
-reimplements it. It is framework-free — no Streamlit, no HTTP — so it unit-tests without a
+This is the chokepoint **both** delivery surfaces — the Streamlit app and the FastAPI
+service (:mod:`openmed_studio.main`) — funnel every request-driven model call through, so
+neither reimplements it (the opt-in ``/compat`` routes call the engine directly for its raw
+entity objects, but still reuse :func:`_run`). It is framework-free — no Streamlit, no HTTP — so it unit-tests without a
 browser or a server. It reuses the Pydantic request models in :mod:`openmed_studio.validation`
 as the validation layer, so the text/batch/mapping caps and value checks apply on both
 surfaces. It then adapts openmed's result objects into the plain dicts the UI helpers and the

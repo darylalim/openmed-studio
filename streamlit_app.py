@@ -51,8 +51,9 @@ if TYPE_CHECKING:
     # Annotation only: streamlit.typing doesn't export the container type st.columns returns.
     from streamlit.delta_generator import DeltaGenerator
 
-# Derived from the canonical Literals so the sidebar can't drift from the engine /
-# validation surface (a new method or language reaches the widgets automatically).
+# Derived from the canonical Literals so the widgets (the per-tab Method row, the sidebar
+# Language filter) can't drift from the engine / validation surface (a new method or
+# language reaches them automatically).
 METHODS = list(get_args(DeidMethod))
 LANGS = list(get_args(Lang))
 
@@ -98,7 +99,7 @@ def get_engine() -> PIIEngine:
 
 
 def _render_entity_table(entities: list[dict[str, Any]]) -> None:
-    """The shared entity table (Detect / Clinical NER / Zero-shot / the de-identify panels).
+    """The shared entity table (Detect / Clinical NER / Zero-shot / Single note / Policy de-ID).
 
     The empty case is what makes this worth a helper rather than four bare ``st.dataframe``
     calls: zero rows here means "nothing cleared the confidence threshold", not "nothing
@@ -225,7 +226,10 @@ def _call(
 
 
 def _render_highlight(text: str, entities: list[dict[str, Any]]) -> None:
-    """Render highlighted ``text`` plus its color legend (shared by Detect/Single/Anonymize/NER).
+    """Render highlighted ``text`` plus its color legend.
+
+    Shared by Detect, Clinical NER, Zero-shot, and — via ``_render_deid_result`` —
+    Single note, Anonymize, and Policy de-ID.
 
     The marks are theme-agnostic (translucent tint + ``color: inherit``), so this
     needs no theme detection.

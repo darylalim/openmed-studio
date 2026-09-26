@@ -40,8 +40,9 @@ The app opens with eight tabs:
 
 Every tab except Batch is laid out as a workbench: the note and its controls on the left, results on
 the right, so a run's output appears beside its input rather than below it (on a narrow screen the
-two stack, input first). Detect, Clinical NER, Zero-shot, Single note, and Policy de-ID render matched
-entities as highlighted text with a color legend, plus an entity table. A few more things worth knowing:
+two stack, input first). Detect, Clinical NER, Zero-shot, Single note, Anonymize, and Policy de-ID
+render matched entities as highlighted text with a color legend; all but Anonymize add an entity
+table. A few more things worth knowing:
 
 - Clinical NER and Zero-shot each pick a domain from the same ten (Disease, Pharmaceutical,
   Chemical, Anatomy, Genomics, Protein, Oncology, Species, Pathology, Hematology).

@@ -8,7 +8,8 @@ Launch with::
 Then open http://127.0.0.1:8080/docs for interactive API docs.
 
 This is a **second surface over the same in-process seam** the Streamlit app uses: every
-route is a thin wrapper over :mod:`openmed_studio.service`, so validation, the PHI-safe error
+model route (bar the opt-in ``/compat`` pair, which needs raw entity objects) is a thin
+wrapper over :mod:`openmed_studio.service`, so validation, the PHI-safe error
 handling, and the object->dict adapters are shared, not reimplemented. The service in turn
 drives one shared :class:`~openmed_studio.engine.PIIEngine` (the model loads once per process
 and is reused; an engine-internal lock serializes concurrent inference).
@@ -214,7 +215,9 @@ class HealthResponse(_Strict):
 class ErrorDetail(_Strict):
     code: str = Field(
         description="Machine-readable error class: 'validation_error', 'bad_request', "
-        "'unauthorized', 'not_found', 'service_unavailable', or 'internal_error'."
+        "'unauthorized', 'forbidden', 'not_found', 'method_not_allowed', "
+        "'service_unavailable', or 'internal_error'; any other status maps to "
+        "'internal_error' (5xx) or 'http_error'."
     )
     message: str = Field(description="Human-readable explanation.")
     details: Any = Field(

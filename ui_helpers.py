@@ -129,14 +129,16 @@ def build_base_opts(
     keep_year: bool,
     use_safety_sweep: bool,
 ) -> dict[str, Any]:
-    """Build the shared de-identify request body from the sidebar options.
+    """Build the shared de-identify request body from a tab's de-identify controls.
 
-    ``seed`` is included only when ``consistent`` is on; ``locale`` only for the
-    surrogate methods ``replace``/``format_preserve`` (and only when non-empty);
-    ``date_shift_days`` and ``keep_year`` only for ``shift_dates`` — so the payload
-    carries just the fields the chosen method actually consumes. A ``date_shift_days``
-    of 0 (the sidebar default) is
-    omitted so openmed applies its per-note random shift rather than shifting by
+    The controls come from the Single note and Batch tabs (the ``Method`` row, the
+    confidence slider, ``Keep mapping`` and the ``Advanced`` knobs) or from the
+    Anonymize tab's form, which pins the method, mapping and sweep; the sidebar
+    contributes only ``lang``. ``seed`` is included only when ``consistent`` is on; ``locale`` only for the surrogate methods
+    ``replace``/``format_preserve`` (and only when non-empty); ``date_shift_days`` and
+    ``keep_year`` only for ``shift_dates`` — so the payload carries just the fields the
+    chosen method actually consumes. A ``date_shift_days`` of 0 (the control's default)
+    is omitted so openmed applies its per-note random shift rather than shifting by
     zero — shifting by zero would leave dates in the output verbatim.
     """
     opts: dict[str, Any] = {

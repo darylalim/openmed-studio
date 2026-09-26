@@ -1,11 +1,15 @@
 """Reusable engine for OpenMed clinical NLP: one shared model loader, thin wrappers.
 
 This is the core of the app, independent of any web framework. :class:`PIIEngine`
-holds a single :class:`openmed.ModelLoader` and reuses it across every call (the
-documented best practice). It wraps both PII/PHI **de-identification**
-(``extract``/``deidentify``/``reidentify`` over the ~44M-parameter PII model) and
-clinical **NER** (``analyze`` over a per-domain token-classification model — see
-:data:`NER_MODELS`); the one shared loader serves every model, keyed by name.
+holds a single :class:`openmed.ModelLoader` and reuses it across every PII and NER call
+(the documented best practice). It wraps PII/PHI **de-identification**
+(``extract``/``deidentify``/``reidentify`` over the ~44M-parameter PII model, with
+``deidentify(policy=…)`` for compliance-profile anonymization — see
+:data:`POLICY_MODELS`), clinical **NER** (``analyze`` over a per-domain
+token-classification model — see :data:`NER_MODELS`), and **zero-shot** extraction
+(``extract_zero_shot`` over a per-domain GLiNER checkpoint — see
+:data:`ZERO_SHOT_MODELS`). The shared loader serves the PII and NER models, keyed by
+name; zero-shot bypasses it, since openmed's GLiNER path caches its own models.
 
 The OpenMed import is deferred to first use, so importing this module never pulls in
 Torch/Transformers or downloads a model.
@@ -902,8 +906,10 @@ class PIIEngine:
 
         This path deliberately does **not** use the shared :attr:`loader`: openmed's GLiNER
         inference (``openmed.ner.infer``) bypasses ``ModelLoader`` entirely, caching its own
-        model instances, and needs no DeBERTa-v2 eager pin (the ``gliner`` fork runs on an
-        older transformers where the SDPA request degrades to eager on its own). So
+        model instances, and needs no DeBERTa-v2 eager pin (nothing on it requests SDPA —
+        openmed passes ``from_pretrained`` only ``cache_dir``/``token``, and neither gliner
+        nor the curated checkpoints set an attention implementation — and transformers
+        falls back to eager on its own when none was requested). So
         :attr:`is_loaded` does not reflect a loaded zero-shot model; the UI tracks that
         separately. ``infer`` also defaults to a on-disk model index that isn't shipped, so
         a one-entry :class:`~openmed.ner.ModelIndex` is fabricated in memory to point it at
@@ -1074,10 +1080,9 @@ class PIIEngine:
             surface: iter([original for _, original in sorted(items)])
             for surface, items in occurrences.items()
         }
+        # Non-empty: `mapping` is, and every key lands in `regular` or `pending` (a
+        # malformed occurrence key counts as a plain one).
         surfaces = set(regular) | set(pending)
-        if not surfaces:
-            # Every entry was a malformed occurrence key; nothing is safely restorable.
-            return deidentified_text
 
         def restore(match: re.Match[str]) -> str:
             surface = match.group(0)
