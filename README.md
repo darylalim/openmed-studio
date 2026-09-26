@@ -138,7 +138,7 @@ curl -H "X-API-Key: secret" -H "Content-Type: application/json" \
 | `OPENMED_STUDIO_API_KEY` | Require this key via `X-API-Key`. Unset = unauthenticated (local) + a warning. |
 | `OPENMED_STUDIO_HOST` / `OPENMED_STUDIO_PORT` | Bind address for `python -m openmed_studio` (default `127.0.0.1:8080`). |
 | `OPENMED_STUDIO_PRELOAD` | Truthy = warm the model at startup (in a worker thread) so the first request isn't slow. |
-| `OPENMED_STUDIO_COMPAT` | Truthy = mount an opt-in `/compat/pii/{extract,deidentify}` surface matching OpenMed's own REST shape (echoes the original text — off by default). |
+| `OPENMED_STUDIO_COMPAT` | Truthy = mount an opt-in `/compat/pii/{extract,deidentify}` surface matching OpenMed's own REST shape (echoes the original text — off by default). It ignores unknown fields like OpenMed's does, but `lang` and `model_name` follow the primary routes' rules (the 12 supported languages, the PII allowlist). |
 | `OPENMED_STUDIO_BACKEND` / `OPENMED_STUDIO_MAX_TEXT_LENGTH` | Same as for the UI — backend pin and per-request text cap. |
 | `OPENMED_STUDIO_EXTRA_MODELS` | Comma-separated model ids to accept as `model_name` on every route, in addition to the curated ones (exact match, case included; read at startup, and a malformed entry stops the app). You own what these load: OpenMed downloads an unregistered repo without an integrity check, and adding one of OpenMed's privacy-filter repos (`openai/privacy-filter`, `OpenMed/privacy-filter-*`) makes it run that repo's code (`trust_remote_code=True`). |
 

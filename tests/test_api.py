@@ -497,6 +497,56 @@ def test_compat_requires_auth(monkeypatch) -> None:
     assert resp.status_code == 401
 
 
+_COMPAT_PATHS = ["/compat/pii/extract", "/compat/pii/deidentify"]
+
+
+@pytest.mark.parametrize(
+    "lang",
+    [
+        # openmed defaults these to its privacy-filter model, which it swaps in for the
+        # default English model and loads with trust_remote_code=True
+        "fa",
+        "sv",
+        "ru",
+        "zu",
+        "EN",  # the Literal is exact, as on the primary routes
+        "zz",
+        "SECRET-4471",
+    ],
+)
+@pytest.mark.parametrize("path", _COMPAT_PATHS)
+def test_compat_rejects_a_lang_outside_the_apps_list(monkeypatch, path, lang) -> None:
+    # /compat relaxes unknown fields for parity, but its lang is the same Lang Literal as
+    # the primary routes': anything else is a PHI-safe 422 before the engine.
+    with _client(target=_compat_app(monkeypatch)) as override:
+        resp = override.post(path, json={"text": _NOTE, "lang": lang})
+    assert resp.status_code == 422
+    error = resp.json()["error"]
+    assert error["code"] == "validation_error"
+    assert [d["loc"][-1] for d in error["details"]] == ["lang"]
+    assert _NOTE not in resp.text
+    assert "SECRET" not in resp.text
+
+
+@pytest.mark.parametrize("path", _COMPAT_PATHS)
+def test_compat_accepts_a_supported_lang(monkeypatch, path) -> None:
+    captured: dict[str, object] = {}
+
+    class _Recording(_StubEngine):
+        def extract(self, _text, **kwargs):
+            captured.update(kwargs)
+            return super().extract(_text, **kwargs)
+
+        def deidentify(self, text, **kwargs):
+            captured.update(kwargs)
+            return super().deidentify(text, **kwargs)
+
+    with _client(_Recording(), target=_compat_app(monkeypatch)) as override:
+        resp = override.post(path, json={"text": "Jean Dupont", "lang": "fr"})
+    assert resp.status_code == 200
+    assert captured["lang"] == "fr"
+
+
 # --- tooling: the TestClient's HTTP backend ----------------------------------
 
 

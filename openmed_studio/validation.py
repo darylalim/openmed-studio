@@ -74,7 +74,9 @@ MAX_ZERO_SHOT_LABEL_CHARS = 80
 # it loads with `trust_remote_code=True`. Adding those languages here would silently bypass the
 # shared ModelLoader, the engine's `OpenMedConfig` pins, and `engine.is_loaded`. Widening the list
 # means fixing that first (thread `config=` through and cache the pipeline), not editing the
-# Literal. The guard is `<=` precisely so a curated subset stays legal.
+# Literal. The guard is `<=` precisely so a curated subset stays legal. Every `lang` field —
+# the /compat bodies in main.py included — uses this Literal, so none of those languages
+# (whose defaults openmed swaps in for the default model) is reachable through the app.
 Lang = Literal["en", "fr", "de", "it", "es", "nl", "hi", "te", "pt", "ar", "ja", "tr"]
 
 # Strip surrounding whitespace, then require 1..MAX_TEXT_CHARS chars — this also

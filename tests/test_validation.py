@@ -233,6 +233,31 @@ def test_every_model_name_field_applies_an_allowlist() -> None:
         ), f"{model.__name__}.model_name skips the allowlist"
 
 
+def test_every_lang_field_is_the_apps_lang_literal() -> None:
+    # A `lang` openmed supports but the app doesn't list can swap openmed's
+    # privacy-filter model in for the default (fa -> OpenMed/privacy-filter-multilingual,
+    # loaded with trust_remote_code=True) without any model_name. So every request model
+    # with a lang — the /compat bodies included — takes the Lang Literal, not a str.
+    from openmed_studio import main
+
+    models = {
+        obj
+        for module in (validation, main)
+        for obj in vars(module).values()
+        if isinstance(obj, type)
+        and issubclass(obj, BaseModel)
+        and "lang" in obj.model_fields
+    }
+    assert {"ExtractRequest", "CompatExtractRequest", "CompatDeidentifyRequest"} <= {
+        model.__name__ for model in models
+    }
+    for model in models:
+        assert model.model_fields["lang"].annotation == validation.Lang, model.__name__
+        with pytest.raises(ValidationError) as excinfo:
+            model.model_validate({"lang": "fa"})
+        assert ("lang",) in {e["loc"] for e in excinfo.value.errors()}, model.__name__
+
+
 def test_accepts_every_openmed_registry_model_name() -> None:
     # The dot rule must cost no real model: every alias and HF model id in openmed's
     # registry, plus the ids engine.py bakes, passes unchanged. (The Hub itself forbids

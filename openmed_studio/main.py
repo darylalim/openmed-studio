@@ -47,6 +47,7 @@ from .validation import (
     DeidentifyBatchRequest,
     DeidentifyRequest,
     ExtractRequest,
+    Lang,
     NerRequest,
     PiiModelName,
     ReidentifyRequest,
@@ -275,17 +276,19 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 # --- OpenMed-REST compatibility surface (opt-in, off by default) -------------
 # These deliberately do NOT use `_Strict`: Pydantic's default `extra="ignore"` lets a
 # request carry upstream-only fields (notably `keep_alive`) without a 422, so an
-# OpenMed-REST client can post unchanged. `lang` is a plain str (not the Lang Literal)
-# for the same parity reason; an unsupported value still fails in the seam's engine call.
-# `model_name` is NOT relaxed for parity: it takes the same PII allowlist as the primary
-# routes, since these routes reach the engine directly.
+# OpenMed-REST client can post unchanged. Two fields are NOT relaxed for parity, since
+# these routes reach the engine directly: `model_name` takes the same PII allowlist as the
+# primary routes, and `lang` the same Lang Literal. (A plain-str `lang` let a caller pick
+# any language openmed supports, and for the ~20 whose default is openmed's privacy-filter
+# model — fa, sv, ru, … — openmed swaps it in for the default English model, loading it
+# with trust_remote_code=True, with no model_name sent at all.)
 
 
 class CompatExtractRequest(BaseModel):
     """OpenMed-REST-shaped ``/pii/extract`` body; unknown fields are ignored."""
 
     text: validation.ClinicalText
-    lang: str = "en"
+    lang: Lang = "en"
     use_smart_merging: bool = True
     confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     model_name: PiiModelName = None
@@ -300,7 +303,7 @@ class CompatDeidentifyRequest(BaseModel):
 
     text: validation.ClinicalText
     method: DeidMethod = "mask"
-    lang: str = "en"
+    lang: Lang = "en"
     keep_mapping: bool = False
     date_shift_days: int | None = None
     keep_year: bool = True
