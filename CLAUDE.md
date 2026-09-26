@@ -139,7 +139,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
 | `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI), and the openmed-sync guards |
-| `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and two `--run-model` policy tests (masking vs reversible-surrogate; Clinical Preserve's mandatory sweep masking only what its regexes match, which pins that policy's description) |
+| `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate, plus pins on the description prose the fast guard can't check — the sweep masking only what its patterns match under the four keep-dates profiles (and nothing with Clinical Minimal Redaction's optional sweep off), the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub) |
 | `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s, `X-API-Key` auth (401/accept/reject + open `/health`), and the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated) |
@@ -317,22 +317,33 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       `REACTION_SEVERITY` — and `normalize_label` funnels unknowns to `OTHER`), so a profile can
       declare `replace` while masking 123 of 139 labels (South Africa POPIA does; Nigeria NDPA
       masks 130). The `Policy de-ID` preview therefore does **not** render `default_action`; the
-      field stays baked only so the guard keeps pinning it. **And when `safety_sweep_mandatory` is
-      set, confirm every "keeps X" claim with a real run:** openmed's pipeline drops `keep` spans
-      *before* the stage-9 safety sweep (`core/pipeline.py`), and `use_safety_sweep=False` cannot
-      switch a mandatory sweep off, so the sweep masks whatever its regexes match even where the
-      action map says `keep` — full dates with a year, and names ending in Clinic / Health Center /
-      Dispensary / District|Referral|Mission Hospital — while month-year, yearless and relative
-      dates and ordinary `… General Hospital`/`… Medical Center` names survive. Clinical Preserve's
-      description is worded to that boundary in both directions (over-promising masking is the
-      dangerous error in a PHI tool), and the `--run-model` test
-      `test_engine_clinical_preserve_sweep_masks_only_its_patterns` pins it. Two more
-      traps the 2.x catalog added: "surrogate policy" ≠ "reversible policy" (**four of the nine**
+      field stays baked only so the guard keeps pinning it. **And whenever the sweep runs — forced
+      by `safety_sweep_mandatory`, or by the tab's default-on toggle — confirm every "keeps X"
+      claim with a real run:** openmed's pipeline drops `keep` spans *before* the stage-9 safety
+      sweep (`core/pipeline.py`), a span the sweep re-detects under a kept label falls back to the
+      flat method (`mask` — `core/pii.py::_entity_redaction_method`), and `use_safety_sweep=False`
+      cannot switch a mandatory sweep off. So the four profiles whose rules keep dates and facility
+      names — Research Limited Dataset, India Health ID and Clinical Preserve (sweep forced) and
+      Clinical Minimal Redaction (sweep on by default) — still mask whatever the sweep's English
+      patterns match (listed at `POLICY_MODELS["Research Limited Dataset"]`): `03/14/2024`-, ISO-,
+      `March 14, 2024`- and `14 March 2024`-style dates, names ending in Clinic / Health Center /
+      Dispensary / District|Referral|Mission Hospital, ZIPs within 100 characters of "zip" or
+      "postal". Other full-date forms (`March 14th, 2024`, `2024/03/14`, `14.03.2024`), month-year,
+      yearless and relative dates, ordinary `… General Hospital`/`… Medical Center` names and bare
+      ZIPs survive — so "the sweep masks full dates" over-promises. Those descriptions are worded to
+      that boundary in both directions (over-promising masking is the dangerous error in a PHI
+      tool); `test_engine_sweep_overrides_keep_rules_only_where_its_patterns_match` (`--run-model`)
+      pins it. **Nor may a description say a profile masks clinical terms:** 10 of the 20 map
+      `DISEASE`/`DRUG`/… to `mask`, but the shared PII model has no clinical labels (its 54 entity
+      types are identifiers and personal attributes) and the sweep no clinical patterns, so
+      diagnoses pass through every profile — hence "every detected span". Two more traps the
+      2.x catalog added: "surrogate policy" ≠ "reversible policy" (**four of the nine**
       `replace`-declaring profiles keep no key — Australia Privacy Act, India DPDP, ZA POPIA, NG
       NDPA; `test_policy_models_resolve_in_openmed` now fails any description that promises
       "reversible" against `keep_mapping=False`), and four of the nine APAC/African 2.x profiles
       (Malabo, Kenya DPA, Egypt PDPL, Morocco 09-08) are `mask`-everything and behaviorally
-      identical to `strict_no_leak`.
+      identical to `strict_no_leak` — their descriptions say so, and
+      `test_engine_mask_all_profiles_match_strict_no_leak` pins it.
   - `validation.py` — the Pydantic request models (`ExtractRequest`, `NerRequest`, `ZeroShotRequest`,
     `AnonymizePolicyRequest`, `DeidentifyRequest`, `DeidentifyBatchRequest`, `ReidentifyRequest`, all
     `extra="forbid"`) plus
