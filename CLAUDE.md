@@ -144,7 +144,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | File | Pins |
 |------|------|
 | `test_pii_pure.py` | pure-Python behavior; the raw-openmed `reidentify` overlap bug as a `strict` xfail (see "Known gotchas") |
-| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
+| `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), openmed's internal errors (a local `RuntimeError` stand-in carrying `.code` `internal_error`/`inference_error` must classify as `internal` with the generic message, its detail only in the log, and get its own row in a batch, while a code-less `RuntimeError` or `budget_exceeded` stays `unavailable`; `test_openmed_internal_codes_match_openmed` pins the baked codes against openmed's real error classes, no model), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `model_name` path guard (no `.`-leading segment, so `..`/`.`/hidden entries fail on every request model incl. `/compat`, while every openmed registry alias/model id still passes), the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
 | `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), the one-pass `reidentify` plus a `strict` xfail (`test_reidentify_restores_only_the_surrogate_spans`) pinning its mapping-only limit, where text that merely equals a surrogate is restored too (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
@@ -171,9 +171,10 @@ download), `test_deidentify_forwards_every_openmed_param_or_allowlists_it` (intr
 `policy` is now **forwarded**, not excluded), and — **the one exception** —
 `test_shift_dates_actually_shifts_dates`, which is `@pytest.mark.model` in `test_pii_model.py`, so it
 catches that drift only under `--run-model`, never in CI (see "Known gotchas").
-Three more openmed-drift guards live outside this list:
+Four more openmed-drift guards live outside this list:
 `test_analyze_forwards_every_openmed_param_or_allowlists_it` (see "OpenMed API" — it matters *more*
-than its `deidentify` twin), `test_occurrence_prefix_matches_openmed` (see "Known gotchas"), and
+than its `deidentify` twin), `test_occurrence_prefix_matches_openmed` and
+`test_openmed_internal_codes_match_openmed` (both under "Known gotchas"), and
 `test_accepts_every_openmed_registry_model_name` (every registry alias/model id must still pass
 `_check_model_name`, so a dot-leading alias upstream fails CI instead of becoming unreachable).
 
@@ -400,7 +401,10 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     - `_run()` — translates, **in this order**, `ValueError`→`kind="bad_options"` (including
       openmed's `ModelLoadError`, so a `model_name` that fails to load is a 400, the caller's to
       fix), `RuntimeError`/`OSError`→`kind="unavailable"` (the backend can't serve at all — e.g.
-      openmed's model-integrity error for an uncached registry model under `HF_HUB_OFFLINE=1`),
+      openmed's model-integrity error for an uncached registry model under `HF_HUB_OFFLINE=1`)
+      except openmed's own `InternalError`/`InferenceError`, which are `RuntimeError`s too but
+      go to `kind="internal"` (generic message; matched on their `.code`, baked in
+      `_OPENMED_INTERNAL_CODES` so `service.py` stays openmed-free),
       `ImportError`→`kind="dependency"`+pass-the-message (openmed's `MissingDependencyError`
       subclasses `ImportError`; `POST /zero-shot` without the `gliner` extra passes through
       openmed's own "Install with `pip install openmed[gliner]`." — the Streamlit tab never gets
@@ -424,7 +428,9 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
       so one bad note doesn't abort the batch — openmed's `ModelLoadError` included, so a
       `model_name` that fails to load yields one identical failed row per note, not an abort — while
       a backend `RuntimeError`/`OSError` (offline-mode/model-integrity) propagates through `_run`
-      and aborts the whole batch.
+      and aborts the whole batch. openmed's `InternalError`/`InferenceError` is the exception: its
+      known trigger is one note's content, so that note gets its own `{"ok": False}` row carrying
+      the generic `internal` message (detail to the log) and the rest of the batch completes.
   - `__init__.py` — re-exports `DEFAULT_PII_MODEL`, `DEFAULT_NER_MODEL`, `DEFAULT_ZERO_SHOT_MODEL`,
     `DEFAULT_POLICY_MODEL`, `NER_MODELS`, `ZERO_SHOT_MODELS`, `POLICY_MODELS`, `HIDDEN_POLICIES`,
     `PIIEngine`, and `__version__`.
@@ -901,7 +907,22 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   problem). `tests/test_service.py` pins both halves without importing openmed, via a local
   `ImportError`+`ValueError` stand-in: `test_run_classifies_model_load_error_as_bad_options`
   fails under exactly that swap, and `test_batch_isolates_model_load_error_per_note` pins the
-  per-note rows.
+  per-note rows. The same taxonomy files openmed's *internal* errors under `RuntimeError`:
+  `InternalError` (`code="internal_error"`) and its `InferenceError` subclass
+  (`"inference_error"`), raised when one of openmed's own invariants fails. 2.5's
+  `core/pipeline.py::stage9_safety_sweep` raises one whenever the sweep *shrinks* the redacted
+  character count, which a passport-MRZ note trips on a perfectly healthy model (smart merging
+  off, confidence 0.5, any method) — and the plain `RuntimeError` branch reported it as
+  `unavailable`, a 503 claiming "the model failed to load". `_run` therefore checks `.code`
+  inside that branch and sends both to `internal` (500, the generic message; openmed's text goes
+  only to the log), and `deidentify_batch` gives such a note its own `{"ok": False}` row rather
+  than aborting, since the trigger is that note's content (every `deidentify` builds its own
+  `Pipeline`). The codes are **baked** (`service._OPENMED_INTERNAL_CODES`) so `service.py`
+  stays openmed-free; `test_openmed_internal_codes_match_openmed` pins them against openmed's
+  real classes — the whole `InternalError` family must land in `internal`, while
+  `ModelIntegrityError`/`OfflineModeError` (no `.code`) and `BudgetExceededError`
+  (`"budget_exceeded"` — unreachable, since the engine never forwards `budget`, and a 503 in
+  openmed's own REST service too) must stay `unavailable`.
 - **`st.dataframe(key=…)` is inert unless selection is activated** (re-verified on Streamlit 1.64.0). The
   performance guidance to give a dataframe a stable `key` so it doesn't remount when its data
   changes applies only to a *selectable* one: `streamlit/elements/arrow.py` sets

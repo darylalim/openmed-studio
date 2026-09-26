@@ -16,8 +16,10 @@ fails to load, since openmed 2.3+'s ``ModelLoadError`` is a ``ValueError`` as we
 ``ImportError``) and ``RuntimeError``/``OSError`` (the backend itself is unavailable — e.g.
 openmed's model-integrity error when it can't complete the verified download of an uncached
 registry model under ``HF_HUB_OFFLINE=1``) map to distinct kinds/messages — the 400-vs-503
-split, carried by ``.kind`` here rather than an HTTP status code. :func:`_run` explains why
-its ``except`` order is load-bearing.
+split, carried by ``.kind`` here rather than an HTTP status code. openmed's own
+internal-invariant errors are ``RuntimeError``s too, but they mean the request tripped a bug,
+not that the backend is down, so they are carved out as ``internal`` (500). :func:`_run`
+explains why its ``except`` order is load-bearing.
 """
 
 from __future__ import annotations
@@ -40,10 +42,24 @@ BACKEND_ENV = "OPENMED_STUDIO_BACKEND"
 # renders the message), but the FastAPI surface maps it to an HTTP status — so this stays
 # framework-free (no status codes here) while giving a served caller enough to respond
 # correctly: "validation"/"bad_options" are the caller's fault, "unavailable"/"dependency"
-# are the backend's, and "internal" is an unclassified failure.
+# are the backend's, and "internal" is the server's own failure (an unclassified exception,
+# or openmed's internal-invariant error).
 ServiceErrorKind = Literal[
     "validation", "bad_options", "unavailable", "dependency", "internal"
 ]
+
+# The one message an "internal" failure shows: its detail goes to the server log only,
+# never to the UI or a response body (it may quote clinical text).
+_INTERNAL_MESSAGE = "The request failed unexpectedly."
+
+# openmed's stable ``.code`` values for "an internal invariant failed":
+# ``openmed.core.errors.InternalError`` and its ``InferenceError`` subclass. Both are
+# ``RuntimeError``s, so without this check they would read as a backend outage (503, "the
+# model failed to load") — e.g. 2.5's safety-sweep invariant, which one note's content can
+# trip on a healthy model. Baked, not imported, so this module stays openmed-free;
+# tests/test_service.py pins the copy against openmed's real classes. A tuple, not a set:
+# ``in`` then compares with ``==``, so an unhashable ``.code`` can't raise mid-``except``.
+_OPENMED_INTERNAL_CODES = ("internal_error", "inference_error")
 
 
 class ServiceError(Exception):
@@ -111,6 +127,11 @@ def _validate(model: type[BaseModel], data: dict[str, Any]) -> Any:
         ) from exc
 
 
+def _is_openmed_internal(exc: BaseException) -> bool:
+    """Whether ``exc`` is openmed's internal-invariant error, duck-typed on its ``.code``."""
+    return getattr(exc, "code", None) in _OPENMED_INTERNAL_CODES
+
+
 def _run(call: Callable[[], Any]) -> Any:
     """Run a model call, translating failures into ``ServiceError``.
 
@@ -123,7 +144,9 @@ def _run(call: Callable[[], Any]) -> Any:
     such failure as a missing ``dependency``. A backend that can't serve at all — e.g.
     openmed's model-integrity error (a ``RuntimeError``, like its offline-mode error) for
     a registry model that isn't cached under ``HF_HUB_OFFLINE=1`` — lands in
-    ``unavailable`` (503).
+    ``unavailable`` (503). openmed's ``InternalError``/``InferenceError`` are
+    ``RuntimeError``s as well, so that branch first checks :func:`_is_openmed_internal` and
+    reports them as ``internal`` (500): the model is up, the request tripped a bug.
     """
     try:
         return call()
@@ -132,6 +155,11 @@ def _run(call: Callable[[], Any]) -> Any:
         # load (openmed's ModelLoadError) — the docstring says why this branch comes first.
         raise ServiceError(str(exc), kind="bad_options") from exc
     except (RuntimeError, OSError) as exc:  # e.g. openmed's offline/integrity errors
+        if _is_openmed_internal(exc):
+            # One of openmed's own invariant checks failed. Its message is PHI-free by
+            # contract, but like any internal failure it goes to the log, not the user.
+            logger.exception("openmed internal error")
+            raise ServiceError(_INTERNAL_MESSAGE, kind="internal") from exc
         logger.exception("model backend failure")
         raise ServiceError(
             "Model backend unavailable (the model failed to load).", kind="unavailable"
@@ -153,7 +181,7 @@ def _run(call: Callable[[], Any]) -> Any:
         # renders the message in the browser (possible PHI). Normalize to a generic
         # ServiceError; the detail goes to the server log, not the UI.
         logger.exception("unexpected model failure")
-        raise ServiceError("The request failed unexpectedly.", kind="internal") from exc
+        raise ServiceError(_INTERNAL_MESSAGE, kind="internal") from exc
 
 
 def _entity_dict(entity: Any) -> dict[str, Any]:
@@ -321,7 +349,10 @@ def deidentify_batch(
     can't serve at all (``RuntimeError``/``OSError`` — e.g. openmed's offline-mode or
     model-integrity error) is *not* note-specific — it would fail every note identically —
     so it propagates through ``_run`` and aborts the batch, surfacing one ``ServiceError``
-    rather than N identical failed rows.
+    rather than N identical failed rows. openmed's internal-invariant error is the exception
+    among ``RuntimeError``s: its known trigger is one note's content (openmed 2.5's
+    safety-sweep check runs per note), so it is isolated like a ``ValueError`` — but its row
+    carries the generic ``internal`` message, never openmed's text.
     """
     req = _validate(validation.DeidentifyBatchRequest, {"items": items, **opts})
 
@@ -332,6 +363,13 @@ def deidentify_batch(
                 result = _deidentify_call(engine, text, req)
             except ValueError as exc:  # bad options/content for THIS note — isolate it
                 out.append({"ok": False, "error": str(exc)})
+                continue
+            except RuntimeError as exc:
+                if not _is_openmed_internal(exc):
+                    raise  # the backend can't serve at all — _run aborts the batch
+                # An invariant THIS note tripped; the other notes' calls are independent.
+                logger.exception("openmed internal error (batch note)")
+                out.append({"ok": False, "error": _INTERNAL_MESSAGE})
                 continue
             out.append(
                 {

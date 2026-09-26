@@ -555,6 +555,106 @@ def test_batch_isolates_model_load_error_per_note() -> None:
     assert all(r["error"] == "could not load" for r in results)
 
 
+class _CodedRuntimeError(RuntimeError):
+    """Stand-in for openmed's ``RuntimeError``-based errors, which carry a stable ``.code``.
+
+    ``_run`` duck-types on that code rather than importing openmed, so the builtin base and
+    the attribute are all a stand-in needs. The real classes are pinned further down, by
+    ``test_openmed_internal_codes_match_openmed``.
+    """
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+# What an internal error might carry: it must reach the server log, never the caller.
+_RAW_DETAIL = "invariant failed near RAW-DETAIL-4471"
+
+
+@pytest.mark.parametrize("code", ["internal_error", "inference_error"])
+def test_run_classifies_openmed_internal_error_as_internal(code, caplog) -> None:
+    # openmed's InternalError (and its InferenceError subclass) is a RuntimeError, so
+    # without the code check it reads as a 503 "the model failed to load" — e.g. openmed
+    # 2.5's safety-sweep invariant, which one note's content trips on a healthy model.
+    exc = _CodedRuntimeError(_RAW_DETAIL, code)
+    with (
+        caplog.at_level(logging.ERROR, logger="openmed_studio"),
+        pytest.raises(ServiceError) as excinfo,
+    ):
+        service.deidentify(_raising(exc), "x", method="mask")
+    assert excinfo.value.kind == "internal"
+    assert str(excinfo.value) == "The request failed unexpectedly."
+    assert "RAW-DETAIL-4471" in caplog.text  # the detail goes to the log instead
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("kaboom"),  # like ModelIntegrityError/OfflineModeError: no .code
+        _CodedRuntimeError("over budget", "budget_exceeded"),  # BudgetExceededError's
+    ],
+)
+def test_run_keeps_other_runtime_errors_unavailable(exc) -> None:
+    # Only openmed's internal codes are carved out of the RuntimeError branch: an outage
+    # and openmed's budget error (a 503 in openmed's own REST service too) stay there.
+    with pytest.raises(ServiceError) as excinfo:
+        service.deidentify(_raising(exc), "x", method="mask")
+    assert excinfo.value.kind == "unavailable"
+
+
+def test_batch_isolates_openmed_internal_error_per_note(caplog) -> None:
+    # Unlike an outage, the internal error's known trigger is one note's content, so it
+    # gets its own ok=False row (the other notes still complete) — carrying the generic
+    # message, never openmed's text. A code-less RuntimeError still aborts the batch
+    # (test_batch_backend_failure_aborts_and_does_not_leak).
+    class _Mixed(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            if "MRZ" in _text:
+                raise _CodedRuntimeError(_RAW_DETAIL, "internal_error")
+            return super().deidentify(_text, **kwargs)
+
+    engine = cast("PIIEngine", _Mixed())
+    with caplog.at_level(logging.ERROR, logger="openmed_studio"):
+        result = service.deidentify_batch(
+            engine, ["Patient John.", "MRZ note", "Patient Jane."], method="mask"
+        )
+    results = result["results"]
+    assert [r["ok"] for r in results] == [True, False, True]
+    assert results[1]["error"] == "The request failed unexpectedly."
+    assert "RAW-DETAIL-4471" in caplog.text
+
+
+def test_openmed_internal_codes_match_openmed() -> None:
+    # service.py bakes openmed's internal codes (it stays openmed-free), so pin the copy
+    # against the real classes, driven through the seam: the whole InternalError family
+    # must classify "internal", while the RuntimeError-based errors that mean the backend
+    # can't serve — and the budget error — must stay "unavailable". A renamed code, or a
+    # new InternalError subclass with its own code, fails here. No model is loaded.
+    from openmed.core import errors
+    from openmed.core.model_integrity import ModelIntegrityError
+    from openmed.core.offline import OfflineModeError
+
+    family: set[type[errors.InternalError]] = set()
+    pending: list[type[errors.InternalError]] = [errors.InternalError]
+    while pending:
+        cls = pending.pop()
+        family.add(cls)
+        pending.extend(cls.__subclasses__())
+    assert {cls.code for cls in family} == set(service._OPENMED_INTERNAL_CODES)
+
+    def kind_of(exc: Exception) -> str:
+        with pytest.raises(ServiceError) as excinfo:
+            service.deidentify(_raising(exc), "x", method="mask")
+        return excinfo.value.kind
+
+    for cls in family:
+        assert kind_of(cls("invariant failed")) == "internal"
+    integrity = ModelIntegrityError("org/m", expected_sha256="a", actual_sha256="b")
+    for exc in (integrity, OfflineModeError("offline"), errors.BudgetExceededError()):
+        assert kind_of(exc) == "unavailable"
+
+
 def test_reidentify_error_maps_to_service_error() -> None:
     # reidentify is wrapped in _run like the other entrypoints, so it can't leak raw.
     with pytest.raises(ServiceError) as excinfo:

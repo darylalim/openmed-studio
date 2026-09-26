@@ -75,6 +75,14 @@ class _StubEngine:
         return deidentified_text
 
 
+class _CodedRuntimeError(RuntimeError):
+    """Stand-in for an openmed taxonomy error that is a RuntimeError carrying ``.code``."""
+
+    def __init__(self, code: str, message: str = "openmed internal failure") -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class _RaisingEngine(_StubEngine):
     """Stub whose model call raises, to exercise the API error paths.
 
@@ -253,6 +261,7 @@ def test_batch_isolates_a_bad_note(client) -> None:
         (OSError("io error"), 503),  # kind="unavailable"
         (ImportError("run uv sync --extra gliner"), 503),  # kind="dependency"
         (KeyError("leak-me"), 500),  # kind="internal" (catch-all)
+        (_CodedRuntimeError("internal_error"), 500),  # openmed InternalError
     ],
 )
 def test_engine_failure_maps_to_status_and_envelope(exc, status) -> None:
@@ -263,8 +272,11 @@ def test_engine_failure_maps_to_status_and_envelope(exc, status) -> None:
     assert set(error) == {"code", "message", "details"}
 
 
-def test_internal_error_does_not_leak_raw_message() -> None:
-    with _client(_RaisingEngine(KeyError("leak-me"))) as override:
+@pytest.mark.parametrize(
+    "exc", [KeyError("leak-me"), _CodedRuntimeError("internal_error", "leak-me")]
+)
+def test_internal_error_does_not_leak_raw_message(exc) -> None:
+    with _client(_RaisingEngine(exc)) as override:
         resp = override.post("/pii/extract", json={"text": "x"})
     assert resp.status_code == 500
     assert (
