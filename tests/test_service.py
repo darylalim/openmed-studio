@@ -8,14 +8,18 @@ Validation rules are covered separately in ``test_validation.py``.
 from __future__ import annotations
 
 import logging
+import os
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from openmed_studio import PIIEngine, service
 from openmed_studio.engine import DEFAULT_PII_MLX_MODEL
 from openmed_studio.service import ServiceError
+
+if TYPE_CHECKING:
+    from openmed import ModelLoader
 
 
 class _StubEngine:
@@ -674,6 +678,63 @@ def test_unexpected_engine_error_maps_to_service_error() -> None:
     message = str(excinfo.value)
     assert "leak-me" not in message
     assert "unexpectedly" in message.lower()
+
+
+# --- the engine's local-path guard, through the seam --------------------------
+
+_UNAVAILABLE = "Model backend unavailable (the model failed to load)."
+
+
+def _real_engine_without_openmed(monkeypatch) -> PIIEngine:
+    """A real PIIEngine (model-free loader) whose openmed calls fail if ever reached."""
+    import openmed
+    import openmed.ner as ner
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("openmed was called")
+
+    for name in ("extract_pii", "deidentify", "analyze_text"):
+        monkeypatch.setattr(openmed, name, fail)
+    monkeypatch.setattr(ner, "infer", fail)
+    return PIIEngine(loader=cast("ModelLoader", object()))
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda e: service.extract(e, "x"),
+        lambda e: service.deidentify(e, "x", method="mask"),
+        lambda e: service.deidentify_batch(e, ["x", "y"], method="mask"),
+        lambda e: service.anonymize_policy(e, "x", policy="hipaa_safe_harbor"),
+        lambda e: service.analyze(
+            e, "x", model_name="disease_detection_superclinical_141m"
+        ),
+        lambda e: service.extract_zero_shot(
+            e, "x", model_name="zeroshot_disease_small_166m", labels=["Problem"]
+        ),
+    ],
+    ids=["extract", "deidentify", "batch", "anonymize_policy", "ner", "zero_shot"],
+)
+def test_local_model_path_is_unavailable_with_the_reason_only_logged(
+    monkeypatch, tmp_path, caplog, call
+) -> None:
+    # Every entry point — the Streamlit UI's path as much as the API's — reports the
+    # engine's refusal as the generic "unavailable" message (a batch aborts rather than
+    # failing each note alike); the path and working directory reach only the log.
+    engine = _real_engine_without_openmed(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "OpenMed" / "OpenMed-PII-SuperClinical-Small-44M-v1").mkdir(
+        parents=True
+    )
+    with (
+        caplog.at_level(logging.ERROR, logger="openmed_studio"),
+        pytest.raises(ServiceError) as excinfo,
+    ):
+        call(engine)
+    assert excinfo.value.kind == "unavailable"
+    assert str(excinfo.value) == _UNAVAILABLE
+    assert "LocalModelPathError" in caplog.text
+    assert os.getcwd() in caplog.text
 
 
 # --- ServiceError.kind (the transport-neutral classification the API maps) ---

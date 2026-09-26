@@ -200,10 +200,14 @@ def _allowed_in(
 # RESIDUAL — the allowlist fixes the NAME, not what it resolves to. openmed resolves a
 # name against the filesystem BEFORE its registry or the Hub
 # (core/models.py::_resolve_model_name), relative to the process's working directory, so
-# a directory named like an allowed model shadows it — and on the PII routes a local dir
-# whose config.json names the privacy-filter family is loaded with trust_remote_code=True
-# (core/backends.py::create_privacy_filter_pipeline). Nothing in a request can tell the
-# two apart, so run the app from a directory nobody else can write to.
+# a directory named like an allowed model would shadow it — and on the PII routes a local
+# dir whose config.json names the privacy-filter family is loaded with
+# trust_remote_code=True (core/backends.py::create_privacy_filter_pipeline). Nothing in a
+# request can tell the two apart, so the ENGINE closes it instead: every model call first
+# refuses (engine.LocalModelPathError, a 503) when a name it would hand openmed — or an
+# "OpenMed"/"openai" entry — exists in the working directory. What's left is a race (a
+# directory created between that check and openmed's own) and the operator's extras;
+# both are why the app must run from a directory nobody else can write to.
 #
 # An optional PII model id; None means openmed's default.
 PiiModelName = Annotated[

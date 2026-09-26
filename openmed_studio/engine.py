@@ -13,9 +13,11 @@ Torch/Transformers or downloads a model.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import warnings
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
@@ -572,6 +574,53 @@ def _parse_occurrence_key(key: str) -> tuple[int, str] | None:
     return int(ordinal_text), surface
 
 
+# The top-level namespaces openmed routes into on its own. Every openmed registry model id
+# is under "OpenMed/" — so is every model the allowlists admit by default, each curated
+# alias's resolved repo id, and every per-language default — and openmed swaps names it was
+# never given for others in these two: an MLX build from mlx/inference.py::_MLX_MODEL_MAP,
+# the language default for lang != "en", and the privacy-filter Torch fallback
+# "openai/privacy-filter" (core/backends.py::_torch_fallback_for). A CWD entry named like
+# either would shadow names the engine can't enumerate, so its mere presence refuses every
+# call. The cost is a false positive when the app runs from a directory that happens to
+# hold an "OpenMed"/"openai" entry — on a case-insensitive filesystem (macOS, Windows) an
+# "openmed" checkout counts too — which the logged reason names and a clean working
+# directory fixes; the app's own repo root has neither.
+# tests/test_engine.py::test_guarded_namespaces_cover_every_model_the_app_resolves pins
+# that the curated models stay inside them.
+_OPENMED_NAMESPACES = ("OpenMed", "openai")
+
+
+class LocalModelPathError(RuntimeError):
+    """A model name the engine is about to hand openmed exists as a local path.
+
+    openmed resolves a model name against the filesystem BEFORE its registry or the Hub,
+    relative to the working directory (``core/models.py::_resolve_model_name`` →
+    ``_as_existing_local_path``; transformers' ``from_pretrained`` does the same), so a
+    directory named like a model is loaded in its place — and on the PII routes one whose
+    ``config.json`` names the privacy-filter family is loaded with
+    ``trust_remote_code=True``. Nothing in a request can tell the two apart, so the engine
+    refuses the call instead. A ``RuntimeError``, so ``service._run`` reports it as
+    ``unavailable`` (503) with its generic message: this message names the path and the
+    working directory, which belong in the server log, not a response.
+    """
+
+
+def _refuse_local_model_paths(names: Iterable[str]) -> None:
+    """Raise :class:`LocalModelPathError` if any name, or a guarded namespace, exists locally.
+
+    ``os.path.lexists`` rather than ``Path.exists``: a dangling symlink is refused too (its
+    target can appear at any moment), and an ``OSError`` for an unusable name reads as
+    "absent" — as it does to openmed, which then treats the name as a Hub id.
+    """
+    for name in (*names, *_OPENMED_NAMESPACES):
+        if os.path.lexists(name):
+            raise LocalModelPathError(
+                f"a local path named {name!r} exists in the working directory "
+                f"{os.getcwd()!r}, and openmed would load it in place of the model; run "
+                "the server from a clean directory"
+            )
+
+
 def _entities(result: Any) -> list[Any]:
     """``extract_pii`` may return a list or an object exposing the entities."""
     for attr in ("entities", "pii_entities"):
@@ -593,6 +642,11 @@ class PIIEngine:
     Streamlit sessions). An internal lock serializes the model-calling methods
     (``extract``/``analyze``/``extract_zero_shot``/``deidentify``) so concurrent
     inference runs one call at a time; ``reidentify`` is lock-free (pure regex).
+
+    Each model-calling method first refuses — under the lock, just before its openmed
+    call — when a model name it would hand openmed exists as a path in the working
+    directory (see :class:`LocalModelPathError`), so openmed never resolves one to a local
+    directory, whichever surface called.
     """
 
     def __init__(
@@ -653,6 +707,28 @@ class PIIEngine:
         """Whether the underlying ModelLoader has been instantiated yet."""
         return self._loader is not None
 
+    def _pii_model_names(
+        self, *, lang: str | None = None, model_name: str | None = None
+    ) -> tuple[str, ...]:
+        """Every PII model name openmed may resolve for a call — what the guard checks.
+
+        The requested (or engine, or default) model, plus the per-language default openmed
+        swaps in for it: ``core/pii.py::_resolve_effective_pii_model`` replaces EXACTLY the
+        default English model with ``get_default_pii_model(lang)`` when the normalized
+        ``lang`` isn't ``"en"`` (so ``lang="fr"`` with no ``model_name`` loads the French
+        model, while the ``-mlx`` build is never swapped). Mirrors that rule, calling
+        openmed's own resolver so a language table change can't slip past;
+        ``test_pii_model_names_match_openmeds_resolution`` pins the mirror.
+        """
+        name = model_name or self.model_name or DEFAULT_PII_MODEL
+        code = (lang or self.lang).strip().lower()
+        if name != DEFAULT_PII_MODEL or code == "en":
+            return (name,)
+        from openmed.core.model_registry import get_default_pii_model
+
+        swapped = get_default_pii_model(code)
+        return (name, swapped) if swapped else (name,)
+
     def _model_kwargs(
         self, *, lang: str | None = None, model_name: str | None = None
     ) -> dict[str, Any]:
@@ -674,7 +750,9 @@ class PIIEngine:
         """Detect PII entities; each has ``.label``/``.text``/``.start``/``.end``/``.confidence``."""
         from openmed import extract_pii
 
+        names = self._pii_model_names(lang=lang, model_name=model_name)
         with self._lock:
+            _refuse_local_model_paths(names)
             result = extract_pii(
                 text,
                 confidence_threshold=confidence_threshold,
@@ -713,6 +791,9 @@ class PIIEngine:
         from openmed import analyze_text
 
         with self._lock:
+            # The alias itself; the repo id openmed resolves it to is under "OpenMed/",
+            # which the guard's namespace check covers.
+            _refuse_local_model_paths((model_name,))
             result = analyze_text(
                 text,
                 model_name=model_name,
@@ -808,6 +889,11 @@ class PIIEngine:
             source_dir=Path(),
         )
         with self._lock:
+            # The repo id is what reaches gliner's GLiNER.from_pretrained (via
+            # openmed.ner.families.gliner._load_model), which prefers a local directory of
+            # that name to the Hub. The alias is resolved through the registry, not the
+            # filesystem, today — checked anyway, so a future lookup change can't reopen it.
+            _refuse_local_model_paths((model_name, model_id))
             result = infer(
                 NerRequest(
                     model_id=model_id,
@@ -871,7 +957,9 @@ class PIIEngine:
         """
         from openmed import deidentify
 
+        names = self._pii_model_names(lang=lang, model_name=model_name)
         with self._lock:
+            _refuse_local_model_paths(names)
             return deidentify(
                 text,
                 method=method,

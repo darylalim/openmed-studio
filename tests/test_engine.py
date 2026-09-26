@@ -7,6 +7,8 @@ The fast tests verify the lazy-loading contract without touching a model; the
 
 from __future__ import annotations
 
+import os
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -627,6 +629,264 @@ def test_zero_shot_available_and_default_labels_delegate(monkeypatch) -> None:
     assert PIIEngine.default_labels("clinical") == ["Problem", "Test"]
 
 
+# --- Local-path guard: a CWD entry named like a model is refused (no model) ---
+
+_ZERO_SHOT_REPO = "OpenMed/OpenMed-ZeroShot-NER-Disease-Small-166M"
+
+
+def _fail_if_openmed_runs(monkeypatch) -> None:
+    """Make every openmed load/inference entry point the engine calls raise if reached."""
+    import openmed
+    import openmed.ner as ner
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("openmed was called")
+
+    for name in ("extract_pii", "deidentify", "analyze_text"):
+        monkeypatch.setattr(openmed, name, fail)
+    monkeypatch.setattr(ner, "infer", fail)
+    # The zero-shot path resolves its alias first (registry metadata, no load).
+    monkeypatch.setattr(
+        openmed,
+        "get_all_models",
+        lambda: {
+            "zeroshot_disease_small_166m": SimpleNamespace(model_id=_ZERO_SHOT_REPO)
+        },
+    )
+
+
+def _call(engine: PIIEngine, method: str, **kwargs):
+    if method == "analyze":
+        kwargs.setdefault("model_name", "disease_detection_superclinical_141m")
+    if method == "extract_zero_shot":
+        kwargs.setdefault("model_name", "zeroshot_disease_small_166m")
+        kwargs.setdefault("labels", ["Problem"])
+    return getattr(engine, method)("x", **kwargs)
+
+
+_MODEL_METHODS = ["extract", "deidentify", "analyze", "extract_zero_shot"]
+
+
+def _no_namespace_check(monkeypatch) -> None:
+    # The "OpenMed"/"openai" namespace check would refuse any "OpenMed/..." directory on
+    # its own; switch it off where a test must prove a specific name is enumerated.
+    from openmed_studio import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "_OPENMED_NAMESPACES", ())
+
+
+@pytest.mark.parametrize("method", _MODEL_METHODS)
+@pytest.mark.parametrize("entry", ["OpenMed", "openai"])
+def test_a_local_openmed_namespace_refuses_every_model_call(
+    monkeypatch, tmp_path, entry, method
+) -> None:
+    # A CWD entry named like one of openmed's own namespaces shadows names openmed swaps
+    # in by itself (MLX builds, language defaults, the privacy-filter fallback), so its
+    # mere presence refuses every model call — before openmed is touched.
+    from openmed_studio.engine import LocalModelPathError
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / entry).mkdir()
+    _fail_if_openmed_runs(monkeypatch)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    with pytest.raises(LocalModelPathError) as excinfo:
+        _call(engine, method)
+    assert repr(entry) in str(excinfo.value)
+    assert os.getcwd() in str(excinfo.value)  # the log names where, for the operator
+    assert engine._lock.locked() is False
+
+
+@pytest.mark.parametrize("method", ["extract", "deidentify"])
+@pytest.mark.parametrize(
+    "model_name", [None, DEFAULT_PII_MODEL, DEFAULT_PII_MLX_MODEL, "acme/extra-pii"]
+)
+def test_pii_calls_refuse_a_local_dir_named_like_the_model(
+    monkeypatch, tmp_path, method, model_name
+) -> None:
+    # The effective name — the requested one, or the default when none is given (the
+    # Streamlit UI never sends one) — is refused when it exists under the CWD.
+    from openmed_studio.engine import LocalModelPathError
+
+    _no_namespace_check(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    effective = model_name or DEFAULT_PII_MODEL
+    (tmp_path / effective).mkdir(parents=True)
+    _fail_if_openmed_runs(monkeypatch)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    with pytest.raises(LocalModelPathError, match=re.escape(repr(effective))):
+        _call(engine, method, model_name=model_name)
+
+
+@pytest.mark.parametrize("method", ["extract", "deidentify"])
+def test_pii_calls_refuse_a_local_dir_named_like_the_language_default(
+    monkeypatch, tmp_path, method
+) -> None:
+    # For lang != "en" openmed swaps the default model for that language's own
+    # (lang="fr" -> the French model) — a name the request never carried, so the engine
+    # must enumerate it. The same directory is harmless for an English request.
+    from openmed.core.model_registry import get_default_pii_model
+
+    from openmed_studio.engine import LocalModelPathError
+
+    french = get_default_pii_model("fr")
+    assert french and french != DEFAULT_PII_MODEL
+    _no_namespace_check(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / french).mkdir(parents=True)
+    _fail_if_openmed_runs(monkeypatch)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    with pytest.raises(LocalModelPathError, match=re.escape(repr(french))):
+        _call(engine, method, lang="fr")
+    with pytest.raises(AssertionError, match="openmed was called"):
+        _call(
+            engine, method, lang="en"
+        )  # guard passes; the (failing) openmed call runs
+
+
+@pytest.mark.parametrize(
+    "local", ["zeroshot_disease_small_166m", _ZERO_SHOT_REPO], ids=["alias", "repo"]
+)
+def test_zero_shot_refuses_a_local_dir_named_like_the_alias_or_repo(
+    monkeypatch, tmp_path, local
+) -> None:
+    from openmed_studio.engine import LocalModelPathError
+
+    _no_namespace_check(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / local).mkdir(parents=True)
+    _fail_if_openmed_runs(monkeypatch)
+    with pytest.raises(LocalModelPathError, match=re.escape(repr(local))):
+        _call(PIIEngine(), "extract_zero_shot")
+
+
+def test_analyze_refuses_a_local_dir_named_like_the_alias(
+    monkeypatch, tmp_path
+) -> None:
+    from openmed_studio.engine import LocalModelPathError
+
+    _no_namespace_check(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "disease_detection_superclinical_141m").mkdir()
+    _fail_if_openmed_runs(monkeypatch)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    with pytest.raises(LocalModelPathError):
+        _call(engine, "analyze")
+
+
+def test_guard_refuses_a_privacy_filter_shaped_dir_openmed_would_trust(
+    monkeypatch, tmp_path
+) -> None:
+    # The concrete hazard, with a harmless fixture (a config.json and nothing to run): a
+    # CWD directory named like the default model whose config names the privacy-filter
+    # family. By name the default is an ordinary model, but openmed's artifact check says
+    # it would route THIS directory to create_privacy_filter_pipeline, which loads with
+    # trust_remote_code=True. The engine refuses before openmed sees it. (__wrapped__
+    # skips that check's lru_cache: caching True for the default's relative name would
+    # route every later call in this process through the privacy filter.)
+    import json
+
+    from openmed.core.pii import (
+        _is_privacy_filter_artifact_path,
+        _looks_like_privacy_filter_identifier,
+    )
+
+    from openmed_studio.engine import LocalModelPathError
+
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / DEFAULT_PII_MODEL
+    fixture.mkdir(parents=True)
+    (fixture / "config.json").write_text(json.dumps({"family": "privacy-filter"}))
+    assert not _looks_like_privacy_filter_identifier(DEFAULT_PII_MODEL)
+    assert _is_privacy_filter_artifact_path.__wrapped__(DEFAULT_PII_MODEL)
+
+    _fail_if_openmed_runs(monkeypatch)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    for method in ("extract", "deidentify"):
+        with pytest.raises(LocalModelPathError):
+            _call(engine, method)
+
+
+def test_guard_refuses_a_dangling_symlink(monkeypatch, tmp_path) -> None:
+    # lexists, not exists: a symlink whose target doesn't exist yet is refused too.
+    from openmed_studio.engine import LocalModelPathError
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "openai").symlink_to(tmp_path / "not-there-yet")
+    _fail_if_openmed_runs(monkeypatch)
+    with pytest.raises(LocalModelPathError):
+        _call(PIIEngine(loader=cast("ModelLoader", object())), "extract")
+
+
+@pytest.mark.parametrize("method", _MODEL_METHODS)
+def test_guard_lets_a_clean_working_directory_through(
+    monkeypatch, tmp_path, method
+) -> None:
+    # No false positives from unrelated entries: the call reaches openmed (here a fake
+    # that raises, so reaching it is the proof).
+    for unrelated in ("models", "tests", "openmed_studio", "notes.txt"):
+        (tmp_path / unrelated).touch()
+    monkeypatch.chdir(tmp_path)
+    _fail_if_openmed_runs(monkeypatch)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    with pytest.raises(AssertionError, match="openmed was called"):
+        _call(engine, method)
+
+
+def test_pii_model_names_match_openmeds_resolution() -> None:
+    # The guard's language rule mirrors core/pii.py::_resolve_effective_pii_model: for
+    # every language the app offers, and for both default PII ids, the names the engine
+    # checks include the one openmed actually resolves — and the default model id is the
+    # one openmed substitutes when model_name is omitted. Registry metadata only.
+    import inspect
+    import typing
+
+    import openmed
+    from openmed.core.pii import _DEFAULT_EN_MODEL, _resolve_effective_pii_model
+
+    from openmed_studio.validation import Lang
+
+    assert _DEFAULT_EN_MODEL == DEFAULT_PII_MODEL
+    for func in (openmed.extract_pii, openmed.deidentify):
+        assert inspect.signature(func).parameters["model_name"].default == (
+            DEFAULT_PII_MODEL
+        )
+    engine = PIIEngine()
+    for lang in typing.get_args(Lang):
+        for model_name in (None, DEFAULT_PII_MODEL, DEFAULT_PII_MLX_MODEL):
+            names = engine._pii_model_names(lang=lang, model_name=model_name)
+            resolved = _resolve_effective_pii_model(
+                model_name or DEFAULT_PII_MODEL, lang
+            )
+            assert resolved in names, (lang, model_name, names, resolved)
+
+
+def test_guarded_namespaces_cover_every_model_the_app_resolves() -> None:
+    # The namespace check stands in for names the engine doesn't enumerate — the repo
+    # id a curated NER alias resolves to, MLX swaps — so every such name must live in a
+    # guarded namespace: the curated aliases' repo ids, the per-language defaults, and
+    # every target of openmed's MLX map. Registry metadata only.
+    import typing
+
+    import openmed
+    from openmed.core.model_registry import get_default_pii_model
+    from openmed.mlx.inference import _MLX_MODEL_MAP
+
+    from openmed_studio.engine import (
+        _OPENMED_NAMESPACES,
+        NER_MODELS,
+        ZERO_SHOT_MODELS,
+    )
+    from openmed_studio.validation import Lang
+
+    catalog = openmed.get_all_models()
+    names = {DEFAULT_PII_MODEL, DEFAULT_PII_MLX_MODEL, *_MLX_MODEL_MAP.values()}
+    names |= {catalog[m.alias].model_id for m in NER_MODELS.values()}
+    names |= {catalog[m.alias].model_id for m in ZERO_SHOT_MODELS.values()}
+    names |= {get_default_pii_model(lang) or "" for lang in typing.get_args(Lang)}
+    outside = sorted(n for n in names if n.split("/")[0] not in _OPENMED_NAMESPACES)
+    assert not outside, outside
+
+
 # --- Concurrency: model methods serialize on the engine's internal lock ------
 
 
@@ -719,6 +979,36 @@ def test_engine_aadhaar_mask_roundtrips_through_reidentify(loader, note) -> None
         "fast occurrence tests still stand but this guard no longer covers the real path"
     )
     assert engine.reidentify(result.deidentified_text, mapping) == note
+
+
+@pytest.mark.model
+def test_engine_refuses_a_poisoned_working_directory_then_recovers(
+    loader, note, tmp_path, monkeypatch
+) -> None:
+    # The real engine and loader: under a working directory holding a privacy-filter-shaped
+    # directory named like the default model (a config.json, nothing to run), both PII
+    # calls are refused before openmed sees the name, and back in a clean directory the
+    # same engine detects PII normally. (Had openmed seen it, its lru_cache'd artifact
+    # check could have cached "privacy filter" for the default's relative name, outliving
+    # the directory.)
+    import json
+
+    from openmed_studio.engine import LocalModelPathError
+
+    engine = PIIEngine(loader=loader)
+    home = os.getcwd()
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / DEFAULT_PII_MODEL
+    fixture.mkdir(parents=True)
+    (fixture / "config.json").write_text(json.dumps({"family": "privacy-filter"}))
+    with pytest.raises(LocalModelPathError):
+        engine.extract(note)
+    with pytest.raises(LocalModelPathError):
+        engine.deidentify(note, method="mask")
+
+    monkeypatch.chdir(home)
+    found = {(e.label, e.text) for e in engine.extract(note)}
+    assert ("ssn", "123-45-6789") in found
 
 
 @pytest.mark.model

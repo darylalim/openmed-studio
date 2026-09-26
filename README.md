@@ -261,6 +261,12 @@ by the service seam — so **both** the UI and the API inherit them:
 
 - The text / batch / mapping caps, the value / enum / format checks, the per-capability
   `model_name` allowlists, backend pinning, and not echoing request input on a validation error.
+- A local-path guard: OpenMed resolves a model name against the filesystem *before* the Hugging
+  Face Hub, relative to the working directory, so a directory named like a model would be loaded
+  in its place. Before every model call the engine therefore refuses — reporting the model backend
+  as unavailable (503 over HTTP) and logging the path — when a name it would load, or an `OpenMed`
+  or `openai` entry, exists in the directory the app was started from. Start it from a directory
+  that has neither (the repo root is fine; on macOS and Windows an `openmed` folder counts too).
 - Concurrent API requests are serialized on the shared model (one inference at a time).
 
 The API layer adds the HTTP-only protections back on top: **`X-API-Key` auth** (via

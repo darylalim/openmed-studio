@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import contextlib
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi.testclient import TestClient
 
 from openmed_studio import HIDDEN_POLICIES, __version__
 from openmed_studio.main import API_KEY_ENV, COMPAT_ENV, app, create_app, get_engine
+
+if TYPE_CHECKING:
+    from openmed import ModelLoader
 
 # Policies whose profile keeps a re-identification mapping (openmed ORs the profile's own
 # keep_mapping) — the two POLICY_MODELS entries with keep_mapping=True. The stub mirrors
@@ -365,6 +369,36 @@ def test_default_pii_mlx_build_is_accepted(client) -> None:
         "/pii/extract", json={"text": "x", "model_name": DEFAULT_PII_MLX_MODEL}
     )
     assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/pii/extract", "/compat/pii/extract"])
+def test_local_model_path_is_a_503_that_names_neither_path_nor_model(
+    monkeypatch, tmp_path, path
+) -> None:
+    # The engine refuses a model name that exists under the working directory; over HTTP
+    # that is the generic 503 envelope — the path, the working directory and the model
+    # name stay in the server log.
+    from typing import cast
+
+    import openmed
+
+    from openmed_studio import PIIEngine
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("openmed was called")
+
+    monkeypatch.setattr(openmed, "extract_pii", fail)
+    engine = PIIEngine(loader=cast("ModelLoader", object()))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "OpenMed" / "OpenMed-PII-SuperClinical-Small-44M-v1").mkdir(
+        parents=True
+    )
+    with _client(engine, target=_compat_app(monkeypatch)) as override:
+        resp = override.post(path, json={"text": "x"})
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "service_unavailable"
+    for leak in ("OpenMed", str(tmp_path.name), "working directory"):
+        assert leak not in resp.text
 
 
 def test_ner_rejects_an_aliass_repo_id(client) -> None:
