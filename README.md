@@ -43,6 +43,32 @@ The app opens with eight tabs:
 | **Policy de-ID** | Anonymize under one of 10 **regulatory policies** (HIPAA Safe Harbor, GDPR Art. 9 health data, China PIPL, South Africa POPIA, Nigeria NDPA, Kenya DPA, …) — the policy decides, per entity type, whether to mask or surrogate. Masking policies are irreversible; only the policies that keep a mapping (GDPR Art. 9, China PIPL) yield a re-identification key. |
 | **Re-identify** | Restore originals from a kept mapping (auto-filled from the last Single note, Anonymize, or Policy de-ID run). Each surrogate is swapped back wherever its text appears, so if an age became `2`, other `2`s in the note (a dose, a blood pressure) change too — check the result. |
 
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/detect-dark.png">
+        <img alt="The Detect tab: the example note with each PII entity highlighted by type, plus a color legend" src="docs/screenshots/detect-light.png">
+      </picture>
+      <br><sub><b>Detect</b> — every PII span highlighted by type, before anything is redacted.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/clinical-ner-dark.png">
+        <img alt="The Clinical NER tab: the Disease domain model highlighting nine conditions in a short synthetic note" src="docs/screenshots/clinical-ner-light.png">
+      </picture>
+      <br><sub><b>Clinical NER</b> — the Disease model tagging conditions in a synthetic note.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/policy-de-id-dark.png">
+        <img alt="The Policy de-ID tab: HIPAA Safe Harbor selected, its preview, and the masked output" src="docs/screenshots/policy-de-id-light.png">
+      </picture>
+      <br><sub><b>Policy de-ID</b> — HIPAA Safe Harbor, with the profile's preview beside the output.</sub>
+    </td>
+  </tr>
+</table>
+
 Every tab except Batch is laid out as a workbench: the note and its controls on the left, results on
 the right, so a run's output appears beside its input rather than below it (on a narrow screen the
 two stack, input first). Detect, Clinical NER, Zero-shot, Single note, Anonymize, and Policy de-ID
