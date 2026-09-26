@@ -378,3 +378,8 @@ Other things to keep in mind:
 - More guides: [OpenMed docs](https://openmed.life/docs/) ·
   [PII anonymization](https://openmed.life/docs/anonymization/) ·
   [smart merging](https://openmed.life/docs/pii-smart-merging/).
+
+## License
+
+[Apache License 2.0](LICENSE) — the same license as the [OpenMed](https://github.com/maziyarpanahi/openmed)
+library this app builds on.

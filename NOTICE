@@ -1,0 +1,7 @@
+OpenMed Studio
+Copyright 2026 Daryl Lim
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It builds on the OpenMed clinical-NLP library (https://github.com/maziyarpanahi/openmed),
+which is licensed separately under the Apache License, Version 2.0.
