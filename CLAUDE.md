@@ -152,7 +152,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_service.py` | the in-process seam (a `PIIEngine` stub): backend wiring, the dict adapters, success paths, engine-option forwarding, the `analyze` + `anonymize_policy` paths (policy forwarding, no forced `keep_mapping`, policy-decided mapping surfaced), the `ServiceError` taxonomy — both its message (`ValueError`→message / `RuntimeError`+`OSError`→"unavailable") **and its transport-neutral `.kind`** (`validation`/`bad_options`/`unavailable`/`dependency`/`internal`, the classification the FastAPI layer maps to a status), the engine's `LocalModelPathError` through every entry point (a real `PIIEngine` with openmed patched to fail: `unavailable` + the generic message, the path/CWD only in the log, a batch aborts), the startup check (`check_working_directory` logs one warning naming the entries, the CWD and the restart, and stays silent in a clean directory; `working_directory_conflicts` includes the operator's extras), `_run`'s load-bearing `except` order (a local `ImportError`+`ValueError` stand-in for openmed's `ModelLoadError` must classify as `bad_options` and yield per-note rows in a batch, not abort it — see "Known gotchas"), openmed's internal errors (a local `RuntimeError` stand-in carrying `.code` `internal_error`/`inference_error` must classify as `internal` with the generic message, its detail only in the log, and get its own row in a batch, while a code-less `RuntimeError` or `budget_exceeded` stays `unavailable`; `test_openmed_internal_codes_match_openmed` pins the baked codes against openmed's real error classes, no model), and batch per-note isolation — plus two `--run-model` tests that drive the real engine |
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `model_name` path guard (no `.`-leading segment, so `..`/`.`/hidden entries fail on every request model incl. `/compat`, while every openmed registry alias/model id still passes the format check, `_check_model_name`), the per-capability `model_name` allowlists (every request model incl. `/compat` has one; PII admits only `None`/the default/its `-mlx` build and rejects the privacy-filter names in every casing, other `-mlx` repos, case-variants, arbitrary Hub ids and other capabilities' models; NER/zero-shot admit only their curated aliases — of openmed's whole registry each capability admits exactly its curated names; no rejection echoes the value), that the OpenAPI schema lists each capability's curated names in `model_name`'s `description` and `examples` (no `enum`, and never an operator extra — checked in a subprocess with one set), that every `lang` field — `/compat` included — is the `Lang` literal, the `OPENMED_STUDIO_EXTRA_MODELS` parser (trim/drop-empty/format-check, a malformed entry raises) plus two subprocess tests that it is read at import onto every field and that a bad entry stops the app, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that `tests/conftest.py` scrubs the operator knobs before import (a subprocess `pytest` with all five exported — a malformed extra included, which would otherwise stop collection — still sees the defaults), that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
 | `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), that `extract_zero_shot` itself refuses a name validation's zero-shot allowlist doesn't admit (another registry alias, an NER alias, a repo id) without consulting openmed's registry or `infer` and without quoting the name, while honoring an operator extra, the local-path guard (via `monkeypatch.chdir(tmp_path)` with openmed's entry points patched to fail: a CWD `OpenMed`/`openai` entry refuses all four model methods, as does a directory named like the effective PII model — incl. the default when none is sent — like the `lang="fr"` language default (not for `lang="en"`), like a zero-shot alias or its repo id, or like an NER alias; a dangling symlink counts; a privacy-filter-shaped fixture openmed's own artifact check would trust is refused; a clean directory passes; the refusal says to restart from a clean directory; `local_model_path_conflicts` — the startup check's source — names each default/curated/extra name and namespace that exists, each once, names first, and nothing in a clean directory; plus pins that `_pii_model_names` contains what `_resolve_effective_pii_model` resolves for every `Lang` and that every curated/language-default/`_MLX_MODEL_MAP` repo lives in a guarded namespace), a `--run-model` test that the real engine refuses a poisoned CWD then works again from a clean one, the one-pass `reidentify` (which skips an empty key) plus a `strict` xfail (`test_reidentify_restores_only_the_surrogate_spans`) pinning its mapping-only limit, where text that merely equals a surrogate is restored too (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
-| `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
+| `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks (`Tint`'s dark + light rgba, `Tint.css`'s dark fallback before `light-dark()`, nine distinct tints per mode with `first_name`/`date` in different slots), `build_base_opts` payload |
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES`; the cached `get_engine` runs the working-directory check exactly once across reruns; the input \| results workbench (see *Layout* under "UI"): the eight top-level tabs pinned by label (`at.tabs` also lists the nested result views), each tab's empty-state panel sitting in its results pane before a first run, results rendering in the 0.6-weight pane beside the note's 0.4 one (in every tab but Batch, Zero-shot included; panes found by weight *and* content), the de-identify panel's two constant-label views with the entity table in an expander and never in a view tab, the entity table's `column_order`, the `Method` row outside every pane, Policy de-ID's `Seed` declared while `Deterministic surrogates` is off, and an empty entity list rendering a sentence rather than a grid. AppTest lists icon'd expanders under `.status`, not `.expander` |
 | `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx2` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s (including one per `HIDDEN_POLICIES` name on `/pii/anonymize-policy`, and one per route family — `/compat` included — for a `model_name` the allowlist doesn't admit, echoing neither the note nor the name), the local-path guard as a 503 that names neither the path nor the model, `create_app`'s one startup warning for a poisoned working directory (and silence for a clean one), `/health`'s `working_directory_clean` flipping per request without naming the entry (`status` stays `"ok"`), `X-API-Key` auth (401/accept/reject + open `/health`), the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated, and a PHI-safe 422 for a `lang` outside the app's `Lang` — privacy-filter-default languages, a different casing, junk — while a supported one reaches the engine), and that `TestClient` is built on `httpx2` (see "Known gotchas") |
 | `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, that those same names are in `.gitignore` (the other half of the invariant), and that `.claude/settings.json` still registers the hook under `PreToolUse`. The whole file `skipif`s when `sh` or `python3` is missing |
@@ -707,13 +707,24 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `Policy de-ID`, `Clinical NER`, and `Zero-shot`) renders the highlighted text plus its legend, label-agnostic so it
     handles NER's UPPERCASE labels and zero-shot's arbitrary user-typed labels unchanged (every label
     is HTML-escaped, so a user-supplied label can't inject markup). `ui_helpers.py`'s `render_highlighted`/`render_legend` are
-    **theme-agnostic**: a translucent per-label tint from `PALETTE`/`color_for` plus `color: inherit`,
-    so the marks read on light or dark with no runtime theme detection (`render_plain`/
-    `build_base_opts`/`build_batch_table` are kept separate for browserless unit tests). `PALETTE` is
-    the **nine** Nord accents (five Aurora, four Frost), mirroring `.streamlit/config.toml`; nine and
-    not ten is load-bearing, because `color_for` hashes with `sum(ord(c)) % len(PALETTE)` and at ten
-    `first_name` and `date` — the most common pair in a clinical note — collide. Per-hue alphas keep
-    every tint visible on both Nord's `#2e3440` and white while holding text above WCAG AA. The
+    **theme-agnostic in Python**: `color_for` returns a `Tint(dark, light)` of translucent rgba,
+    and `Tint.css` emits `background-color:<dark>;background-color:light-dark(<light>,<dark>)` —
+    the browser resolves `light-dark()` against the `color-scheme` Streamlit sets on its element
+    tree for the active mode (verified in both: a mark's computed `color-scheme` is `dark`/`light`
+    and its background the matching tint), so no Python reads `st.context.theme`, and the leading
+    plain-dark declaration is the fallback for a browser without `light-dark()`; `color: inherit`
+    takes the theme's text color (`render_plain`/`build_base_opts`/`build_batch_table` are kept
+    separate for browserless unit tests). `PALETTE` is the **nine** entity hues shared by both
+    themes (OKLCH ~40° apart; dark L 0.72 / C 0.13, light 0.70 / 0.15), mirroring
+    `.streamlit/config.toml`; nine and not ten is load-bearing, because `color_for` hashes with
+    `sum(ord(c)) % len(PALETTE)` and at ten `first_name` and `date` — the most common pair in a
+    clinical note — collide. The slot **order** is load-bearing too: the hash is fixed, so hues are
+    placed by which PII-model labels land in each slot (commented per entry) — `first_name` (slot 2)
+    and `last_name` (slot 3) sit side by side in every note, so they get blue vs orange. Per-hue
+    alphas are solved per mode so each tint lifts its canvas equally (≈2.0:1 on `#121b21`, ≈1.45:1
+    on `#fcfeff`) with body text ≥7:1 on every dark tint and ≥10.8:1 on every light one. (The Nord
+    palette this replaced had four blues among its nine, so `date`/`city`/`last_name`/
+    `ORGANIZATION` read alike.) The
     de-identified output offers a `Download` button (**no** copy-to-clipboard — the in-process tool
     deliberately avoids sending PHI to a browser-side clipboard component); every entity table goes
     through the shared `_render_entity_table` (confidence as a `ProgressColumn`, `column_order`
@@ -740,18 +751,31 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     confidence slider defaults to `0.5` (the de-identify default is `0.7`).
   - *Config:* `streamlit>=1.61` is a core dependency — the floor is set by `st.metric(icon=…)` on
     every KPI card, which 1.60 and earlier reject with a `TypeError` (the horizontal/
-    `height="stretch"` flex containers are older). `.streamlit/config.toml` is **Nord, dark only**: one flat `[theme]` (plus
-    `[theme.sidebar]`) and *no* `[theme.light]`/`[theme.dark]`, which is precisely what removes the
-    light/dark selector — Streamlit offers it only when both mode sections exist
-    (`runtime/app_session.py` populates `custom_theme.light`/`.dark` only from those sections), so
-    re-adding either brings the toggle back. It sets the Polar Night backgrounds / Snow Storm text /
-    Frost accents, `baseRadius`/`buttonRadius` `4px` with widget+sidebar borders on, and an Aurora
-    `red`/`orange`/`yellow`/`green`/`violet` + Frost `blue` semantic palette that `ui_helpers.PALETTE`
-    mirrors, so status accents and entity marks come from one set of nine colors. It deliberately
-    omits the upstream Nord template's `font`/`codeFont` (Inter + JetBrains Mono via
-    fonts.googleapis.com) — a tool that already sets `gatherUsageStats = false` shouldn't make an
-    outbound CDN call per page load, and the fonts would silently fall back in an air-gapped deploy;
-    the font *metrics* (`baseFontSize`/`headingFontSizes`/…) are family-independent and stay.
+    `height="stretch"` flex containers are older). `.streamlit/config.toml` carries **two themes designed for this app**,
+    replacing the stock dark-only Nord template: "Night Rounds" (`[theme.dark]` +
+    `[theme.dark.sidebar]`) and "Day Rounds" (`[theme.light]` + `[theme.light.sidebar]`), over a
+    shared `[theme]` holding only shape/borders/type scale. Defining **both** mode sections is what
+    turns on the System/Light/Dark picker in the ⋮ menu (`runtime/app_session.py` populates
+    `custom_theme.light`/`.dark` only from those sections), and a new visitor gets their OS
+    preference; `[theme]` sets **no** `base` (the mode sections imply it), so deleting one mode
+    section means putting `base` back. Both modes put every surface on one OKLCH slate hue with the
+    sidebar a step darker than the canvas, so it recedes (dark `#0c1419` < `#121b21`; light
+    `#f0f5f9` < `#fcfeff`), text at 14.4:1 / 15.8:1, 6px radius with widget+sidebar borders on,
+    semantic `red`/…/`violet` on the entity hues, and a `grayColor` that is also the no-delta
+    `st.metric` sparkline's color (Streamlit's default all but vanished on dark). Day Rounds sets
+    every `*TextColor` explicitly (≥6.6:1): yellow/orange can't be both recognizable and dark
+    enough for text on white, and alert text uses those variants. **Dark `primaryColor` `#0f827d`
+    is a forced compromise:** Streamlit 1.64 always renders primary-button text white, so the
+    primary must stay dark enough for white at AA (4.66:1), while the same color is the *text* of
+    the active tab, the selected `segmented_control` option and the slider value, where it gets
+    only 3.7:1 on the dark canvas (AA for non-text, not for text). No colour satisfies both on a
+    dark canvas short of pure black (Nord's `#88c0d0` gave the buttons 1.9:1); on white both pass,
+    so Day Rounds' `#04736c` is 5.7:1 each way. Dark `linkColor` is a separate light teal (9.7:1).
+    It deliberately sets no
+    `font`/`codeFont` — Streamlit's bundled Source Sans/Code ship in the package, while a
+    fonts.googleapis.com family means an outbound CDN call per page load from a tool that already
+    sets `gatherUsageStats = false`, and would silently fall back in an air-gapped deploy; the font
+    *metrics* (`baseFontSize`/`headingFontSizes`/…) are family-independent and stay.
     `gatherUsageStats = false` (a clinical-text tool shouldn't phone home);
     and `[client] showErrorDetails = "none"`, so a traceback (which can quote note text) never reaches
     the browser — full detail goes to the server console, meaning **debug from the terminal, not the

@@ -40,59 +40,108 @@ corsAllowedOrigins = []
 # anywhere in this file makes Streamlit log a traceback and start anyway with ALL of it
 # dropped, reverting every setting.
 
-# Nord (https://www.nordtheme.com) — arctic, north-bluish palette, dark only.
-# A SINGLE [theme] section is deliberate: Streamlit offers the light/dark selector in
-# the settings menu only when BOTH [theme.light] and [theme.dark] exist, so one flat
-# [theme] locks the app to this one mode. Don't re-add the mode sections unless you
-# want the toggle back.
+# Two themes designed for this app, one colour system: "Night Rounds" (dark) and "Day
+# Rounds" (light). Both share one slate hue (OKLCH h 238) for every surface, a teal
+# accent, and the same nine entity-highlight hues (ui_helpers.PALETTE). Every value was
+# solved in OKLCH and checked against WCAG 2.2 contrast; the ratios are noted inline.
 #
-# No `font`/`codeFont`: the upstream Nord template loads Inter + JetBrains Mono from
-# fonts.googleapis.com, and a clinical-text tool that already sets
-# gatherUsageStats = false shouldn't make an outbound CDN call on every page load (it
-# would also silently fall back in an air-gapped deploy). The typography *metrics*
-# below are font-family-independent, so they still apply to the built-in stack.
+# Defining BOTH [theme.light] and [theme.dark] is what turns on Streamlit's light/dark
+# selector (Settings → Theme); a new visitor gets their OS preference. Deleting either
+# section locks the app to the other — and then put `base` back in [theme].
+#
+# No `font`/`codeFont`: Streamlit's own Source Sans / Source Code ship inside the
+# package, while a Google-Fonts family would mean an outbound CDN call on every page
+# load from a clinical-text tool that already sets gatherUsageStats = false (and a
+# silent fallback in an air-gapped deploy). The typography *metrics* are
+# font-family-independent.
+#
+# The one compromise: Streamlit 1.64 always draws primary-button text WHITE, and the
+# primary colour is also the TEXT of the active tab, the selected segmented-control
+# option and the slider value. On white both uses pass (Day Rounds teal: 5.7:1 each
+# way). On a dark canvas nothing short of pure black passes both, so Night Rounds keeps
+# the buttons at AA (4.66:1) and lets those selected states sit at 3.7:1 — AA for
+# non-text, and each also shows an underline or border. (Nord's #88c0d0, which this
+# replaced, gave every primary button 1.9:1.)
+
+# Shared by both modes: shape, borders and type scale.
 [theme]
-base = "dark"
-
-# Polar Night backgrounds, Snow Storm text, Frost accents.
-primaryColor = "#88c0d0"              # nord8  — buttons, active widgets
-backgroundColor = "#2e3440"           # nord0  — main canvas
-secondaryBackgroundColor = "#3b4252"  # nord1  — widget/expander surfaces
-codeBackgroundColor = "#3b4252"       # nord1
-textColor = "#eceff4"                 # nord6
-codeTextColor = "#d8dee9"             # nord4
-linkColor = "#81a1c1"                 # nord9
-borderColor = "#4c566a"               # nord3
-
-# Borders on, small radius — Nord reads crisp rather than soft.
 showWidgetBorder = true
 showSidebarBorder = true
-baseRadius = "4px"
-buttonRadius = "4px"
+baseRadius = "6px"         # a workbench should read crisp rather than soft
+buttonRadius = "6px"
 linkUnderline = false
-
 baseFontSize = 14
 baseFontWeight = 400
 codeFontSize = "0.875rem"
 headingFontSizes = ["32px", "24px", "20px", "16px", "14px", "12px"]
 headingFontWeights = [600, 600, 600, 600, 600, 600]
 
-# Aurora + Frost, the semantic palette behind st.error/warning/success accents,
-# badges, and :red[...]-style markdown. Matches ui_helpers.PALETTE, which tints the
-# entity-highlight marks from the same nine Nord accents.
-redColor = "#bf616a"      # nord11
-orangeColor = "#d08770"   # nord12
-yellowColor = "#ebcb8b"   # nord13
-greenColor = "#a3be8c"    # nord14
-violetColor = "#b48ead"   # nord15
-blueColor = "#81a1c1"     # nord9
+# --- Night Rounds: the dim blue-green slate of a ward at night -----------------------
+[theme.dark]
+primaryColor = "#0f827d"              # scrubs teal; white text 4.66:1, canvas 3.7:1
+backgroundColor = "#121b21"           # canvas
+secondaryBackgroundColor = "#1b262d"  # widget / expander / code surfaces
+codeBackgroundColor = "#1b262d"
+textColor = "#e5eaee"                 # 14.4:1 on the canvas, 12.7:1 on surfaces
+codeTextColor = "#c9d3d9"
+linkColor = "#65d2d2"                 # a light teal: 9.7:1 as text, unlike primaryColor
+borderColor = "#34424b"
+dataframeBorderColor = "#34424b"
+dataframeHeaderBackgroundColor = "#1b262d"
+# The semantic palette behind st.error/warning/success/info, badges and :red[...]
+# markdown, on the entity hues lifted to read as text (red, the lowest, 6.6:1).
+redColor = "#ef7e7c"
+orangeColor = "#f39d5e"
+yellowColor = "#e9c85e"
+greenColor = "#80cd82"
+blueColor = "#7aacf6"
+violetColor = "#b998ea"
+# Also the colour of st.metric's sparkline when it has no delta (the "Distinct types"
+# card) — Streamlit's default gray all but vanished on a dark canvas. 7.1:1.
+grayColor = "#98a7b1"
+# The entity hues as solid colours, teal first.
+chartCategoricalColors = ["#10bdaf", "#77a4f6", "#e28d4f", "#6dba70", "#b490e8", "#c2a132", "#eb817f", "#09b7dc", "#de82b7"]
 
-chartCategoricalColors = ["#88c0d0", "#81a1c1", "#5e81ac", "#a3be8c", "#ebcb8b", "#d08770", "#bf616a"]
+# The sidebar sits one step DARKER than the canvas in both modes: it holds only the
+# engine readout and the Language filter, so it recedes and the workbench leads.
+[theme.dark.sidebar]
+backgroundColor = "#0c1419"
+secondaryBackgroundColor = "#1b262d"
+codeBackgroundColor = "#1b262d"
+borderColor = "#34424b"
 
-# Sidebar sits one Polar Night step lighter than the canvas, so the engine readout
-# and Language filter read as a distinct panel.
-[theme.sidebar]
-backgroundColor = "#3b4252"           # nord1
-secondaryBackgroundColor = "#434c5e"  # nord2
-codeBackgroundColor = "#434c5e"       # nord2
-borderColor = "#4c566a"               # nord3
+# --- Day Rounds: the same system on a cool paper white -------------------------------
+[theme.light]
+primaryColor = "#04736c"              # deeper teal: white text 5.7:1 AND 5.7:1 as text
+backgroundColor = "#fcfeff"           # canvas — off-white, a hair of the slate hue
+secondaryBackgroundColor = "#ecf2f7"
+codeBackgroundColor = "#ecf2f7"
+textColor = "#18232b"                 # 15.8:1 on the canvas, 14.2:1 on surfaces
+codeTextColor = "#333f47"
+linkColor = "#04736c"                 # on white the primary teal passes as text
+borderColor = "#cdd6dd"
+dataframeBorderColor = "#cdd6dd"
+dataframeHeaderBackgroundColor = "#ecf2f7"
+# Base accents (icons, badges, borders) sit at the lightness the hue reads best at;
+# yellow and orange can't also be dark enough for text, so every *TextColor is set
+# explicitly at ≥6.6:1 on the canvas (≥5.7:1 on its alert tint) rather than derived.
+redColor = "#bd4045"
+orangeColor = "#c85d02"
+yellowColor = "#b88a06"
+greenColor = "#218b30"
+blueColor = "#2769c6"
+violetColor = "#7e4fb7"
+redTextColor = "#933235"
+orangeTextColor = "#8b3f03"
+yellowTextColor = "#705301"
+greenTextColor = "#186a23"
+blueTextColor = "#24569f"
+violetTextColor = "#664293"
+grayColor = "#5e6b74"                 # 5.4:1 — also the "Distinct types" sparkline
+chartCategoricalColors = ["#0b9488", "#4c7dd9", "#c16302", "#3a9742", "#9267ca", "#9a7d03", "#ca5556", "#078ead", "#bc5694"]
+
+[theme.light.sidebar]
+backgroundColor = "#f0f5f9"
+secondaryBackgroundColor = "#fcfeff"  # the Language picker lifts off the tinted sidebar
+codeBackgroundColor = "#e4ebf1"
+borderColor = "#cdd6dd"

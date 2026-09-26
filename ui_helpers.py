@@ -8,36 +8,71 @@ entity-highlighting, and request-payload logic can be unit-tested in isolation
 from __future__ import annotations
 
 import html
-from typing import Any
+from typing import Any, NamedTuple
 
-# The nine Nord accent colors — five Aurora, four Frost — as translucent per-label
-# tints, matching the palette in ``.streamlit/config.toml``. Marks pair the tint with
-# ``color: inherit`` so the text always takes the active theme's color, and the
-# highlight is therefore correct on any theme with no runtime theme detection.
-# Alphas are tuned per hue so every tint stays visible over Nord's #2e3440 canvas
-# *and* over white while keeping text above WCAG AA (4.5:1) on both; Aurora yellow is
-# the lightest hue, hence its lower alpha. Warm and cool alternate so hash-adjacent
-# labels land on visibly different tints. Nine and not ten is deliberate:
-# ``color_for`` hashes with ``sum(ord(c)) % len(PALETTE)``, and at ten the two most
-# common labels in a clinical note — ``first_name`` and ``date`` — collide.
-PALETTE: list[str] = [
-    "rgba(136,192,208,.40)",  # nord8  frost cyan
-    "rgba(191,97,106,.42)",  # nord11 aurora red
-    "rgba(163,190,140,.40)",  # nord14 aurora green
-    "rgba(129,161,193,.45)",  # nord9  frost blue
-    "rgba(235,203,139,.32)",  # nord13 aurora yellow
-    "rgba(143,188,187,.40)",  # nord7  frost teal
-    "rgba(180,142,173,.45)",  # nord15 aurora purple
-    "rgba(208,135,112,.42)",  # nord12 aurora orange
-    "rgba(94,129,172,.52)",  # nord10 frost deep blue
+
+class Tint(NamedTuple):
+    """One entity hue as a translucent tint per theme mode (Night / Day Rounds)."""
+
+    dark: str
+    light: str
+
+    @property
+    def css(self) -> str:
+        """``background-color`` declarations that follow the active theme mode.
+
+        ``light-dark()`` resolves against the ``color-scheme`` Streamlit sets on its
+        element tree for the active theme, so the browser picks the tint and no Python
+        code reads the theme. The plain dark tint comes first as the fallback for a
+        browser without ``light-dark()`` (which drops the second declaration): it still
+        reads on white, only fainter.
+        """
+        return (
+            f"background-color:{self.dark};"
+            f"background-color:light-dark({self.light},{self.dark})"
+        )
+
+
+# The entity hues of ``.streamlit/config.toml``'s two themes as translucent per-label
+# tints: nine hues ~40° apart on the OKLCH wheel (dark: lightness 0.72 / chroma 0.13;
+# light: 0.70 / 0.15; cyan and teal trimmed to fit sRGB), so no two read as "the same
+# blue". Marks pair the tint with ``color: inherit`` so the text always takes the
+# active theme's color. Alphas are solved per hue so every tint lifts its canvas by the
+# same amount — ≈2.0:1 on Night Rounds' #121b21, ≈1.45:1 on Day Rounds' #fcfeff — with
+# body text ≥7:1 (WCAG AAA) on every dark tint and ≥10.8:1 on every light one. Nine
+# and not ten is deliberate: ``color_for`` hashes with ``sum(ord(c)) % len(PALETTE)``,
+# and at ten the two most common labels in a clinical note — ``first_name`` and
+# ``date`` — collide. The ORDER is a choice too: each slot's most frequent PII-model
+# labels are noted, and hues are placed so labels that sit side by side in a note
+# differ — first/last name (slots 2, 3) are blue vs orange.
+PALETTE: list[Tint] = [
+    # 0 cyan     date, city
+    Tint("rgba(9,183,220,.36)", "rgba(12,176,212,.40)"),
+    # 1 green    medical_record_number, postcode
+    Tint("rgba(109,186,112,.35)", "rgba(91,182,97,.43)"),
+    # 2 blue     first_name
+    Tint("rgba(119,164,246,.36)", "rgba(106,156,251,.41)"),
+    # 3 orange   last_name
+    Tint("rgba(226,141,79,.38)", "rgba(228,130,51,.39)"),
+    # 4 yellow   age, date_of_birth, phone_number
+    Tint("rgba(194,161,50,.37)", "rgba(190,154,7,.41)"),
+    # 5 teal     state, country
+    Tint("rgba(16,189,175,.35)", "rgba(12,182,168,.40)"),
+    # 6 violet   street_address, occupation; NER DISEASE, CHEM
+    Tint("rgba(180,144,232,.37)", "rgba(176,134,235,.40)"),
+    # 7 red      email, ssn
+    Tint("rgba(235,129,127,.39)", "rgba(237,116,115,.38)"),
+    # 8 magenta  ORGANIZATION, gender; NER GENE
+    Tint("rgba(222,130,183,.38)", "rgba(222,117,180,.38)"),
 ]
 
 
-def color_for(label: str) -> str:
+def color_for(label: str) -> Tint:
     """Stable highlight tint for an entity label (same label → same tint).
 
-    The tint is translucent so it reads over either a light or dark page; marks
-    pair it with ``color: inherit`` so the text takes the active theme's color.
+    Emit it with ``Tint.css``, which lets the browser pick the tint for the active
+    theme mode; marks pair it with ``color: inherit`` so the text takes the theme's
+    text color.
     """
     return PALETTE[sum(ord(c) for c in label) % len(PALETTE)]
 
@@ -53,8 +88,9 @@ def _block(body: str) -> str:
 def render_highlighted(text: str, entities: list[dict[str, Any]]) -> str:
     """HTML for ``text`` with non-overlapping entity spans highlighted by label.
 
-    Marks use a translucent per-label tint plus ``color: inherit``, so they read
-    correctly on either a light or dark theme with no runtime theme detection. All
+    Marks use a translucent per-label tint that follows the theme mode via CSS
+    ``light-dark()``, plus ``color: inherit``, so they read correctly on either the
+    light or dark theme with no runtime theme detection. All
     text is HTML-escaped (the clinical note is untrusted input). Entities are
     applied left-to-right; any span that overlaps an already-applied one or falls
     outside ``text`` is skipped, and entities without a ``start`` are ignored.
@@ -76,7 +112,7 @@ def render_highlighted(text: str, entities: list[dict[str, Any]]) -> str:
         out.append(html.escape(text[cursor:start]))
         label = str(entity.get("label", ""))
         out.append(
-            f'<mark style="background-color:{color_for(label)};color:inherit;'
+            f'<mark style="{color_for(label).css};color:inherit;'
             'padding:0 .15em;border-radius:.2em" '
             f'title="{html.escape(label)}">{html.escape(text[start:end])}'
             '<span style="font-size:.7em;font-weight:600;opacity:.7;'
@@ -109,7 +145,7 @@ def render_legend(entities: list[dict[str, Any]]) -> str:
     pills: list[str] = []
     for label in labels:
         pills.append(
-            f'<span style="background-color:{color_for(label)};color:inherit;'
+            f'<span style="{color_for(label).css};color:inherit;'
             "padding:.05em .45em;border-radius:.7em;font-size:.72rem;"
             f'margin:0 .3em .3em 0;display:inline-block">{html.escape(label)}</span>'
         )

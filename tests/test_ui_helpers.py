@@ -36,9 +36,29 @@ def test_color_for_handles_empty_label():
     assert color_for("") == PALETTE[0]
 
 
-def test_color_for_returns_translucent_tint():
-    # Tints are translucent (rgba) so the marks read on light and dark themes alike.
-    assert color_for("ssn").startswith("rgba(")
+def test_color_for_returns_translucent_tint_per_theme_mode():
+    # Each hue has a translucent (rgba) tint for each theme mode.
+    tint = color_for("ssn")
+    assert tint.dark.startswith("rgba(") and tint.light.startswith("rgba(")
+
+
+def test_palette_has_nine_distinct_tints_per_mode():
+    # Nine, not ten: at ten, first_name and date (the most common pair) share a slot.
+    assert len(PALETTE) == 9
+    assert len({t.dark for t in PALETTE}) == len({t.light for t in PALETTE}) == 9
+    first_name, date = (sum(map(ord, s)) % len(PALETTE) for s in ("first_name", "date"))
+    assert first_name != date
+
+
+def test_tint_css_follows_theme_mode_with_dark_fallback_first():
+    # light-dark() lets the browser pick the tint for the active theme (no Python
+    # theme detection); the plain dark tint before it is the fallback for a browser
+    # without light-dark(), which drops the second declaration.
+    tint = color_for("ssn")
+    assert tint.css == (
+        f"background-color:{tint.dark};"
+        f"background-color:light-dark({tint.light},{tint.dark})"
+    )
 
 
 # --- render_plain -------------------------------------------------------------
@@ -59,7 +79,7 @@ def test_render_highlighted_wraps_entity_with_label_and_color():
     assert out.count("<mark") == 1
     assert "123-45-6789" in out
     assert "ssn" in out  # label is shown
-    assert color_for("ssn") in out  # background tint applied
+    assert color_for("ssn").css in out  # theme-following background tint applied
     assert "color:inherit" in out  # text uses the active theme color
     assert "end" in out  # trailing text preserved
 
@@ -159,7 +179,7 @@ def test_render_legend_one_pill_per_distinct_label():
     out = render_legend(ents)
     assert out.count("<span") == 2  # ssn + first_name, deduped
     assert "ssn" in out and "first_name" in out
-    assert color_for("ssn") in out and color_for("first_name") in out
+    assert color_for("ssn").css in out and color_for("first_name").css in out
 
 
 def test_render_legend_empty_without_labels():

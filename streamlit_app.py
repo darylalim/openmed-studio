@@ -231,8 +231,8 @@ def _render_highlight(text: str, entities: list[dict[str, Any]]) -> None:
     Shared by Detect, Clinical NER, Zero-shot, and — via ``_render_deid_result`` —
     Single note, Anonymize, and Policy de-ID.
 
-    The marks are theme-agnostic (translucent tint + ``color: inherit``), so this
-    needs no theme detection.
+    The marks carry a tint per theme mode that the browser picks with CSS
+    ``light-dark()``, plus ``color: inherit``, so this needs no theme detection.
     """
     st.html(render_highlighted(text, entities))
     legend = render_legend(entities)

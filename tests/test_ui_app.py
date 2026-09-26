@@ -976,8 +976,9 @@ def test_no_duplicate_widget_keys_across_tabs(monkeypatch):
 
 # --- theme-agnostic highlighting (#2) ----------------------------------------
 def test_highlight_marks_are_theme_agnostic(monkeypatch):
-    # Marks use a translucent tint + color:inherit, so they render correctly on any
-    # theme with no runtime theme detection (no _is_dark / st.context.theme read).
+    # Marks use a translucent tint chosen by CSS light-dark() + color:inherit, so they
+    # render correctly in either theme mode with no runtime theme detection (no
+    # _is_dark / st.context.theme read).
     _use_engine(monkeypatch, _StubEngine())
     at = AppTest.from_file(APP).run(timeout=30)
     _set_area(at, "Clinical note to scan", "Patient John Doe.")
@@ -988,6 +989,7 @@ def test_highlight_marks_are_theme_agnostic(monkeypatch):
     assert "<mark" in body
     assert "color:inherit" in body
     assert "rgba(" in body
+    assert "light-dark(" in body
 
 
 # --- review follow-ups: persistence, handoff drift, conditional Advanced, dialog ----
