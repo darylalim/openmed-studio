@@ -33,9 +33,10 @@ dependencies = [
 # Native Apple Silicon acceleration (M-series Macs). Install with:
 #   uv sync --extra mlx
 # openmed then auto-detects MLX; pin it with OPENMED_STUDIO_BACKEND=mlx.
-# The default model converts on the fly on MLX (cached under ~/.cache/openmed/mlx/); a
-# pre-converted `...-mlx` repo is an optional local-dir shortcut. See README "Native
-# Apple Silicon (MLX)".
+# The default model converts on the fly on MLX, cached beside the HF downloads as
+# ~/.cache/openmed/OpenMed_OpenMed-PII-SuperClinical-Small-44M-v1/; passing a
+# pre-converted `...-mlx` Hub repo id as `model_name` skips that. See README
+# "Apple Silicon (MLX)".
 mlx = [
     "openmed[mlx]>=2.5.0",
 ]

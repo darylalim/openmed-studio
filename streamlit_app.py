@@ -309,7 +309,7 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
         st.warning(
             "India-specific. A number passing openmed's Aadhaar checksum becomes "
             "`XXXX XXXX NNNN` — the UIDAI masked form, which **keeps the last four "
-            "digits**. Every other entity is masked exactly as `mask` does. Because it leaves "
+            "digits**. Every other entity gets the ordinary mask placeholder. Because it leaves "
             "four digits in place it is weaker than `mask`; don't use it where a HIPAA Safe "
             'Harbor-style "no residual identifier" posture is required.',
             icon=":material/warning:",
@@ -362,10 +362,10 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
                 placeholder="e.g. en_US, pt_BR",
                 key=f"{key_prefix}_locale",
                 help="Faker locale for the surrogates (e.g. pt_BR for Brazilian-format "
-                "IDs). Blank uses the default for the selected language. Note: on English "
-                "notes, setting ANY locale also widens the safety sweep from 28 to 35 "
-                "patterns (adding MRZ, USCC and India health-ID detectors), so it affects "
-                "what is detected, not just what replaces it.",
+                "IDs). Blank uses the default for the selected language. Note: some locales "
+                "(e.g. en_GB, en_IN) also add that region's identifier patterns to "
+                "detection, so the locale can change what is detected, not just what "
+                "replaces it.",
             )
         elif method == "shift_dates":
             date_shift_days = st.number_input(
@@ -605,9 +605,9 @@ def _render_anonymize(lang: str) -> None:
                 placeholder="e.g. en_US, pt_BR",
                 key="anon_locale",
                 help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the "
-                "language. Note: on English notes, setting ANY locale also widens the safety "
-                "sweep from 28 to 35 patterns (adding MRZ, USCC and India health-ID "
-                "detectors), so it affects what is detected, not just what replaces it.",
+                "language. Note: some locales (e.g. en_GB, en_IN) also add that region's "
+                "identifier patterns to detection, so the locale can change what is "
+                "detected, not just what replaces it.",
             )
         submitted = st.form_submit_button(
             "Anonymize", type="primary", icon=":material/masks:"
@@ -750,7 +750,8 @@ def _render_policy_anon(lang: str) -> None:
                 "Surrogate options apply to this policy."
                 if model.default_action == "replace"
                 else f"{policy_label} masks rather than substitutes, so the surrogate "
-                "options below are ignored; the safety sweep still applies."
+                "options below don't pick replacements — though a locale still adds its "
+                "region's identifier patterns — and the safety sweep still applies."
             )
             consistent = st.toggle(
                 "Deterministic surrogates",
@@ -772,8 +773,8 @@ def _render_policy_anon(lang: str) -> None:
                 placeholder="e.g. en_US, pt_BR",
                 key="policy_locale",
                 help="Faker locale for surrogates (e.g. pt_BR). Blank derives it from the "
-                "language. On English notes, setting ANY locale also widens the safety "
-                "sweep from 28 to 35 patterns, so it affects detection too.",
+                "language. Some locales (e.g. en_GB, en_IN) also add that region's "
+                "identifier patterns to detection — even under a masking policy.",
             )
             use_safety_sweep = st.toggle(
                 "Safety sweep",

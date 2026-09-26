@@ -38,7 +38,7 @@ uv run streamlit run streamlit_app.py
 # Re-run fully offline once the model is cached (skips HF Hub network checks + token warning).
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run streamlit run streamlit_app.py
 
-# Swap the portable Torch/Transformers backend for Apple's native MLX backend (Apple Silicon).
+# Add Apple's native MLX backend (Apple Silicon); openmed then prefers it over Torch, which stays.
 uv sync --extra mlx
 
 # Enable the Zero-shot (GLiNER) tab. gliner caps transformers<5.17, so this extra CONFLICTS with
@@ -220,9 +220,15 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   `get_backend`): it prefers MLX on Apple Silicon when `mlx` imports, else HuggingFace.
   `PIIEngine(backend=...)` / the `OPENMED_STUDIO_BACKEND` env var pin it explicitly (`"mlx"` raises
   off-Apple; `None`/unset = auto). The default English model is **not** in openmed's
-  `_MLX_MODEL_MAP`, so on MLX it converts on-the-fly on first run (cached under
-  `~/.cache/openmed/mlx/`); pre-converted `-mlx` repos exist but must be passed as a local dir
-  to skip conversion.
+  `_MLX_MODEL_MAP`, so on MLX it converts on-the-fly on first run into `<cache_dir>/<org>_<repo>/`
+  — `~/.cache/openmed/OpenMed_OpenMed-PII-SuperClinical-Small-44M-v1/`, beside the HF snapshots.
+  (`openmed/mlx/inference.py::_resolve_mlx_model` falls back to `~/.cache/openmed/mlx` only for a
+  falsy `cache_dir`, and `OpenMedConfig.__post_init__` fills a `None` one with `~/.cache/openmed`,
+  so the app's loader never reaches that path.) To skip conversion, pass a pre-converted **Hub
+  repo id** ending in `-mlx` (e.g. `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1-mlx`) as
+  `model_name`; `_resolve_mlx_model` downloads it as-is. Only the HTTP API can (the UI has no
+  PII-model picker), and only as a Hub id: `validation._check_model_name` rejects absolute paths,
+  so a local conversion directory is not a supported route.
 - **Model download:** the first run pulls a model from the HF Hub and caches it under
   `~/.cache/openmed`; later runs are offline. The default PII model is the small
   `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1` (~44M params).
@@ -738,16 +744,29 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   than imported, because `reidentify` is a pure lock-free `@staticmethod` with no openmed import;
   `tests/test_pii_pure.py::test_occurrence_prefix_matches_openmed` pins the copy against openmed's
   private constant so a rename fails CI. The two hazards are disjoint — both must be handled.
-- **`locale` widens DETECTION in openmed 2.x, not just surrogate generation.** The `Advanced` →
-  "Surrogate locale" box reads like a Faker knob, and through 1.x it was one. In 2.x
-  `core/safety_sweep.py::_patterns_for_language` special-cases *only* `lang="en"` **with
-  `locale=None`** to a narrowed pattern set; **any** non-`None` locale escapes that branch to
-  `get_patterns_for_language`, taking English from **28 to 35 patterns** (adding MRZ, USCC and
-  India health-ID detectors). So typing a locale changes *what gets found*, not only what replaces
-  it, and blank is the narrower setting — the opposite of the intuition that blank means "default,
-  everything on". All three locale inputs' help text says so (Single/Batch, `Anonymize`,
-  `Policy de-ID`). Reproduce with
-  `openmed.core.safety_sweep._patterns_for_language("en", None)` vs `(..., "en_US")`.
+- **`locale` widens DETECTION in openmed 2.x, not just surrogate generation — in the UI through
+  regional overlays, not the sweep's 28→35.** The `Advanced` → "Surrogate locale" box reads like
+  a Faker knob, and through 1.x it was one. In 2.x the locale reaches both pattern stages:
+  *(a) the safety sweep.* `core/safety_sweep.py::_patterns_for_language` special-cases *only*
+  `lang="en"` **with `locale=None`** to `PII_PATTERNS` + Aadhaar; **any** non-`None` locale escapes
+  to `pii_i18n.py::get_patterns_for_language`, whose "language-agnostic" base adds seven
+  (**28 → 35**): two passport MRZ (TD3/TD1), China's USCC, and the four
+  `INDIA_HEALTH_ID_PII_PATTERNS` — ABHA number, ABHA address, UPI ID, ration card (only the first
+  two are health IDs, whatever the name says).
+  *(b) smart merging.* `core/pii.py::_apply_pii_smart_merging` *always* calls
+  `get_patterns_for_language(lang, locale)`, so those seven are live at detection whenever smart
+  merging is on — which it always is in the UI's de-identifying tabs (only `Detect` has a toggle).
+  Measured on the default model with it on: an ABHA number, ABHA address, UPI ID, ration card and
+  USCC were each detected identically with the locale blank or `en_US`; with it off (the API's
+  `use_smart_merging=false`) a ration card was missed blank and caught under `en_US`. What changes
+  detection in the UI is a locale with its own `LOCALE_PII_PATTERNS` overlay, which *both* stages
+  append: `en_GB` (37 sweep patterns) relabelled an NHS number from `phone_number` to
+  `national_id` and caught an NI number that blank missed outright; `en_CA` has 38,
+  `en_IN`/`en_ZA` 43, while `en_US`/`pt_BR` have no overlay. So a regional locale changes
+  *what gets found*, not only what replaces it, and blank is never the wider setting. All three
+  locale inputs' help text says so (Single/Batch, `Anonymize`, `Policy de-ID` — the last also
+  forwards the locale under a masking policy). Reproduce with
+  `openmed.core.safety_sweep._patterns_for_language("en", None)` vs `(..., "en_US")` / `"en_GB"`.
 - **The engine pins eager attention because DeBERTa-v2 has no SDPA kernel — but the pin is now
   belt-and-braces, not load-bearing.** The OpenMed models (default PII + the NER models) are
   `DebertaV2ForTokenClassification`, which has no SDPA kernel. The precise transformers rule

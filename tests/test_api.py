@@ -20,12 +20,14 @@ from openmed_studio import __version__
 from openmed_studio.main import API_KEY_ENV, COMPAT_ENV, app, create_app, get_engine
 
 # Policies whose profile keeps a re-identification mapping (openmed ORs the profile's own
-# keep_mapping). The stub mirrors that so the anonymize-policy tests can assert both branches.
+# keep_mapping) — the five POLICY_MODELS entries with keep_mapping=True. The stub mirrors
+# that so the anonymize-policy tests can assert both branches.
 _REVERSIBLE_POLICIES = {
     "gdpr_pseudonymization",
     "gdpr_art9_health",
     "canada_pipeda",
     "uk_ico_anonymisation",
+    "china_pipl",
 }
 
 

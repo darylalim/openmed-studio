@@ -256,7 +256,7 @@ def anonymize_policy(engine: PIIEngine, text: str, **opts: Any) -> dict[str, Any
     per-label action from that compliance profile — so no ``method`` is sent). ``keep_mapping`` is
     not a request field: **reversibility is the policy's decision.** The seam passes
     ``keep_mapping=False`` and lets openmed OR in the profile's own flag — so the reversible
-    surrogate policies (GDPR/PIPEDA/UK ICO) keep a re-identification key while the masking policies
+    policies (GDPR/PIPEDA/UK ICO/China PIPL) keep a re-identification key while the masking policies
     (HIPAA Safe Harbor, strict-no-leak) stay irreversible. Forcing ``True`` here would wrongly make
     a masking policy reversible, contradicting its posture (and the tab's "irreversible" preview).
     The dict adapter is then asked to **surface** whatever mapping the policy produced (``None`` for

@@ -49,12 +49,13 @@ text with a color legend, plus an entity table. A few more things worth knowing:
   backend — see [Zero-shot (GLiNER)](#zero-shot-gliner).
 - Anonymize leaves anything the model misses in place, so review the output before sharing.
 - Policy de-ID picks a compliance profile instead of a method: the policy decides each entity type's
-  action, so the same note anonymizes differently under each. A live preview shows the policy's default
-  action, whether it is reversible, and whether it enforces the safety sweep. Reversibility is the
-  profile's own call, not the action's: masking policies (HIPAA Safe Harbor) never keep a key, and
-  only some surrogate policies do (GDPR pseudonymization, GDPR Art. 9, PIPEDA, UK ICO, China PIPL) —
-  the rest, like Australia Privacy Act and South Africa POPIA, replace identifiers *irreversibly*.
-  When a key is kept it round-trips through Re-identify; the preview says which case you are in.
+  action, so the same note anonymizes differently under each. A live preview shows the policy's
+  canonical name, whether it is reversible, whether it enforces the safety sweep, and a short
+  description of what it masks, substitutes, or keeps. Reversibility is the profile's own call, not
+  the action's: masking policies (HIPAA Safe Harbor) never keep a key, and only some surrogate
+  policies do (GDPR pseudonymization, GDPR Art. 9, PIPEDA, UK ICO, China PIPL) — the rest, like
+  Australia Privacy Act and South Africa POPIA, replace identifiers *irreversibly*. When a key is
+  kept it round-trips through Re-identify; the preview says which case you are in.
 
 ### Controls
 
@@ -62,12 +63,18 @@ text with a color legend, plus an entity table. A few more things worth knowing:
   detection language (12 supported), which applies to Detect, Single note, Batch, Anonymize, and
   Policy de-ID.
 - **Single note** and **Batch** each expose the de-identification method (`mask` / `remove` /
-  `replace` / `hash` / `shift_dates` / `format_preserve`), a confidence slider, `keep_mapping`, and
-  an Advanced expander whose knobs follow the chosen method:
+  `replace` / `hash` / `shift_dates` / `format_preserve` / `aadhaar_mask`), a confidence slider,
+  `keep_mapping`, and an Advanced expander whose knobs follow the chosen method:
   - `replace` / `format_preserve` (surrogates; `format_preserve` keeps each identifier's shape, so a
-    phone stays phone-shaped) — a determinism toggle, `seed`, and surrogate `locale`.
+    phone stays phone-shaped) — a determinism toggle, `seed`, and surrogate `locale`. Some locales
+    (e.g. `en_GB`, `en_IN`) also add that region's identifier patterns to detection, so the locale
+    can change what gets found, not just what replaces it.
   - `shift_dates` — `date_shift_days` and `keep_year`.
   - the safety sweep (any method).
+- `aadhaar_mask` is India-specific: a number that passes the Aadhaar checksum becomes
+  `XXXX XXXX NNNN` (the UIDAI masked form, which **keeps the last four digits**), and every other
+  entity gets the ordinary mask placeholder. Because it leaves part of an identifier in the
+  output, the method picker warns when you choose it.
 - The confidence slider defaults to `0.5` for higher PHI recall (the `deidentify` default is `0.7`).
   The model loads on the first request, so that call shows a spinner and is slower than the rest.
 
@@ -152,8 +159,8 @@ guards; the API adds only HTTP concerns (routing, auth, status codes) on top.
   and no webfont is loaded: the upstream Nord template's Google Fonts would mean an outbound CDN
   call on every page load, which a clinical-text tool shouldn't make.
 - **Isolated reruns.** The Detect / Clinical NER / Zero-shot / Batch / Re-identify tabs are
-  `st.fragment`s, so an interaction in one doesn't rerun the others; Single note and Anonymize stay
-  full reruns so they can hand their result to Re-identify.
+  `st.fragment`s, so an interaction in one doesn't rerun the others; Single note, Anonymize, and
+  Policy de-ID stay full reruns so they can hand their result to Re-identify.
 
 ## Optional extras
 
@@ -161,18 +168,20 @@ Both extras are opt-in via `uv sync --extra …` and combine with each other.
 
 ### Apple Silicon (MLX)
 
-On M-series Macs, swap the portable Torch/Transformers backend for Apple's native
-[MLX](https://github.com/ml-explore/mlx) backend:
+On M-series Macs, add Apple's native [MLX](https://github.com/ml-explore/mlx) backend, which
+OpenMed then prefers over the portable Torch/Transformers one:
 
 ```bash
 uv sync --extra mlx
 ```
 
-The default model isn't pre-packaged for MLX, so OpenMed converts it on the fly on first run and
-caches the result under `~/.cache/openmed/mlx/`. A pre-converted `-mlx` repo (e.g.
-`OpenMed/OpenMed-PII-ClinicalE5-Small-33M-v1-mlx`) is an optional shortcut that skips conversion —
-pass it as a local directory via `model_name=…`. See the
-[MLX backend docs](https://openmed.life/docs/mlx-backend/).
+OpenMed doesn't map the default model to a pre-converted MLX build, so it converts it on the fly on
+first run and caches the result beside the downloaded models, in
+`~/.cache/openmed/OpenMed_OpenMed-PII-SuperClinical-Small-44M-v1/` (each Clinical NER model gets a
+sibling directory the same way). To skip the conversion, pass a pre-converted `-mlx` Hugging Face
+repo — e.g. `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1-mlx`, the default model's own build —
+as `model_name` in an [HTTP API](#http-api-fastapi) request; OpenMed downloads it as-is. The UI has
+no PII-model picker. See the [MLX backend docs](https://openmed.life/docs/mlx-backend/).
 
 ### Zero-shot (GLiNER)
 
@@ -211,9 +220,8 @@ in-process service seam, the input guarantees in `validation.py` (caps, enums, f
 openmed-registry sync guards), `PIIEngine`'s loading contract, the Streamlit UI (via
 `streamlit.testing.v1.AppTest`), and the FastAPI service (via `fastapi.testclient.TestClient` — auth,
 the error envelope, status mapping, and `/compat`). The `--run-model` tests load real models to verify
-detection,
-masking, deterministic replacement, and round-trips; the zero-shot model test is additionally gated on
-the `gliner` extra, so CI never downloads it.
+detection, masking, deterministic replacement, and round-trips; the zero-shot model test is
+additionally gated on the `gliner` extra, so CI never downloads it.
 
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on every pull request: the tests across
 Python 3.10 and 3.13, and the lint / format / type checks once on the 3.10 leg (they are

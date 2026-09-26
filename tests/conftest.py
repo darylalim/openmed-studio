@@ -45,10 +45,16 @@ def loader():
     for the whole test run (the documented pipeline-reuse best practice).
 
     Built via ``PIIEngine().loader`` (not a bare ``ModelLoader()``) so the model
-    tests exercise the app's real loader construction — in particular the
-    ``torch_attention_backend="eager"`` pin the DeBERTa-v2 models require to load on
-    transformers >=5.13 (see ``PIIEngine.loader`` / "Known gotchas"). A bare loader
-    would request SDPA and fail to load any model.
+    tests exercise the app's real loader construction, including the
+    ``torch_attention_backend="eager"`` pin. On openmed 2.x that pin is
+    belt-and-braces: openmed's ``"auto"`` requests no attention implementation, so
+    a bare loader lands on eager too and loads fine — but the pin is what the app
+    ships, so it is what these tests load under (see ``PIIEngine.loader`` / "Known
+    gotchas").
+
+    It calls ``PIIEngine()`` directly, not ``service.build_engine()``, so it does
+    not read ``OPENMED_STUDIO_BACKEND``: openmed picks the backend itself (MLX on
+    Apple Silicon when the ``mlx`` extra is installed, else Hugging Face).
     """
     from openmed_studio import PIIEngine
 
