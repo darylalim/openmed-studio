@@ -93,14 +93,20 @@ uv run pytest --run-model      # also run the tests that load the OpenMed PII mo
 
 ### CI
 
-CI (`.github/workflows/ci.yml`) runs on pushes to `main` and every PR: `pytest` across Python 3.10
-and 3.13, and `ruff check` / `ruff format --check` / `ty check` **once** on the 3.10 leg (ruff never
-reads `.venv` and ty targets 3.10 via `[tool.ty.environment]` whatever interpreter runs it, so a
-second leg would duplicate the work and the failure annotations). Model tests stay skipped, so CI
-needs no model download. CI installs with `uv sync --locked --group dev`, so the committed `uv.lock`
-is **part of the contract**: a `pyproject.toml` dependency edit must be followed by `uv lock` or CI
-fails before running a single test. `astral-sh/setup-uv` is pinned to an **exact** version — it stopped
-publishing floating major tags at v8 — so it must be bumped by hand.
+CI (`.github/workflows/ci.yml`) runs on pushes to `main` and every PR: `pytest` across Python 3.10,
+3.13 and 3.14, and `ruff check` / `ruff format --check` / `ty check` **once** on the 3.10 leg (ruff
+never reads `.venv` and ty targets 3.10 via `[tool.ty.environment]` whatever interpreter runs it, so
+another leg would duplicate the work and the failure annotations). 3.14 is the newest interpreter
+the locked stack ships wheels for (torch 2.14's last is cp314) and `uv.lock` gives it its own
+`python_full_version >= '3.14'` fork — identical pins to 3.12–3.13 today, but a relock can split
+them — while 3.13 stays so a 3.14-only break reads as one. Every package CI installs ships a
+cp314/abi3/`py3` wheel for manylinux x86_64 except openmed's `jieba`, which is sdist-only on
+**every** leg (pure Python; it builds in seconds). Model tests stay skipped, so CI needs no model
+download — and **no leg loads a real model**, so the 3.14 leg cannot see torch's 3.14 `jit.script`
+warning (see "Known gotchas"). CI installs with `uv sync --locked --group dev`, so the committed
+`uv.lock` is **part of the contract**: a `pyproject.toml` dependency edit must be followed by
+`uv lock` or CI fails before running a single test. `astral-sh/setup-uv` is pinned to an
+**exact** version — it stopped publishing floating major tags at v8 — so it must be bumped by hand.
 
 ### Releases
 
@@ -238,8 +244,11 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   documented best practice. The shared loader dispatches/caches by `model_name`, so the `Clinical
   NER` tab loads a per-domain NER model (~141M each) into the *same* loader on first use of that
   domain — switching domains loads another model rather than rebuilding the loader.
-- **Python:** `requires-python = ">=3.10"`; verified on 3.11, but uv may pick a
-  newer interpreter (e.g. 3.13) for `.venv`.
+- **Python:** `requires-python = ">=3.10"`; CI runs the fast suite on 3.10/3.13/3.14, and the full
+  `--run-model` suite (with the `gliner` extra, so nothing skips) passes locally on all three
+  (openmed 2.5, torch 2.14). uv does **not** pick the minimum for a fresh `.venv`: it takes the
+  newest uv-managed interpreter, else the first compatible Python on `PATH`, and downloads the
+  latest stable only when there is neither — check with `uv python find`.
 ### Core modules (`openmed_studio/`)
 
 - **App structure:** `engine.py`/`service.py`/`validation.py` are the **framework-free core** (no
@@ -833,8 +842,11 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   harmless today, but it is torch announcing a removal — a future torch that drops `jit.script`
   breaks DeBERTa-v2 loading until transformers moves off it (another reason `--run-model` gates
   every torch bump). Under `-W error::FutureWarning` the model fails to load. On Python 3.14+ the
-  text is stronger — "`torch.jit.script` is not supported in Python 3.14+ and may break" — and
-  CI covers only 3.10/3.13, while a fresh uv venv here picks 3.14.
+  text is stronger — "`torch.jit.script` is not supported in Python 3.14+ and may break" (a
+  `sys.version_info >= (3, 14)` branch in `torch/jit/_script.py`) — though the full `--run-model`
+  suite still passes on 3.14 under torch 2.14. CI's 3.14 leg does **not** watch this: the warning
+  fires only on a real DeBERTa-v2 load and CI loads no model, so re-run `--run-model` on 3.14
+  after every torch/transformers bump.
 - **openmed's error taxonomy (2.3+) multiply-inherits, so `service._run`'s `except` order is
   load-bearing.** `openmed.core.errors.InputError` is a `ValueError` *and* `TypeError`, and
   `ModelLoadError` (raised when `from_pretrained` fails, e.g. an unknown model id) is an

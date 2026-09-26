@@ -21,8 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Min supported (ty's target) and a current interpreter.
-        python-version: ["3.10", "3.13"]
+        # 3.10 is the min supported (ty's target). 3.14 is the newest the locked stack
+        # has wheels for (torch 2.14 stops at cp314), and uv.lock forks there. 3.13
+        # stays so a 3.14-only break reads as one rather than as a general failure.
+        python-version: ["3.10", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
 

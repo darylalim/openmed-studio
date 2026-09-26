@@ -224,8 +224,8 @@ detection, masking, deterministic replacement, and round-trips; the zero-shot mo
 additionally gated on the `gliner` extra, so CI never downloads it.
 
 CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on every pull request: the tests across
-Python 3.10 and 3.13, and the lint / format / type checks once on the 3.10 leg (they are
-interpreter-independent, so a second run would only duplicate the work).
+Python 3.10, 3.13 and 3.14, and the lint / format / type checks once on the 3.10 leg (they are
+interpreter-independent, so another run would only duplicate the work).
 
 Releases (`.github/workflows/release.yml`) follow `version` in `pyproject.toml`: bump it, merge to
 `main`, and — once CI re-runs green — the workflow tags `v<version>` and publishes a GitHub release.
