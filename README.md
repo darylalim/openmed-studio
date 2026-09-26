@@ -18,7 +18,8 @@ uv run streamlit run streamlit_app.py
 ```
 
 `uv` reads [`pyproject.toml`](pyproject.toml), creates a `.venv`, installs the dependencies, and
-opens the app at `http://localhost:8501`. The first de-identification downloads a small
+opens the app at `http://127.0.0.1:8501` — reachable from this machine only (see
+[Security & notes](#security--notes) to change that). The first de-identification downloads a small
 (~44M-parameter) clinical PII model — `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1` — from the
 Hugging Face Hub and caches it under `~/.cache/openmed`, so later runs are fast and offline.
 
@@ -259,10 +260,11 @@ library.
 
 ## Security & notes
 
-**Run it locally.** This is a single-user / small-scale tool. Both surfaces open a network port —
-the [HTTP API](#http-api-fastapi) on `127.0.0.1` by default, the Streamlit UI on every interface
-unless you bind it (item 2 below) — so put them behind your own auth, TLS, or a reverse proxy
-before exposing them, and don't run them on a network with real PHI as-is. The guards that protect
+**Run it locally.** This is a single-user / small-scale tool. Both surfaces open a network port,
+and both listen only on `127.0.0.1` by default — the [HTTP API](#http-api-fastapi) through
+`OPENMED_STUDIO_HOST`, the Streamlit UI through the shipped `.streamlit/config.toml` (item 2
+below) — so put them behind your own auth, TLS, or a reverse proxy before exposing them, and don't
+run them on a network with real PHI as-is. The guards that protect
 the model are enforced in-process by the service seam — so **both** the UI and the API inherit them:
 
 - The text / batch / mapping caps, the value / enum / format checks, the per-capability
@@ -289,15 +291,58 @@ uniform `{"error": {…}}` envelope, PHI-safe 422s, and the opt-in OpenMed-REST 
    port. That includes making the server download and keep in memory every model the app
    accepts — about 4.7B parameters (roughly 19 GB at 32-bit precision) of PII and NER models, by
    cycling `lang` and the `/ner` domains, plus the zero-shot models if the `gliner` extra is
-   installed. The allowlists cap that; for the API, only the key stops it. **The key protects
+   installed. The allowlists cap that; for the API, only the key stops it. That includes a web
+   page you merely visit: the API doesn't check the `Host` header, so a DNS-rebinding page reaches
+   it on `127.0.0.1` like a local client (the UI's `allowedHosts`, item 2, has no API
+   counterpart). **The key protects
    the API only — the Streamlit UI has no authentication of its own**, and its language and domain
    pickers reach the same model loads, so keep the UI on `127.0.0.1` (item 2) or behind a reverse
    proxy that authenticates.
-2. Keep the API's default `127.0.0.1` bind, or put TLS or a reverse proxy in front of it. **The
-   Streamlit UI has no such default**: Streamlit listens on all interfaces unless told otherwise,
-   and the shipped `.streamlit/config.toml` doesn't tell it. Start the UI with
-   `uv run streamlit run streamlit_app.py --server.address 127.0.0.1`, or add
-   `address = "127.0.0.1"` under a `[server]` section of your `.streamlit/config.toml`.
+2. Keep both surfaces on their default `127.0.0.1` bind, or put TLS and a reverse proxy in front —
+   for the UI, one that authenticates (item 1). The API's bind comes from `OPENMED_STUDIO_HOST`;
+   the UI's from the `[server]` section of the shipped `.streamlit/config.toml`, which pins every
+   setting that decides who may connect: `address = "127.0.0.1"` (Streamlit's own default is
+   every interface); `allowedHosts = ["localhost", "127.0.0.1"]`, which refuses the UI's
+   connection for any other host name — without it, a web page you visit could still reach the
+   loopback-bound UI through DNS rebinding; and Streamlit's defaults `enableCORS = true` and
+   `corsAllowedOrigins = []`, so no other site's pages can connect. Streamlit reads that file from
+   beside `streamlit_app.py`, so it applies whatever directory you start from, and a
+   `.streamlit/config.toml` of your own can't override the settings it pins — only a flag or an
+   environment variable can. To reach the UI another way, pick the case that fits; an override
+   *replaces* the shipped host list, so keep `localhost` and `127.0.0.1` in it:
+
+   - **An authenticating reverse proxy on this machine:** keep the address and add the host name
+     the proxy forwards (it must pass the browser's original `Host` header through):
+
+     ```bash
+     uv run streamlit run streamlit_app.py --server.allowedHosts studio.example.org \
+       --server.allowedHosts localhost --server.allowedHosts 127.0.0.1
+     # or
+     STREAMLIT_SERVER_ALLOWED_HOSTS="studio.example.org localhost 127.0.0.1" uv run streamlit run streamlit_app.py
+     ```
+
+   - **A container:** `127.0.0.1` is the container's own loopback, which a published port can't
+     reach. Override only the address inside it (`--server.address 0.0.0.0`) and publish the port
+     on the host's loopback (`docker run -p 127.0.0.1:8501:8501 …`); your browser still sends
+     `localhost` or `127.0.0.1`, which the shipped list allows.
+   - **A proxy on another machine:** also set the address — to this machine's own interface IP
+     rather than `0.0.0.0` — and firewall the port so only the proxy can reach it. `allowedHosts`
+     checks a header the client chooses, so anyone who can reach the port directly can skip the
+     proxy, its TLS and its authentication.
+
+   Name several hosts by repeating the flag, or with spaces inside the variable — never commas:
+   `"a,b"`, like a quoted `--server.allowedHosts "a b"`, is read as one name and locks everyone
+   out, `localhost` included. A host name missing from the list gets a page that loads and then
+   hangs on "Please wait…" while the server log says `Rejecting WebSocket connection` — so an
+   address-only override still works at `http://localhost` but hangs for every other machine,
+   and a cloud editor's forwarded URL under its own host name may need that name added.
+   `0.0.0.0` listens on IPv4 only (`::` adds IPv6), and an empty variable doesn't clear a setting.
+
+   None of this is authentication: loopback keeps other *machines* out, not other users of this
+   one, and `allowedHosts` doesn't stop a page served from another `localhost` port, a tunnel, or
+   a proxy that rewrites the host name. Open the UI at `http://127.0.0.1:8501` rather than
+   `http://localhost:8501`, which a browser may try on IPv6 (`::1`) first — where, on a shared
+   machine, another user's process could be listening.
 3. Start the app from a clean directory that nobody else can write to. The local-path guard checks
    the working directory before each model call, but it can't close the gap between its check and
    OpenMed's own, and a directory named like a model can make OpenMed run code from it. If the

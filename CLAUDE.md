@@ -33,7 +33,8 @@ in `pyproject.toml`) — uv installs the declared dependencies into `.venv` but 
 ### Running it
 
 ```bash
-# Run the Streamlit app (opens http://localhost:8501). uv auto-creates .venv and installs deps.
+# Run the Streamlit app (opens http://127.0.0.1:8501 — loopback only, per .streamlit/config.toml's
+# [server]). uv auto-creates .venv and installs deps.
 uv run streamlit run streamlit_app.py
 
 # Re-run fully offline once the model is cached (skips HF Hub network checks + token warning).
@@ -72,6 +73,7 @@ OPENMED_STUDIO_PRELOAD=1 OPENMED_STUDIO_COMPAT=1 uv run python -m openmed_studio
 | `OPENMED_STUDIO_COMPAT` | Truthy = mount the two-route `/compat` OpenMed-REST surface. |
 | `OPENMED_STUDIO_HOST` / `_PORT` | `python -m openmed_studio` bind address (defaults `127.0.0.1:8080`). |
 | `OPENMED_TORCH_ATTENTION_BACKEND` | openmed's own knob; overrides the engine's `eager` pin (see "Known gotchas"). |
+| `STREAMLIT_SERVER_ADDRESS` / `STREAMLIT_SERVER_ALLOWED_HOSTS` | Streamlit's own knobs (= `--server.address` / `--server.allowedHosts`; each also answers to a `STREAMLIT_RUN_*` alias) — with the flags, the only way to override the `[server]` keys `.streamlit/config.toml` pins. An override **replaces** the shipped host list, so keep `localhost 127.0.0.1` in it; the env var's hosts are space-separated, the flag is repeated once per host, and a comma never works. Which to override depends on the setup (README "Security & notes" item 2: a same-host proxy extends `allowedHosts` only; a container overrides the address only) — see "Known gotchas" → *The UI's bind is two coupled Streamlit settings*. |
 | `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | Skip HF Hub network checks once the model is cached. |
 
 ### Static checks and tests
@@ -153,6 +155,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES`; the cached `get_engine` runs the working-directory check exactly once across reruns |
 | `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx2` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s (including one per `HIDDEN_POLICIES` name on `/pii/anonymize-policy`, and one per route family — `/compat` included — for a `model_name` the allowlist doesn't admit, echoing neither the note nor the name), the local-path guard as a 503 that names neither the path nor the model, `create_app`'s one startup warning for a poisoned working directory (and silence for a clean one), `/health`'s `working_directory_clean` flipping per request without naming the entry (`status` stays `"ok"`), `X-API-Key` auth (401/accept/reject + open `/health`), the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated, and a PHI-safe 422 for a `lang` outside the app's `Lang` — privacy-filter-default languages, a different casing, junk — while a supported one reaches the engine), and that `TestClient` is built on `httpx2` (see "Known gotchas") |
 | `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, that those same names are in `.gitignore` (the other half of the invariant), and that `.claude/settings.json` still registers the hook under `PreToolUse`. The whole file `skipif`s when `sh` or `python3` is missing |
+| `test_streamlit_config.py` | the six security keys of `.streamlit/config.toml` (no openmed, no model, no server): parsed with `toml` (Streamlit's own parser, for parity — `tomllib` accepts files it rejects), it pins `[server] address = "127.0.0.1"`, `allowedHosts = ["localhost", "127.0.0.1"]` (and that the address is itself an allowed host, since Streamlit opens `http://<address>:<port>`), `enableCORS = true` and `corsAllowedOrigins = []`, `showErrorDetails = "none"` and `gatherUsageStats = false` — a TOML syntax error makes Streamlit drop the **whole** file (it logs a traceback but still starts), reverting all six. Plus a **Streamlit-drift guard** pair: a subprocess drives Streamlit's private loader (`config._main_script_path` + `bootstrap.load_config_options`) with a decoy `config.toml` holding the opposite of every value in both its CWD and its `HOME` (each decoy also sets one control key, proving it was read) and `STREAMLIT_*` scrubbed; `test_shipped_keys_outrank_home_and_working_directory_configs` asserts each pinned value **and** its `get_where_defined` is this file, and `test_websocket_refuses_rebinding_and_cross_site_pages` asks the socket's own `_is_origin_allowed` (machine-IP lookups stubbed) to accept same-origin `localhost`/`127.0.0.1` pages but refuse a rebinding `evil.test` and a cross-site origin aimed at `127.0.0.1`. The fixture also fails on Streamlit's "Error parsing config toml", since the probe exits 0 either way |
 
 Named guards worth knowing — each **fails CI when openmed drifts**:
 `test_validation_deidmethod_matches_openmed` (`DeidMethod`↔openmed),
@@ -201,6 +204,13 @@ arm**. It exists because that sync was missed once: `policy_anonymized.txt` ship
 `Policy de-ID` tab, was gitignored the same day, and stayed readable through the plain `Read` tool
 for a month. The hook matches on basename and does not cover `Bash(cat ...)`, so treat it as a guard
 against accidental reads, not as containment.
+
+Two tests track **Streamlit** the way the guards above track openmed:
+`test_shipped_keys_outrank_home_and_working_directory_configs` and
+`test_websocket_refuses_rebinding_and_cross_site_pages` (both in `test_streamlit_config.py`) fail
+on a Streamlit bump that changes config-file precedence or the WebSocket's Host/Origin matching.
+Re-verify "Known gotchas" → *The UI's bind is two coupled Streamlit settings* before touching
+their assertions.
 
 Model tests (`test_pii_model.py` + the `@pytest.mark.model` tests in `test_engine.py` and
 `test_service.py`) are **skipped by default** and drive the real engine via the shared `loader` fixture; `--run-model` opts
@@ -683,7 +693,13 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     `gatherUsageStats = false` (a clinical-text tool shouldn't phone home);
     and `[client] showErrorDetails = "none"`, so a traceback (which can quote note text) never reaches
     the browser — full detail goes to the server console, meaning **debug from the terminal, not the
-    page**.
+    page**. `[server]` pins every key that decides who may open the app's WebSocket (deployment
+    rule 2): `address = "127.0.0.1"`, `allowedHosts = ["localhost", "127.0.0.1"]`, and Streamlit's
+    defaults `enableCORS = true` / `corsAllowedOrigins = []`, set so no other config can loosen
+    them. `tests/test_streamlit_config.py` pins those six security keys, because a TOML syntax
+    error anywhere in the file makes Streamlit drop **all** of it
+    (`streamlit/config.py::_update_config_with_toml` logs the exception and returns) and start
+    anyway, with `showErrorDetails = "full"`, telemetry, and the every-interface bind.
     Local secrets go in the gitignored `.streamlit/secrets.toml`, and the **five** download outputs
     (`deidentified.txt`/`deidentified_batch.json`/`anonymized.txt`/`policy_anonymized.txt`/
     `reidentified.txt` — same order as `.gitignore` and the PHI hook's `case` arm, so the three lists
@@ -705,19 +721,34 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   on a validation error) plus the engine's concurrency lock and local-path guard — so both the UI
   and the API inherit them. **Deployment rules** before exposing either surface or processing real PHI
   (the README's "Security & notes" says the same for users):
-  1. set `OPENMED_STUDIO_API_KEY` (unset = every model route open — including to the bounded
-     model-download DoS the allowlists leave, see the gotcha's *(c)*; the key is its real
-     mitigation **for the API only** — the Streamlit UI has no auth of its own, and its
+  1. set `OPENMED_STUDIO_API_KEY` (unset = every model route open — including to a DNS-rebinding
+     web page, since neither `main.py` nor uvicorn checks `Host` and the UI's `allowedHosts` has
+     no API counterpart — verified with `TestClient`: `Host: evil.test` got a 200
+     unauthenticated, a 401 with the key set — and to the bounded model-download DoS the
+     allowlists leave, see the gotcha's *(c)*; the key is the real mitigation for both, but
+     **for the API only** — the Streamlit UI has no auth of its own, and its
      language/domain pickers reach the same loads, so it must stay on `127.0.0.1` (rule 2) or sit
      behind an authenticating reverse proxy);
-  2. keep the API's default `127.0.0.1` bind (`OPENMED_STUDIO_HOST`), or put TLS / a reverse proxy
-     in front. **The Streamlit UI has no such default:** with `server.address` unset — and the
-     shipped `.streamlit/config.toml` sets no `[server]` section — Streamlit binds `0.0.0.0`
-     (`streamlit/web/server/starlette/starlette_server_config.py:60`, `DEFAULT_SERVER_ADDRESS`),
-     upgraded to the dual-stack `::` when IPv6 is available (`starlette_server.py:80-98`), so the
-     unauthenticated UI is reachable from the network. Run it with
-     `uv run streamlit run streamlit_app.py --server.address 127.0.0.1`, or add
-     `[server]` / `address = "127.0.0.1"` to a local `.streamlit/config.toml`;
+  2. keep both surfaces on their default `127.0.0.1` bind, or put TLS and a reverse proxy in
+     front — for the UI, an authenticating one. The API's bind comes from `OPENMED_STUDIO_HOST`;
+     the UI's from the shipped `.streamlit/config.toml`'s `[server]`, which pins every key that
+     decides who may open the app's WebSocket: `address = "127.0.0.1"` — without it Streamlit
+     binds `0.0.0.0` (`streamlit/web/server/starlette/starlette_server_config.py:60`,
+     `DEFAULT_SERVER_ADDRESS`), upgraded to the dual-stack `::` when IPv6 is available
+     (`starlette_server.py:80-98`), putting the unauthenticated UI on the network — plus
+     `allowedHosts = ["localhost", "127.0.0.1"]`, because loopback alone still admits a
+     DNS-rebinding page (verified: a `127.0.0.1`-only server gave a `Host: evil.test` WebSocket a
+     full session and its download's `/media` URL), and Streamlit's defaults `enableCORS = true`
+     / `corsAllowedOrigins = []`, so another config can't open the socket to cross-site pages.
+     The file outranks any other config file for every key it sets, so only
+     `--server.address`/`--server.allowedHosts` or their `STREAMLIT_*` env vars override it, and
+     which one depends on the setup: a same-host proxy extends `allowedHosts` (keeping
+     `localhost 127.0.0.1` — the override replaces the list) and keeps the address; a container
+     overrides only the address, publishing on the host's `127.0.0.1`; only a proxy on another
+     machine moves both, to a specific interface IP with the port firewalled to that proxy —
+     never `0.0.0.0` behind a same-host proxy, since `allowedHosts` checks a header any direct
+     client can send. See "Known gotchas" → *The UI's bind is two coupled Streamlit settings* for
+     the traps. None of it is auth: loopback is a network boundary, not a user boundary;
   3. start the process from a clean directory nobody else can write to — openmed resolves model
      names against the working directory first, and the engine's guard can't close the race
      between its check and openmed's (see "Known gotchas" → *openmed resolves model names against
@@ -1145,6 +1176,60 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   `ModelIntegrityError`/`OfflineModeError` (no `.code`) and `BudgetExceededError`
   (`"budget_exceeded"` — unreachable, since the engine never forwards `budget`, and a 503 in
   openmed's own REST service too) must stay `unavailable`.
+- **The UI's bind is two coupled Streamlit settings, and the shipped file outranks every other
+  config file for the keys it sets** (Streamlit 1.64.0; verified in source and on live
+  servers). *Precedence:* `streamlit/config.py::get_config_files` reads
+  `~/.streamlit/config.toml`, then `$CWD/.streamlit/config.toml`, then — appended last "so that
+  it overwrites project & global level config files" — the `.streamlit/` beside the main
+  script. So the repo's file applies from whatever directory `streamlit run` starts in
+  (deployment rule 3's clean directory included), and no global or CWD config can override a key
+  it sets — but one can still *add* a key it doesn't, which is why `[server]` also pins
+  Streamlit's defaults `enableCORS = true` and `corsAllowedOrigins = []`: `enableCORS = false`,
+  or any `corsAllowedOrigins` entry, makes `web/server/server_util.py::is_url_from_allowed_origins`
+  accept that origin, whose pages then open the socket with Host `127.0.0.1` whatever
+  `allowedHosts` says. Only flags override the file, plus the env vars click reads for them:
+  each option's explicit `envvar=` (`web/cli.py:103`, named by
+  `config_option.py::ConfigOption.env_var`, e.g. `STREAMLIT_SERVER_ADDRESS`), with the group's
+  `auto_envvar_prefix` (`web/cli.py:131`) adding a `STREAMLIT_RUN_SERVER_ADDRESS`-style fallback
+  alias; a flag beats either, and an empty env var is ignored rather than clearing the value.
+  `AppTest` never sets the main script path, so it reads only the CWD/global files — a UI test
+  must not rely on the script-dir file.
+  *Coupling:* the socket's gate is `web/server/starlette/starlette_websocket.py::_is_origin_allowed`
+  (called from `_websocket_endpoint`; it runs `_is_host_allowed` first, hence the single log line
+  about a "disallowed Origin or Host"), while every HTTP route (`/`, `/_stcore/health`, `/media`)
+  answers any Host. So a host name outside `allowedHosts` gets a page and a health check that
+  return 200 while the socket gets 403 and the UI hangs on "Please wait…" — the only signal is
+  "Rejecting WebSocket connection" in the server log, and a container health check stays green.
+  An override **replaces** the shipped list: allowing only `studio.example.org` also drops
+  `localhost`, the banner's own `Local URL`; an address-only override keeps `localhost` working
+  while every other machine hangs, so a local smoke test passes. Entries are bare hostnames (the
+  Host header's port is ignored, so `localhost:8501` never matches; an IPv6 literal goes in
+  unbracketed, `::1` not `[::1]`; `*` accepts all). The env var's list is **space**-separated and
+  the flag is repeated once per host: `"a,b"` — or a quoted flag `"a b"` — is one entry that
+  matches nothing, locking out `localhost` too. An explicit `0.0.0.0` binds IPv4 only
+  (`_get_bind_address` upgrades to the dual-stack `::` only when the address is *not* manually
+  set); `::` restores the old reach. `allowedHosts` checks a header the client chooses, so once
+  the address leaves loopback it stops no direct client: behind a same-host proxy keep
+  `127.0.0.1` and extend the list; a container overrides only the address (its loopback is
+  unreachable from a published port) and publishes on the host's `127.0.0.1`.
+  *What the pins don't close:* (i) the HTTP-route gap isn't exploitable today — `/media` ids are
+  an unkeyed content hash learned only over the socket, and uploads need an XSRF token plus a
+  live session (the app has no uploader); (ii) `is_url_from_allowed_origins` hardcodes
+  `localhost`/`0.0.0.0`/`127.0.0.1` on **any port** plus the machine's IPs as allowed origins, so
+  a page served from another local port can still open a session, and no option removes that
+  (evaluating a foreign origin also calls `net_util.get_external_ip` → `checkip.amazonaws.com`;
+  the pinned address stops only the headless banner's startup lookup, which
+  `web/bootstrap.py::_print_url` makes for a wildcard/unset address under `server.headless` —
+  so a `0.0.0.0`/`::` override brings that one back too); (iii) a tunnel, or a same-host proxy
+  that rewrites Host, gets a client past both the bind and `allowedHosts` (a script sends no
+  Origin); (iv) with `127.0.0.1` bound, `http://localhost` works only because clients fall back
+  from `::1` — another local user's process listening on `[::1]:8501` receives it instead
+  (verified on macOS), hence the docs' `http://127.0.0.1:8501`. A rebinding or cross-port page
+  gets a *fresh* session (uuid4 ids), not the operator's `session_state` (inferred from
+  `runtime/app_session.py`, not exhaustively tested), so the harm is using the unauthenticated
+  tool and the model-download DoS, not reading the operator's notes. The API has no counterpart
+  — nothing in `main.py` checks `Host` — so its key is its rebinding mitigation (deployment
+  rule 1). A running `streamlit` keeps its old bind until it is restarted.
 - **`st.dataframe(key=…)` is inert unless selection is activated** (re-verified on Streamlit 1.64.0). The
   performance guidance to give a dataframe a stable `key` so it doesn't remount when its data
   changes applies only to a *selectable* one: `streamlit/elements/arrow.py` sets

@@ -10,6 +10,36 @@ gatherUsageStats = false
 # browser (they can contain note text). Full detail still goes to the server console.
 showErrorDetails = "none"
 
+# Every key that decides who may open the app's WebSocket (the channel that runs it). The UI
+# has NO authentication. Streamlit reads this file (it sits beside streamlit_app.py) after,
+# and over, ~/.streamlit/config.toml and the working directory's, so neither can loosen these.
+[server]
+# Loopback only, like the API's OPENMED_STUDIO_HOST default. Streamlit's own default is
+# every interface (dual-stack "::").
+address = "127.0.0.1"
+# Loopback alone doesn't stop DNS rebinding: a web page whose domain resolves to 127.0.0.1
+# is "same-origin" with the app and gets a full session. This refuses the WebSocket for any
+# other Host header.
+allowedHosts = ["localhost", "127.0.0.1"]
+# Streamlit's defaults, pinned because a config elsewhere could otherwise switch them:
+# enableCORS = false, or any corsAllowedOrigins entry, lets that origin's web pages open the
+# WebSocket, whatever allowedHosts says (their Host is still 127.0.0.1).
+enableCORS = true
+corsAllowedOrigins = []
+#
+# Only a flag or env var overrides these; README "Security & notes" item 2 has the recipes.
+# An override REPLACES the allowedHosts list, so keep localhost + 127.0.0.1 in it. Name
+# several hosts by repeating the flag or space-separating the env var: "a,b" is one bogus
+# name that locks everyone out. E.g. behind an authenticating proxy on this machine (keep
+# the address; the proxy must forward the original Host):
+#   STREAMLIT_SERVER_ALLOWED_HOSTS="studio.example.org localhost 127.0.0.1" uv run streamlit run streamlit_app.py
+# Overriding only the address (as a container needs) leaves localhost working but hangs
+# every other host name on "Please wait…" (the log says "Rejecting WebSocket connection").
+#
+# tests/test_streamlit_config.py pins these and the two keys above: a TOML syntax error
+# anywhere in this file makes Streamlit log a traceback and start anyway with ALL of it
+# dropped, reverting every setting.
+
 # Nord (https://www.nordtheme.com) — arctic, north-bluish palette, dark only.
 # A SINGLE [theme] section is deliberate: Streamlit offers the light/dark selector in
 # the settings menu only when BOTH [theme.light] and [theme.dark] exist, so one flat
