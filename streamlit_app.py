@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Callable
-from typing import Any, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import streamlit as st
 
@@ -47,6 +47,10 @@ from ui_helpers import (
     render_plain,
 )
 
+if TYPE_CHECKING:
+    # Annotation only: streamlit.typing doesn't export the container type st.columns returns.
+    from streamlit.delta_generator import DeltaGenerator
+
 # Derived from the canonical Literals so the sidebar can't drift from the engine /
 # validation surface (a new method or language reaches the widgets automatically).
 METHODS = list(get_args(DeidMethod))
@@ -58,6 +62,27 @@ EXAMPLE_NOTE = (
     "Contact: john.doe@example.com, (415) 555-0142. SSN 123-45-6789.\n"
     "Lives at 742 Evergreen Terrace, Springfield. Discharged in stable condition."
 )
+
+# Every single-note tab is an input | results workbench on this one grid. The Clinical NER,
+# Zero-shot and Policy de-ID picker rows reuse it, so a picker lines up over the input pane;
+# the Single note / Batch Method row stays full width above it (see _render_method_picker).
+# Input gets the narrower share — a note still wraps readably at ~580px (a 1920px screen with
+# the sidebar open) — while the results pane holds the wider things: the highlighted note,
+# the output, the entity table.
+PANES = [2, 3]
+
+
+def _panes(
+    *, vertical_alignment: Literal["top", "center", "bottom"] = "top"
+) -> list[DeltaGenerator]:
+    """The shared input | results grid (``PANES``); both stack, input first, at <=640px.
+
+    Keep the panes themselves top-aligned: Streamlit gives a ``center``/``bottom`` column
+    auto margins, which stop it stretching to the row's height, and the empty-state panel
+    (:func:`_render_empty_result`) fills the results pane only because that stretch
+    happens. Picker rows pass ``bottom`` so a caption sits level with its selectbox.
+    """
+    return st.columns(PANES, gap="medium", vertical_alignment=vertical_alignment)
 
 
 @st.cache_resource(show_spinner=False)
@@ -75,10 +100,13 @@ def get_engine() -> PIIEngine:
 def _render_entity_table(entities: list[dict[str, Any]]) -> None:
     """The shared entity table (Detect / Clinical NER / Zero-shot / the de-identify panels).
 
-    ``placeholder`` is what makes this worth a helper rather than four bare ``st.dataframe``
+    The empty case is what makes this worth a helper rather than four bare ``st.dataframe``
     calls: zero rows here means "nothing cleared the confidence threshold", not "nothing
-    ran", and a blank grid says neither. Confidence renders as a 0–1 progress bar so model
-    certainty is scannable rather than read as decimals.
+    ran", and a blank grid says neither — so no rows renders that sentence instead of a
+    grid. (``st.dataframe(placeholder=…)``, which this used to pass for the purpose, is the
+    text for *missing cell values*; an empty table showed Streamlit's bare "empty".)
+    Confidence renders as a 0–1 progress bar so model certainty is scannable rather than
+    read as decimals.
 
     Deliberately **no** ``key``. The performance guidance to give a dataframe a stable key
     applies only to a *selectable* one: ``st.dataframe`` derives an element id from
@@ -87,11 +115,21 @@ def _render_entity_table(entities: list[dict[str, Any]]) -> None:
     accepted and then dropped — verified by reading the rendered proto, whose ``id`` stays
     empty. These tables are identified by delta path instead, which is already stable across
     reruns, so a key would buy nothing and imply a guarantee it does not provide.
+
+    ``column_order`` puts confidence ahead of the offsets, which a reviewer reads last. The
+    width stays ``stretch`` even though the grid then hands the width its columns don't use
+    to every column evenly (so the ``small`` offsets widen): ``width="content"`` was tried
+    and is worse — it sizes the table without its vertical scrollbar, clipping the last
+    column once there are more than ~10 rows, and truncates auto-sized ``label``/``text``
+    values (``medical_record_…``). In the results pane the spare width is modest anyway.
     """
+    if not entities:
+        st.caption("No entities at or above the confidence threshold.")
+        return
     st.dataframe(
         entities,
         hide_index=True,
-        placeholder="No entities at or above the confidence threshold.",
+        column_order=("label", "text", "confidence", "start", "end"),
         column_config={
             "confidence": st.column_config.ProgressColumn(
                 "confidence", min_value=0.0, max_value=1.0, format="%.2f"
@@ -102,16 +140,21 @@ def _render_entity_table(entities: list[dict[str, Any]]) -> None:
     )
 
 
-def _render_entity_metrics(entities: list[dict[str, Any]], *, icon: str) -> None:
+def _render_entity_metrics(
+    entities: list[dict[str, Any]], *, icon: str, note: str | None = None
+) -> None:
     """KPI row for the read-only extraction tabs (Detect / Clinical NER / Zero-shot).
 
     Content-width cards in a horizontal row, not a lone stretched metric: ``st.metric``
     defaults to ``width="stretch"``, so at ``layout="wide"`` a single bordered card spans
     the whole page to show one number. "Distinct types" is the balancing second card — it
     reads off the same list, so it costs no extra work and answers the question the raw
-    count raises (30 entities of one type reads very differently from 30 of eight).
+    count raises (30 entities of one type reads very differently from 30 of eight). ``note``
+    (the NER / zero-shot model line) ends the row rather than taking a row of its own.
     """
     counts = Counter(str(e.get("label", "")) for e in entities if e.get("label"))
+    # Top-aligned (the default): the sparkline makes "Distinct types" the taller card, and
+    # any other alignment leaves the two card tops staggered.
     with st.container(horizontal=True):
         st.metric(
             "Entities found", len(entities), border=True, width="content", icon=icon
@@ -131,6 +174,29 @@ def _render_entity_metrics(entities: list[dict[str, Any]], *, icon: str) -> None
             chart_data=list(counts.values()) or None,
             chart_type="bar",
         )
+        if note:
+            st.caption(note)
+
+
+def _render_empty_result(message: str) -> None:
+    """The results pane with nothing to show: a bordered panel naming the action.
+
+    Shown before a tab's first run — and, for Detect / Clinical NER / Zero-shot, which keep
+    no result in session state, after any rerun that isn't their own submit (a domain change,
+    another tab's full rerun) — their results never survived one, before this layout too.
+    ``height="stretch"`` fills the pane to the input pane's height (see :func:`_panes` for
+    why that needs top-aligned columns), so the workbench reads as two panes from the
+    start and doesn't jump when the first result lands. No arrow in the wording: at
+    <=640px the panes stack, and the input is above, not beside, this panel. No ``key``
+    either — a container key registers an element id, and seven tabs render one of these.
+    """
+    with st.container(
+        border=True,
+        height="stretch",
+        horizontal_alignment="center",
+        vertical_alignment="center",
+    ):
+        st.caption(message, text_alignment="center")
 
 
 def _call(
@@ -245,6 +311,8 @@ def _render_deid_result(
     text: str,
     result: dict[str, Any],
     *,
+    kpis: list[tuple[str, Any, str]],
+    out_label: str,
     out_caption: str,
     out_filename: str,
     dl_key: str,
@@ -253,24 +321,36 @@ def _render_deid_result(
 ) -> None:
     """Shared result panel for the Single note, Anonymize, and Policy de-ID tabs.
 
-    Renders the original-vs-output columns + Download (with an optional ``export_caveat``
-    beside the button), optionally the entity table, and a button that reveals the
-    re-identification mapping in a dialog. Pure rendering — callers persist the result and
-    call :func:`_set_handoff` on submit, so it's safe to re-run on post-submit reruns (a
-    Download or a Show-key click) without the panel blanking or the handoff drifting.
-    Callers render their own metric row first, since the labels/values differ per tab.
+    Rendered in the tab's results pane, beside the note it came from, top to bottom: the
+    ``kpis`` row (``(label, value, icon)`` per card) with the snapshot caption; the actions
+    — Download, the button that reveals the re-identification mapping in a dialog, and an
+    optional ``export_caveat`` — ABOVE the output, so a long note never buries them; the
+    result as two client-side view tabs, the output and the original with its detected
+    spans highlighted; and (``show_entities``) the entity table in an expander. Views rather
+    than the old original | output column pair, because the input pane beside this one
+    already shows the original, and splitting the pane again would halve both at laptop
+    widths. Their labels are constant, so a new run never relabels the strip under the
+    reader.
+
+    The table is deliberately NOT a third view tab. In Streamlit 1.64 an ``st.dataframe``
+    first rendered inside a tab that isn't the selected one sizes its columns while hidden
+    and shows them collapsed to slivers once opened (seen in the browser; AppTest can't see
+    it). An expander doesn't, and neither would ``on_change="rerun"`` tabs rendering only
+    the open view — at the price of a full rerun per click and a keyed widget per panel.
+
+    Pure rendering — callers persist the result and call :func:`_set_handoff` on submit, so
+    it's safe to re-run on post-submit reruns (a Download or a Show-key click) without the
+    panel blanking or the handoff drifting.
     """
-    st.caption(
-        "Showing your most recent run — re-run after changing the note or controls to refresh."
-    )
     entities = result["entities"]
-    left, right = st.columns(2)
-    with left.container(border=True, height="stretch"):
-        st.caption("Original — detected PII highlighted")
-        _render_highlight(text, entities)
-    with right.container(border=True, height="stretch"):
-        st.caption(out_caption)
-        st.html(render_plain(result["deidentified_text"]))
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        for label, value, icon in kpis:
+            st.metric(label, value, border=True, width="content", icon=icon)
+        st.caption(
+            "Showing your most recent run — re-run after changing the note or controls "
+            "to refresh."
+        )
+    with st.container(horizontal=True, vertical_alignment="center"):
         st.download_button(
             "Download",
             result["deidentified_text"],
@@ -279,29 +359,39 @@ def _render_deid_result(
             key=dl_key,
             on_click=_toast_downloaded,
         )
+        show_key = bool(result.get("mapping")) and st.button(
+            "Show re-identification key", icon=":material/key:", key=f"{dl_key}_showkey"
+        )
         if export_caveat:
             st.caption(export_caveat)
+    # Opened after the row closes, so the dialog isn't declared as one of its flex children.
+    if show_key:
+        _show_mapping_dialog(result["mapping"])
 
+    out_view, original_view = st.tabs(
+        [
+            f":material/article: {out_label}",
+            ":material/format_ink_highlighter: Detected in original",
+        ]
+    )
+    with out_view.container(border=True):
+        st.caption(out_caption)
+        st.html(render_plain(result["deidentified_text"]))
+    with original_view.container(border=True):
+        st.caption("Original — detected PII highlighted")
+        _render_highlight(text, entities)
     if show_entities:
         with st.expander(f"Entities ({len(entities)})", icon=":material/table_chart:"):
             _render_entity_table(entities)
-    if result.get("mapping") and st.button(
-        "Show re-identification key", icon=":material/key:", key=f"{dl_key}_showkey"
-    ):
-        _show_mapping_dialog(result["mapping"])
 
 
-def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
-    """Render the de-identification controls for a tab and return the request options.
+def _render_method_picker(*, key_prefix: str) -> str:
+    """The Single note / Batch ``Method`` row; return the chosen method.
 
-    Shared by the Single note + Batch tabs so the method and its dependent knobs live in
-    the tab that performs the de-identification — not the sidebar, which now holds only the
-    engine readout and the global ``lang`` filter. Rendered ABOVE the tab's form (like the
-    NER domain picker) so changing the method reruns and re-renders only the Advanced knobs
-    that method actually consumes (the surrogate methods ``replace``/``format_preserve`` →
-    consistent/seed/locale; ``shift_dates`` → date_shift_days/keep_year). Every widget key
-    is ``key_prefix``-scoped so Single and
-    Batch keep independent state without colliding.
+    A full-width row above the tab's panes, not inside the input pane: the seven options
+    need ~750px, more than the pane has below ~1900px, and a control placed directly in a
+    column scrolls sideways rather than wrapping. Outside any form, so picking a method
+    reruns and :func:`_render_deid_controls` re-renders only the knobs it consumes.
     """
     method = (
         st.segmented_control(
@@ -321,8 +411,26 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
             'Harbor-style "no residual identifier" posture is required.',
             icon=":material/warning:",
         )
-    c1, c2 = st.columns([3, 2])
-    confidence = c1.slider(
+    return method
+
+
+def _render_deid_controls(*, key_prefix: str, lang: str, method: str) -> dict[str, Any]:
+    """Render the de-identification controls for a tab and return the request options.
+
+    Shared by the Single note + Batch tabs so the method's dependent knobs live in the tab
+    that performs the de-identification — not the sidebar, which now holds only the engine
+    readout and the global ``lang`` filter. Rendered at the top of the input pane, OUTSIDE
+    the tab's form, under the ``method`` from :func:`_render_method_picker`, so a method
+    change reruns and re-renders only the Advanced knobs that method actually consumes (the
+    surrogate methods ``replace``/``format_preserve`` → consistent/seed/locale;
+    ``shift_dates`` → date_shift_days/keep_year). Every widget key is ``key_prefix``-scoped
+    so Single and Batch keep independent state without colliding.
+    """
+    # Slider and toggle stacked, not side by side: the input pane is only ~175-250px wide
+    # between ~770px (where the panes stop stacking) and ~1100px with the sidebar open, too
+    # narrow to split. The toggle sits straight in the pane column, so its label stays on one
+    # line (Streamlit 1.62+) — "Keep mapping" fits even at the narrowest.
+    confidence = st.slider(
         "Confidence threshold",
         0.0,
         1.0,
@@ -332,7 +440,7 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
         help="Minimum model confidence to keep an entity. The UI defaults to 0.5 for "
         "higher PHI recall; the de-identify default is 0.7.",
     )
-    keep_mapping = c2.toggle(
+    keep_mapping = st.toggle(
         "Keep mapping",
         value=True,
         key=f"{key_prefix}_keepmap",
@@ -412,68 +520,74 @@ def _render_deid_controls(*, key_prefix: str, lang: str) -> dict[str, Any]:
 
 
 def _render_single(lang: str) -> None:
-    base_opts = _render_deid_controls(key_prefix="single", lang=lang)
-    with st.form("single"):
-        text = st.text_area("Clinical note", value=EXAMPLE_NOTE, height=200)
-        submitted = st.form_submit_button(
-            "De-identify", type="primary", icon=":material/lock:"
+    method = _render_method_picker(key_prefix="single")
+    left, right = _panes()
+    with left:
+        base_opts = _render_deid_controls(key_prefix="single", lang=lang, method=method)
+        with st.form("single"):
+            text = st.text_area("Clinical note", value=EXAMPLE_NOTE, height=200)
+            submitted = st.form_submit_button(
+                "De-identify", type="primary", icon=":material/lock:"
+            )
+    # The submit's warning, spinner, and error render in the results pane, beside the note.
+    with right:
+        stored = _submit_deidentify(
+            submitted=submitted,
+            text=text,
+            opts=base_opts,
+            store_key="single_result",
+            action="De-identifying",
+            empty_warning="Enter some text to de-identify.",
         )
-    stored = _submit_deidentify(
-        submitted=submitted,
-        text=text,
-        opts=base_opts,
-        store_key="single_result",
-        action="De-identifying",
-        empty_warning="Enter some text to de-identify.",
-    )
-    if not stored:
-        return
-    text, result = stored["text"], stored["result"]
-    entities = result["entities"]
-    with st.container(horizontal=True):
-        st.metric(
-            "Entities found",
-            len(entities),
-            border=True,
-            width="content",
-            icon=":material/search:",
+        if not stored:
+            if not submitted:
+                _render_empty_result(
+                    "Run **De-identify** to see the de-identified note, what was detected, "
+                    "and a download here."
+                )
+            return
+        text, result = stored["text"], stored["result"]
+        _render_deid_result(
+            text,
+            result,
+            kpis=[
+                ("Entities found", len(result["entities"]), ":material/search:"),
+                ("Method", result["method"], ":material/lock:"),
+            ],
+            out_label="De-identified",
+            out_caption="De-identified",
+            out_filename="deidentified.txt",
+            dl_key="dl_single",
+            show_entities=True,
         )
-        st.metric(
-            "Method",
-            result["method"],
-            border=True,
-            width="content",
-            icon=":material/lock:",
-        )
-    _render_deid_result(
-        text,
-        result,
-        out_caption="De-identified",
-        out_filename="deidentified.txt",
-        dl_key="dl_single",
-        show_entities=True,
-    )
 
 
 @st.fragment
 def _render_batch(lang: str) -> None:
-    base_opts = _render_deid_controls(key_prefix="batch", lang=lang)
-    st.caption(
-        f"Edit the table (one note per row, up to {MAX_BATCH_ITEMS}), then "
-        "de-identify all at once."
-    )
-    rows = st.data_editor(
-        [{"note": EXAMPLE_NOTE}, {"note": ""}],
-        num_rows="dynamic",
-        hide_index=True,
-        column_config={
-            "note": st.column_config.TextColumn("Clinical note", width="large")
-        },
-        key="batch_editor",
-    )
-    if st.button(
-        "De-identify all", type="primary", icon=":material/lock:", key="batch_go"
-    ):
+    # Inputs on the workbench grid (controls | editor); the results table below stays full
+    # width, since its two note columns need it.
+    method = _render_method_picker(key_prefix="batch")
+    left, right = _panes()
+    with left:
+        base_opts = _render_deid_controls(key_prefix="batch", lang=lang, method=method)
+    with right:
+        st.caption(
+            f"Edit the table (one note per row, up to {MAX_BATCH_ITEMS}), then "
+            "de-identify all at once."
+        )
+        rows = st.data_editor(
+            [{"note": EXAMPLE_NOTE}, {"note": ""}],
+            num_rows="dynamic",
+            hide_index=True,
+            column_config={
+                "note": st.column_config.TextColumn("Clinical note", width="large")
+            },
+            key="batch_editor",
+        )
+        go = st.button(
+            "De-identify all", type="primary", icon=":material/lock:", key="batch_go"
+        )
+    if go:
         notes = [
             r["note"].strip()
             for r in rows
@@ -505,7 +619,7 @@ def _render_batch(lang: str) -> None:
     n_ok = sum(1 for r in results if r.get("ok", True))
     n_failed = len(results) - n_ok
     n_entities = sum(len(r.get("entities", ())) for r in results if r.get("ok", True))
-    with st.container(horizontal=True):
+    with st.container(horizontal=True, vertical_alignment="center"):
         st.metric(
             "Notes de-identified",
             n_ok,
@@ -519,6 +633,17 @@ def _render_batch(lang: str) -> None:
             border=True,
             width="content",
             icon=":material/search:",
+        )
+        # The download rides the KPI row's right edge instead of trailing a table of up to
+        # 100 notes, where it sat below the fold.
+        st.space("stretch")
+        st.download_button(
+            "Download all (JSON)",
+            json.dumps(results, indent=2),
+            file_name="deidentified_batch.json",
+            icon=":material/download:",
+            key="dl_batch",
+            on_click=_toast_downloaded,
         )
     if n_failed:
         st.warning(
@@ -540,14 +665,6 @@ def _render_batch(lang: str) -> None:
             "entities": st.column_config.NumberColumn(width="small"),
         },
     )
-    st.download_button(
-        "Download all (JSON)",
-        json.dumps(results, indent=2),
-        file_name="deidentified_batch.json",
-        icon=":material/download:",
-        key="dl_batch",
-        on_click=_toast_downloaded,
-    )
 
 
 def _render_anonymize(lang: str) -> None:
@@ -566,19 +683,17 @@ def _render_anonymize(lang: str) -> None:
         "before sharing. Repeated mentions stay one identity with 'Deterministic'; the mapping "
         "round-trips through the Re-identify tab."
     )
-    with st.form("anonymize"):
+    left, right = _panes()
+    with left, st.form("anonymize"):
         text = st.text_area(
             "Clinical note to anonymize",
             value=EXAMPLE_NOTE,
             height=200,
             key="anon_text",
         )
-        # [3, 2], matching the Detect tab and the Single/Batch controls: a slider needs the
-        # width to be readable, a toggle does not. This was the one such row still on an even
-        # split. A precise ratio is what st.columns is for; the metric rows above use
-        # st.container(horizontal=True) instead, since those want content-sized cards.
-        c1, c2 = st.columns([3, 2])
-        confidence = c1.slider(
+        # Slider over toggle, matching the Detect tab and the Single/Batch controls: the input
+        # pane is too narrow at laptop widths to split them (see _render_deid_controls).
+        confidence = st.slider(
             "Confidence threshold",
             0.0,
             1.0,
@@ -587,7 +702,7 @@ def _render_anonymize(lang: str) -> None:
             key="anon_conf",
             help="Lower keeps more entities (higher PHI recall = more replaced).",
         )
-        consistent = c2.toggle(
+        consistent = st.toggle(
             "Deterministic",
             value=True,
             key="anon_consistent",
@@ -634,44 +749,45 @@ def _render_anonymize(lang: str) -> None:
         keep_year=True,
         use_safety_sweep=True,
     )
-    stored = _submit_deidentify(
-        submitted=submitted,
-        text=text,
-        opts=opts,
-        store_key="anon_result",
-        action="Anonymizing",
-        empty_warning="Enter some text to anonymize.",
-        extra={"consistent": consistent},
-    )
-    if not stored:
-        return
-    text, result, consistent = stored["text"], stored["result"], stored["consistent"]
-    entities = result["entities"]
-    with st.container(horizontal=True):
-        st.metric(
-            "Entities replaced",
-            len(entities),
-            border=True,
-            width="content",
-            icon=":material/masks:",
+    with right:
+        stored = _submit_deidentify(
+            submitted=submitted,
+            text=text,
+            opts=opts,
+            store_key="anon_result",
+            action="Anonymizing",
+            empty_warning="Enter some text to anonymize.",
+            extra={"consistent": consistent},
         )
-        st.metric(
-            "Deterministic",
-            "On" if consistent else "Off",
-            border=True,
-            width="content",
-            icon=":material/repeat:",
+        if not stored:
+            if not submitted:
+                _render_empty_result(
+                    "Run **Anonymize** to see the note with synthetic surrogates, what was "
+                    "detected, and a download here."
+                )
+            return
+        text, result = stored["text"], stored["result"]
+        _render_deid_result(
+            text,
+            result,
+            kpis=[
+                ("Entities replaced", len(result["entities"]), ":material/masks:"),
+                (
+                    "Deterministic",
+                    "On" if stored["consistent"] else "Off",
+                    ":material/repeat:",
+                ),
+            ],
+            out_label="Anonymized",
+            out_caption=(
+                "Anonymized — synthetic surrogates · review for residual identifiers "
+                "before sharing"
+            ),
+            out_filename="anonymized.txt",
+            dl_key="dl_anon",
+            export_caveat="May still contain any PII the model missed — review before "
+            "sharing.",
         )
-    _render_deid_result(
-        text,
-        result,
-        out_caption=(
-            "Anonymized — synthetic surrogates · review for residual identifiers before sharing"
-        ),
-        out_filename="anonymized.txt",
-        dl_key="dl_anon",
-        export_caveat="May still contain any PII the model missed — review before sharing.",
-    )
 
 
 def _render_policy_anon(lang: str) -> None:
@@ -714,7 +830,10 @@ def _render_policy_anon(lang: str) -> None:
         "identifiers in place — license, tax and employee IDs, employers, religion "
         "and more — without listing them as entities, so they are hidden."
     )
-    policy_label = st.selectbox(
+    # A picker row on the workbench grid: the selectbox over the input pane, its preview
+    # beside it, where the description wraps to a few lines instead of eight.
+    pick, preview = _panes(vertical_alignment="bottom")
+    policy_label = pick.selectbox(
         "Policy", list(POLICY_MODELS), key="policy_pick", help=hidden_help
     )
     model = POLICY_MODELS[policy_label]
@@ -738,10 +857,11 @@ def _render_policy_anon(lang: str) -> None:
     # headline misleads — South Africa POPIA declares "replace" while masking 123 of 139. The
     # hand-authored description below is the honest account; the field stays baked only so the
     # drift guard keeps pinning it. See PolicyModel.default_action.
-    st.caption(f"**{policy_label}** (`{model.name}`) · {reversibility} · {sweep}")
-    st.caption(model.description)
+    preview.caption(f"**{policy_label}** (`{model.name}`) · {reversibility} · {sweep}")
+    preview.caption(model.description)
 
-    with st.form("policy_anon"):
+    left, right = _panes()
+    with left, st.form("policy_anon"):
         text = st.text_area(
             "Clinical note to anonymize under a policy",
             value=EXAMPLE_NOTE,
@@ -758,9 +878,6 @@ def _render_policy_anon(lang: str) -> None:
             help="Lower keeps more entities (higher PHI recall); the policy then decides each "
             "entity's action.",
         )
-        # seed needs a default: it is assigned only under `if consistent`. consistent/locale/
-        # use_safety_sweep are assigned unconditionally in the expander body (which always runs).
-        seed = 0
         with st.expander("Advanced", icon=":material/tune:"):
             # Using default_action here is sound even though openmed never *applies* it: as a
             # DECLARED posture it lines up exactly with "does this profile replace anything"
@@ -780,14 +897,18 @@ def _render_policy_anon(lang: str) -> None:
                 key="policy_consistent",
                 help="Same input → same surrogate, so repeated mentions resolve to one identity.",
             )
-            if consistent:
-                seed = st.number_input(
-                    "Seed",
-                    value=42,
-                    step=1,
-                    key="policy_seed",
-                    help="Reproducible surrogates across runs.",
-                )
+            # Unconditional, like the Anonymize tab's: inside a form the toggle above holds
+            # its PREVIOUS value until submit, so gating Seed on it hid the field until after
+            # the run it was meant for (and reset a custom seed to 42 on the way back).
+            # build_policy_opts drops the seed when Deterministic is off.
+            seed = st.number_input(
+                "Seed",
+                value=42,
+                step=1,
+                key="policy_seed",
+                help="Reproducible surrogates across runs (used when Deterministic "
+                "surrogates is on).",
+            )
             locale = st.text_input(
                 "Surrogate locale",
                 value="",
@@ -822,50 +943,47 @@ def _render_policy_anon(lang: str) -> None:
         locale=locale,
         use_safety_sweep=use_safety_sweep,
     )
-    stored = _submit_deidentify(
-        submitted=submitted,
-        text=text,
-        opts=opts,
-        store_key="policy_result",
-        action=f"Anonymizing under {policy_label}",
-        empty_warning="Enter some text to anonymize.",
-        extra={"policy_label": policy_label},
-        call=service.anonymize_policy,
-    )
-    if not stored:
-        return
-    text, result = stored["text"], stored["result"]
-    entities = result["entities"]
-    # Reversibility is a property of the (snapshotted) policy, so derive it from the stored
-    # label rather than storing a second field — POLICY_MODELS is the single source of truth.
-    reversible = POLICY_MODELS[stored["policy_label"]].keep_mapping
-    with st.container(horizontal=True):
-        st.metric(
-            "Entities found",
-            len(entities),
-            border=True,
-            width="content",
-            icon=":material/search:",
+    with right:
+        stored = _submit_deidentify(
+            submitted=submitted,
+            text=text,
+            opts=opts,
+            store_key="policy_result",
+            action=f"Anonymizing under {policy_label}",
+            empty_warning="Enter some text to anonymize.",
+            extra={"policy_label": policy_label},
+            call=service.anonymize_policy,
         )
-        st.metric(
-            "Policy",
-            stored["policy_label"],
-            border=True,
-            width="content",
-            icon=":material/policy:",
+        if not stored:
+            if not submitted:
+                _render_empty_result(
+                    "Run **Anonymize under policy** to see the anonymized note, what was "
+                    "detected, and a download here."
+                )
+            return
+        text, result = stored["text"], stored["result"]
+        # Reversibility is a property of the (snapshotted) policy, so derive it from the
+        # stored label rather than storing a second field — POLICY_MODELS is the single
+        # source of truth.
+        reversible = POLICY_MODELS[stored["policy_label"]].keep_mapping
+        _render_deid_result(
+            text,
+            result,
+            kpis=[
+                ("Entities found", len(result["entities"]), ":material/search:"),
+                ("Policy", stored["policy_label"], ":material/policy:"),
+            ],
+            out_label="Anonymized",
+            out_caption=(
+                f"Anonymized under {stored['policy_label']} · "
+                + ("reversible — a key is kept" if reversible else "irreversible")
+            ),
+            out_filename="policy_anonymized.txt",
+            dl_key="dl_policy",
+            export_caveat="May still contain any PII the model missed — review before "
+            "sharing.",
+            show_entities=True,
         )
-    _render_deid_result(
-        text,
-        result,
-        out_caption=(
-            f"Anonymized under {stored['policy_label']} · "
-            + ("reversible — a key is kept" if reversible else "irreversible")
-        ),
-        out_filename="policy_anonymized.txt",
-        dl_key="dl_policy",
-        export_caveat="May still contain any PII the model missed — review before sharing.",
-        show_entities=True,
-    )
 
 
 @st.fragment
@@ -873,35 +991,45 @@ def _render_reidentify() -> None:
     st.caption(
         "Restore original text from a kept mapping (turn on 'Keep mapping' before de-identifying)."
     )
-    deid_text = st.text_area(
-        "De-identified text", value=st.session_state.last_deidentified, height=150
-    )
-    mapping_text = st.text_area(
-        "Mapping (JSON)",
-        value=json.dumps(st.session_state.last_mapping or {}, indent=2),
-        height=150,
-    )
-    if st.button(
-        "Re-identify", type="primary", icon=":material/lock_open:", key="reid_go"
-    ):
-        try:
-            mapping = json.loads(mapping_text or "{}")
-        except json.JSONDecodeError as exc:
-            st.error(f"Mapping is not valid JSON: {exc}", icon=":material/error:")
-            mapping = None
-        if isinstance(mapping, dict) and mapping:
-            result = _call(
-                service.reidentify, deid_text, mapping, action="Re-identifying"
-            )
-            if result is not None:
-                # Persist so the preview + Download survive post-action reruns (e.g. Download).
-                st.session_state["reid_result"] = result["text"]
-                st.toast("Re-identified", icon=":material/lock_open:")
-        elif mapping is not None:
-            st.warning("Provide a non-empty mapping object.")
+    left, right = _panes()
+    with left:
+        deid_text = st.text_area(
+            "De-identified text", value=st.session_state.last_deidentified, height=200
+        )
+        mapping_text = st.text_area(
+            "Mapping (JSON)",
+            value=json.dumps(st.session_state.last_mapping or {}, indent=2),
+            height=150,
+        )
+        go = st.button(
+            "Re-identify", type="primary", icon=":material/lock_open:", key="reid_go"
+        )
+    with right:
+        if go:
+            try:
+                mapping = json.loads(mapping_text or "{}")
+            except json.JSONDecodeError as exc:
+                st.error(f"Mapping is not valid JSON: {exc}", icon=":material/error:")
+                mapping = None
+            if isinstance(mapping, dict) and mapping:
+                result = _call(
+                    service.reidentify, deid_text, mapping, action="Re-identifying"
+                )
+                if result is not None:
+                    # Persist so the preview + Download survive post-action reruns (e.g.
+                    # Download).
+                    st.session_state["reid_result"] = result["text"]
+                    st.toast("Re-identified", icon=":material/lock_open:")
+            elif mapping is not None:
+                st.warning("Provide a non-empty mapping object.")
 
-    restored = st.session_state.get("reid_result")
-    if restored is not None:
+        restored = st.session_state.get("reid_result")
+        if restored is None:
+            if not go:
+                _render_empty_result(
+                    "Run **Re-identify** to see the restored text here."
+                )
+            return
         with st.container(border=True):
             st.caption("Re-identified")
             st.html(render_plain(restored))
@@ -933,10 +1061,12 @@ def _render_detect(lang: str) -> None:
         "structured-identifier safety sweep (on in every de-identification tab; Single note and "
         "Batch can switch it off) that catches IDs the model misses."
     )
-    with st.form("detect"):
+    left, right = _panes()
+    with left, st.form("detect"):
         text = st.text_area("Clinical note to scan", value=EXAMPLE_NOTE, height=200)
-        c1, c2 = st.columns([3, 2])
-        confidence = c1.slider(
+        # Slider over toggle: the input pane is too narrow at laptop widths to split them (see
+        # _render_deid_controls).
+        confidence = st.slider(
             "Confidence threshold",
             0.0,
             1.0,
@@ -945,7 +1075,7 @@ def _render_detect(lang: str) -> None:
             key="detect_conf",
             help="Minimum model confidence to keep an entity (UI default 0.5 for recall).",
         )
-        smart = c2.toggle(
+        smart = st.toggle(
             "Smart entity merging",
             value=True,
             help="Recombine token-fragmented PII (dates, SSNs) into whole spans.",
@@ -953,29 +1083,34 @@ def _render_detect(lang: str) -> None:
         submitted = st.form_submit_button(
             "Detect", type="primary", icon=":material/search:"
         )
-    if submitted and not text.strip():
-        st.warning("Enter some text to scan.")
-        return
-    if not submitted:
-        return
 
-    result = _call(
-        service.extract,
-        text,
-        action="Detecting",
-        confidence_threshold=confidence,
-        use_smart_merging=smart,
-        lang=lang,
-    )
-    if result is None:
-        return
+    with right:
+        if not submitted:
+            _render_empty_result(
+                "Run **Detect** to see the highlighted note, entity counts, and the "
+                "entity table here."
+            )
+            return
+        if not text.strip():
+            st.warning("Enter some text to scan.")
+            return
+        result = _call(
+            service.extract,
+            text,
+            action="Detecting",
+            confidence_threshold=confidence,
+            use_smart_merging=smart,
+            lang=lang,
+        )
+        if result is None:
+            return
 
-    entities = result["entities"]
-    _render_entity_metrics(entities, icon=":material/search:")
-    with st.container(border=True):
-        st.caption("Detected PII")
-        _render_highlight(text, entities)
-    _render_entity_table(entities)
+        entities = result["entities"]
+        _render_entity_metrics(entities, icon=":material/search:")
+        with st.container(border=True):
+            st.caption("Detected PII")
+            _render_highlight(text, entities)
+        _render_entity_table(entities)
 
 
 @st.fragment
@@ -987,11 +1122,14 @@ def _render_ner() -> None:
     )
     # The domain picker and its preview live OUTSIDE the form, so choosing a domain reruns
     # the fragment and refreshes the entity preview and the slider's recommended default.
-    domain = st.selectbox("Entity domain", list(NER_MODELS), key="ner_domain")
+    # They share a picker row on the workbench grid: selectbox over the input pane.
+    pick, preview = _panes(vertical_alignment="bottom")
+    domain = pick.selectbox("Entity domain", list(NER_MODELS), key="ner_domain")
     model = NER_MODELS[domain]
     detects = ", ".join(model.entity_types) if model.entity_types else "not declared"
-    st.caption(f"**{model.display_name}** · {model.params} · detects: {detects}")
-    with st.form("ner"):
+    preview.caption(f"**{model.display_name}** · {model.params} · detects: {detects}")
+    left, right = _panes()
+    with left, st.form("ner"):
         text = st.text_area(
             "Clinical note to analyze", value=EXAMPLE_NOTE, height=200, key="ner_text"
         )
@@ -1010,35 +1148,44 @@ def _render_ner() -> None:
         submitted = st.form_submit_button(
             "Analyze", type="primary", icon=":material/biotech:"
         )
-    if submitted and not text.strip():
-        st.warning("Enter some text to analyze.")
-        return
-    if not submitted:
-        return
 
-    # is_loaded flips True after the FIRST model loads, so it can't tell whether THIS
-    # domain's model is resident. Track analyzed domains so the wait hint fires on a fresh
-    # domain (a ~141MB download) rather than only the very first NER call.
-    analyzed: set[str] = st.session_state.setdefault("ner_analyzed_domains", set())
-    result = _call(
-        service.analyze,
-        text,
-        action="Analyzing",
-        needs_load=domain not in analyzed,
-        model_name=model.alias,
-        confidence_threshold=confidence,
-    )
-    if result is None:
-        return
-    analyzed.add(domain)
+    with right:
+        if not submitted:
+            _render_empty_result(
+                f"Run **Analyze** to see {domain.lower()} entities highlighted in the "
+                "note, with counts and the entity table, here."
+            )
+            return
+        if not text.strip():
+            st.warning("Enter some text to analyze.")
+            return
 
-    entities = result["entities"]
-    _render_entity_metrics(entities, icon=":material/biotech:")
-    st.caption(f"Model: {model.display_name} (`{model.alias}`)")
-    with st.container(border=True):
-        st.caption(f"Detected {domain.lower()} entities")
-        _render_highlight(text, entities)
-    _render_entity_table(entities)
+        # is_loaded flips True after the FIRST model loads, so it can't tell whether THIS
+        # domain's model is resident. Track analyzed domains so the wait hint fires on a
+        # fresh domain (a ~141MB download) rather than only the very first NER call.
+        analyzed: set[str] = st.session_state.setdefault("ner_analyzed_domains", set())
+        result = _call(
+            service.analyze,
+            text,
+            action="Analyzing",
+            needs_load=domain not in analyzed,
+            model_name=model.alias,
+            confidence_threshold=confidence,
+        )
+        if result is None:
+            return
+        analyzed.add(domain)
+
+        entities = result["entities"]
+        _render_entity_metrics(
+            entities,
+            icon=":material/biotech:",
+            note=f"Model: {model.display_name} (`{model.alias}`)",
+        )
+        with st.container(border=True):
+            st.caption(f"Detected {domain.lower()} entities")
+            _render_highlight(text, entities)
+        _render_entity_table(entities)
 
 
 @st.fragment
@@ -1068,10 +1215,12 @@ def _render_zero_shot() -> None:
 
     # The domain picker and its preview live OUTSIDE the form, so choosing a domain reruns
     # the fragment and refreshes the preview, the label suggestions, and the slider default.
-    domain = st.selectbox("Entity domain", list(ZERO_SHOT_MODELS), key="zs_domain")
+    # They share a picker row on the workbench grid: selectbox over the input pane.
+    pick, preview = _panes(vertical_alignment="bottom")
+    domain = pick.selectbox("Entity domain", list(ZERO_SHOT_MODELS), key="zs_domain")
     model = ZERO_SHOT_MODELS[domain]
     tuned = ", ".join(model.entity_types)
-    st.caption(
+    preview.caption(
         f"**{model.display_name}** · {model.params} · zero-shot — extracts whatever labels "
         f"you provide (tuned for: {tuned})"
     )
@@ -1079,7 +1228,8 @@ def _render_zero_shot() -> None:
     # GLiNER reads well); the user edits them or adds their own via accept_new_options.
     seeds = engine.default_labels(model.label_domain)
 
-    with st.form("zero_shot"):
+    left, right = _panes()
+    with left, st.form("zero_shot"):
         text = st.text_area(
             "Clinical note to analyze", value=EXAMPLE_NOTE, height=200, key="zs_text"
         )
@@ -1108,38 +1258,47 @@ def _render_zero_shot() -> None:
         submitted = st.form_submit_button(
             "Extract", type="primary", icon=":material/frame_inspect:"
         )
-    if submitted and not text.strip():
-        st.warning("Enter some text to analyze.")
-        return
-    if submitted and not labels:
-        st.warning("Add at least one entity label to extract.")
-        return
-    if not submitted:
-        return
 
-    # is_loaded never reflects a zero-shot model (that path bypasses the shared loader), so
-    # gauge the download wait-hint from a per-domain set, like the Clinical NER tab.
-    analyzed: set[str] = st.session_state.setdefault("zs_analyzed_domains", set())
-    result = _call(
-        service.extract_zero_shot,
-        text,
-        action="Extracting",
-        needs_load=domain not in analyzed,
-        model_name=model.alias,
-        labels=labels,
-        confidence_threshold=confidence,
-    )
-    if result is None:
-        return
-    analyzed.add(domain)
+    with right:
+        if not submitted:
+            _render_empty_result(
+                "Run **Extract** to see your labels highlighted in the note, with counts "
+                "and the entity table, here."
+            )
+            return
+        if not text.strip():
+            st.warning("Enter some text to analyze.")
+            return
+        if not labels:
+            st.warning("Add at least one entity label to extract.")
+            return
 
-    entities = result["entities"]
-    _render_entity_metrics(entities, icon=":material/frame_inspect:")
-    st.caption(f"Model: {model.display_name} (`{model.alias}`)")
-    with st.container(border=True):
-        st.caption("Extracted entities")
-        _render_highlight(text, entities)
-    _render_entity_table(entities)
+        # is_loaded never reflects a zero-shot model (that path bypasses the shared loader),
+        # so gauge the download wait-hint from a per-domain set, like the Clinical NER tab.
+        analyzed: set[str] = st.session_state.setdefault("zs_analyzed_domains", set())
+        result = _call(
+            service.extract_zero_shot,
+            text,
+            action="Extracting",
+            needs_load=domain not in analyzed,
+            model_name=model.alias,
+            labels=labels,
+            confidence_threshold=confidence,
+        )
+        if result is None:
+            return
+        analyzed.add(domain)
+
+        entities = result["entities"]
+        _render_entity_metrics(
+            entities,
+            icon=":material/frame_inspect:",
+            note=f"Model: {model.display_name} (`{model.alias}`)",
+        )
+        with st.container(border=True):
+            st.caption("Extracted entities")
+            _render_highlight(text, entities)
+        _render_entity_table(entities)
 
 
 def _render_sidebar() -> str:
@@ -1149,7 +1308,8 @@ def _render_sidebar() -> str:
     readout and the one cross-cutting filter — ``lang``, which selects the per-language
     detection model/locale for the Detect, Single note, Batch, Anonymize, and Policy de-ID
     tabs. The de-identification *method* and its dependent knobs live in the tabs that perform
-    de-identification (Single note + Batch, via :func:`_render_deid_controls`; Anonymize and
+    de-identification (Single note + Batch, via :func:`_render_method_picker` and
+    :func:`_render_deid_controls`; Anonymize and
     Policy de-ID carry their own), so tabs that don't de-identify (Clinical NER, Re-identify)
     show no stray controls.
     """
@@ -1195,20 +1355,24 @@ def main() -> None:
     # _render_sidebar() touches the engine. Cheap today (the engine constructs lazily and the
     # model loads on first request, not here), and it keeps the ordering honest if that ever
     # stops being true.
-    st.title("OpenMed Studio")
-    st.caption(
-        "Detect PII, run clinical NER, extract any entity type zero-shot, or de-identify "
-        "clinical text with OpenMed — by method (Single note / Batch), surrogate replacement "
-        "(Anonymize), or a regulatory policy (Policy de-ID) — review the entities, and "
-        "round-trip with re-identification. The model runs in-process."
-    )
+    #
+    # One row, title then a one-line blurb, instead of a title over a two-line caption: the
+    # tab strip right below already names every mode the old caption listed, and the row
+    # hands that height to the tabs. The caption wraps under the title when it doesn't fit.
+    with st.container(horizontal=True, vertical_alignment="bottom", gap="medium"):
+        st.title("OpenMed Studio", width="content")
+        st.caption(
+            "Clinical NLP on OpenMed — detect PII, extract clinical entities, and "
+            "de-identify or re-identify clinical text. The model runs in-process."
+        )
 
     lang = _render_sidebar()
 
     # All eight tab bodies execute on every rerun (st.tabs defaults to on_change="ignore").
-    # Deliberate, and measured: a full rerun is ~18 ms with nothing submitted and ~24 ms once
-    # all four persisted panels hold a result, the eight tab bodies being the bulk of it
-    # (profiled at ~20 of ~26 ms). They are cheap because a tab mostly just DECLARES widgets —
+    # Deliberate, and measured: a full rerun is ~28 ms with nothing submitted and ~34 ms once
+    # all four persisted panels hold a result (AppTest median; the input | results panes added
+    # ~5 ms to each), the eight tab bodies being the bulk of it. The nested result-view tabs
+    # follow the same rule. They are cheap because a tab mostly just DECLARES widgets —
     # each returns before its service call unless its own form was submitted; only the
     # persisted de-identify panels do more, re-rendering their highlight and entity table from
     # session_state. on_change="rerun" + `if tab.open:` would shave most of that off a submit

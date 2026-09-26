@@ -152,7 +152,7 @@ Test layout (`tests/`) — fast no-model tests by file (model tests are a separa
 | `test_validation.py` | pre-engine input guards: the text (50k) / batch (≤100) / mapping (≤5,000) caps, the enums/ranges/formats, the `model_name` path guard (no `.`-leading segment, so `..`/`.`/hidden entries fail on every request model incl. `/compat`, while every openmed registry alias/model id still passes the format check, `_check_model_name`), the per-capability `model_name` allowlists (every request model incl. `/compat` has one; PII admits only `None`/the default/its `-mlx` build and rejects the privacy-filter names in every casing, other `-mlx` repos, case-variants, arbitrary Hub ids and other capabilities' models; NER/zero-shot admit only their curated aliases — of openmed's whole registry each capability admits exactly its curated names; no rejection echoes the value), that the OpenAPI schema lists each capability's curated names in `model_name`'s `description` and `examples` (no `enum`, and never an operator extra — checked in a subprocess with one set), that every `lang` field — `/compat` included — is the `Lang` literal, the `OPENMED_STUDIO_EXTRA_MODELS` parser (trim/drop-empty/format-check, a malformed entry raises) plus two subprocess tests that it is read at import onto every field and that a bad entry stops the app, the `OPENMED_STUDIO_MAX_TEXT_LENGTH` knob, that `tests/conftest.py` scrubs the operator knobs before import (a subprocess `pytest` with all five exported — a malformed extra included, which would otherwise stop collection — still sees the defaults), that a rejection never echoes the input (PHI) — including every `HIDDEN_POLICIES` name sent to `anonymize_policy` — and the openmed-sync guards (among them the offered/hidden policy partition) |
 | `test_engine.py` | `PIIEngine` lazy-load + backend selection (the loader is **always** `ModelLoader(OpenMedConfig(backend=…, torch_attention_backend="eager"))` — one test pins `backend=None`, one pins `backend="mlx"`, and both pin the eager kwarg), that `deidentify`/`analyze`/`extract_zero_shot` forward to openmed (monkeypatched, no model — incl. `policy` forwarding, and the zero-shot test pins the in-memory index with `family="gliner"` and `is_loaded` False), that `extract_zero_shot` itself refuses a name validation's zero-shot allowlist doesn't admit (another registry alias, an NER alias, a repo id) without consulting openmed's registry or `infer` and without quoting the name, while honoring an operator extra, the local-path guard (via `monkeypatch.chdir(tmp_path)` with openmed's entry points patched to fail: a CWD `OpenMed`/`openai` entry refuses all four model methods, as does a directory named like the effective PII model — incl. the default when none is sent — like the `lang="fr"` language default (not for `lang="en"`), like a zero-shot alias or its repo id, or like an NER alias; a dangling symlink counts; a privacy-filter-shaped fixture openmed's own artifact check would trust is refused; a clean directory passes; the refusal says to restart from a clean directory; `local_model_path_conflicts` — the startup check's source — names each default/curated/extra name and namespace that exists, each once, names first, and nothing in a clean directory; plus pins that `_pii_model_names` contains what `_resolve_effective_pii_model` resolves for every `Lang` and that every curated/language-default/`_MLX_MODEL_MAP` repo lives in a guarded namespace), a `--run-model` test that the real engine refuses a poisoned CWD then works again from a clean one, the one-pass `reidentify` plus a `strict` xfail (`test_reidentify_restores_only_the_surrogate_spans`) pinning its mapping-only limit, where text that merely equals a surrogate is restored too (see "Known gotchas"), that the model methods run their openmed call **under `self._lock`** while `reidentify` stays lock-free, and `--run-model` policy tests: masking vs reversible-surrogate (for each offered `keep_mapping` profile), the reason for `HIDDEN_POLICIES` (per openmed profile: every hidden one passes a detected license number, tax ID, employer and religion through verbatim and unlisted, every offered one masks and lists all four — so a hidden profile's case fails the day openmed fixes it), plus pins on the description prose the fast guard can't check — the four mask-everything profiles matching Strict No-Leak with clinical text untouched, and China PIPL / NG NDPA / ZA POPIA's surrogate-vs-mask split |
 | `test_ui_helpers.py` | the pure `ui_helpers.py` helpers — `render_highlighted` escaping/overlap, the theme-agnostic marks, `build_base_opts` payload |
-| `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES`; the cached `get_engine` runs the working-directory check exactly once across reruns |
+| `test_ui_app.py` | drives the app via `streamlit.testing.v1.AppTest` (engine stubbed in-process; sentinels like `[[STUB-DEID-OUTPUT]]` prove output came from the stub); the `Policy de-ID` picker lists exactly `POLICY_MODELS`, with a tooltip whose hidden-profile counts derive from `HIDDEN_POLICIES`; the cached `get_engine` runs the working-directory check exactly once across reruns; the input \| results workbench (see *Layout* under "UI"): the eight top-level tabs pinned by label (`at.tabs` also lists the nested result views), each tab's empty-state panel sitting in its results pane before a first run, results rendering in the 0.6-weight pane beside the note's 0.4 one (in every tab but Batch, Zero-shot included; panes found by weight *and* content), the de-identify panel's two constant-label views with the entity table in an expander and never in a view tab, the entity table's `column_order`, the `Method` row outside every pane, Policy de-ID's `Seed` declared while `Deterministic surrogates` is off, and an empty entity list rendering a sentence rather than a grid. AppTest lists icon'd expanders under `.status`, not `.expander` |
 | `test_api.py` | drives the FastAPI service via `fastapi.testclient.TestClient` (engine stubbed via `dependency_overrides`; needs the `httpx2` dev dep, **no** `--run-model`): routing to each of the 7 seam functions, the `ServiceError.kind`→HTTP-status mapping + the `{"error":{code,message,details}}` envelope, PHI-safe 422s (including one per `HIDDEN_POLICIES` name on `/pii/anonymize-policy`, and one per route family — `/compat` included — for a `model_name` the allowlist doesn't admit, echoing neither the note nor the name), the local-path guard as a 503 that names neither the path nor the model, `create_app`'s one startup warning for a poisoned working directory (and silence for a clean one), `/health`'s `working_directory_clean` flipping per request without naming the entry (`status` stays `"ok"`), `X-API-Key` auth (401/accept/reject + open `/health`), the opt-in `/compat` surface (openmed-shaped payloads, echoed `original_text`, auth-gated, and a PHI-safe 422 for a `lang` outside the app's `Lang` — privacy-filter-default languages, a different casing, junk — while a supported one reaches the engine), and that `TestClient` is built on `httpx2` (see "Known gotchas") |
 | `test_hooks.py` | the repo's own Claude Code hooks (no openmed, no model): **executes** `.claude/hooks/block-phi-paths.sh` rather than parsing its shell text, pinning that every `Download` filename in `streamlit_app.py` and every local-secret path is denied (exit 2), that ordinary source files and non-file tool calls are allowed (exit 0), that unparseable input **fails closed**, that the `case` arms carry no dead entries, that those same names are in `.gitignore` (the other half of the invariant), and that `.claude/settings.json` still registers the hook under `PreToolUse`. The whole file `skipif`s when `sh` or `python3` is missing |
 | `test_streamlit_config.py` | the six security keys of `.streamlit/config.toml` (no openmed, no model, no server): parsed with `toml` (Streamlit's own parser, for parity — `tomllib` accepts files it rejects), it pins `[server] address = "127.0.0.1"`, `allowedHosts = ["localhost", "127.0.0.1"]` (and that the address is itself an allowed host, since Streamlit opens `http://<address>:<port>`), `enableCORS = true` and `corsAllowedOrigins = []`, `showErrorDetails = "none"` and `gatherUsageStats = false` — a TOML syntax error makes Streamlit drop the **whole** file (it logs a traceback but still starts), reverting all six. Plus a **Streamlit-drift guard** pair: a subprocess drives Streamlit's private loader (`config._main_script_path` + `bootstrap.load_config_options`) with a decoy `config.toml` holding the opposite of every value in both its CWD and its `HOME` (each decoy also sets one control key, proving it was read) and `STREAMLIT_*` scrubbed; `test_shipped_keys_outrank_home_and_working_directory_configs` asserts each pinned value **and** its `get_where_defined` is this file, and `test_websocket_refuses_rebinding_and_cross_site_pages` asks the socket's own `_is_origin_allowed` (machine-IP lookups stubbed) to accept same-origin `localhost`/`127.0.0.1` pages but refuse a rebinding `evil.test` and a cross-site origin aimed at `127.0.0.1`. The fixture also fails on Streamlit's "Error parsing config toml", since the probe exits 0 either way |
@@ -578,12 +578,44 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   - *App + tabs:* `get_engine` is `service.build_engine` wrapped in `st.cache_resource` (it first
     runs `service.check_working_directory()`, so the startup warning logs once per process); `_call`
     runs a `service.*` function in a spinner and renders any `ServiceError`. `main()` titles the
-    page/heading "OpenMed Studio" and lays out the eight tabs (`Detect`→`service.extract`,
+    page/heading "OpenMed Studio" (one `st.container(horizontal=True)` row: the title at
+    `width="content"` plus a one-line blurb, which wraps under it when it doesn't fit — the tab
+    strip below names the modes, so the blurb doesn't list them) and lays out the eight tabs (`Detect`→`service.extract`,
     `Clinical NER`→`service.analyze`, `Zero-shot`→`service.extract_zero_shot`,
     `Single note`/`Batch`→`service.deidentify[_batch]`,
     `Anonymize`→`service.deidentify` (`method=replace`), `Policy de-ID`→`service.anonymize_policy`
     (`deidentify(policy=…)`), `Re-identify`→`service.reidentify`), guarded
     by `if __name__ == "__main__"` so importing for tests has no side effects.
+  - *Layout — an input | results workbench:* every single-note tab (all but `Batch`) is its intro
+    caption (`Single note` has none; it opens with its full-width `Method` row), an optional
+    **picker row**, then two **panes** from `_panes()` =
+    `st.columns(PANES, gap="medium")` with `PANES = [2, 3]`: the note, its controls and the
+    submit on the left, and on the right everything the run produces — the warning, the `_call`
+    spinner and any error, then the result — so results land beside the note instead of ~600px
+    below it (checked in a browser at a 1920×840 viewport: after an example run, every tab's KPI
+    row and highlighted note or output sit above the fold; only a long entity table runs past
+    it). Whenever the results pane has nothing to show it holds `_render_empty_result`, a
+    bordered `height="stretch"` panel naming the action ("Run **Detect** to see …"): before a
+    tab's first run, and — for `Detect`/`Clinical NER`/`Zero-shot`, which keep no result in
+    session state — after any rerun that isn't their own submit (a domain change, another tab's
+    full rerun; their results never survived one). It is skipped when the tab *was* submitted,
+    so a failed submit shows just its error. No arrow in the wording, because at ≤640px the panes stack,
+    input first. The panes must stay **top-aligned**: Streamlit gives a `center`/`bottom` column
+    auto margins, which stop it stretching to the row's height, and the empty panel fills the
+    pane only through that stretch. Picker rows (`Clinical NER`/`Zero-shot` domain, the policy)
+    reuse the grid with `vertical_alignment="bottom"` — selectbox over the input pane, its preview
+    caption beside it — and stay outside the forms. The `Single note`/`Batch` `Method` row is
+    full width above the panes (see *De-identification controls*). `Batch` puts its controls |
+    editor on the grid but keeps its results table full width (two note columns), with
+    `Download all (JSON)` pushed to the right end of its KPI row by `st.space("stretch")`. Inside
+    the input pane a confidence slider and its toggle are **stacked, not split** into columns: the
+    panes stop stacking at ~770px, so from there to ~1100px with the sidebar open the input pane is
+    only ~175–250px wide, where a `[3, 2]` row squeezes the toggle label onto three lines. (A
+    control placed *directly* in a column — `Keep mapping`, straight in the pane — also keeps its
+    label on one line, cut off with "…", in Streamlit 1.62+; `wrap=True` would lift that but doesn't
+    exist in 1.61, the floor below, and "Keep mapping" fits anyway. Toggles inside a form wrap
+    normally.) The UI suite also passes when run on Streamlit 1.61.0
+    (`uv run --with streamlit==1.61.0 pytest tests/test_ui_app.py`).
   - *Fragments + handoff:* `Detect`/`Clinical NER`/`Zero-shot`/`Batch`/`Re-identify` renderers are
     `@st.fragment` so an in-tab interaction reruns only that tab; `Single note`, `Anonymize`, and
     `Policy de-ID` are **intentionally not**, because their form submit must trigger a full rerun to
@@ -607,10 +639,15 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
   - *De-identification controls:* `Method` plus the method-conditional `Advanced` knobs
     (the surrogate methods `replace`/`format_preserve`→consistent/seed/locale,
     `shift_dates`→date_shift_days/keep_year, plus the safety
-    sweep) live in `Single note` + `Batch` via a shared `_render_deid_controls(key_prefix=…, lang=…)`
-    (above each tab's form, widget keys `key_prefix`-scoped so the tabs don't collide). `Detect` has
+    sweep) live in `Single note` + `Batch` via two shared helpers, both outside the tab's form
+    and with widget keys `key_prefix`-scoped so the tabs don't collide:
+    `_render_method_picker(key_prefix=…)` (the `Method` `segmented_control` + the `aadhaar_mask`
+    warning, a full-width row above the panes — its seven options need ~750px, and inside a pane,
+    i.e. a column, the control would scroll sideways instead of wrapping) and
+    `_render_deid_controls(key_prefix=…, lang=…, method=…)` (the confidence slider, `Keep mapping`
+    and `Advanced`, at the top of the input pane). `Detect` has
     its own confidence slider + smart-merge toggle; `Anonymize` reads the sidebar `Language` and
-    carries its own in-form controls (confidence + `Deterministic` in a `[3, 2]` column row, then
+    carries its own in-form controls (confidence over `Deterministic`, then
     seed/locale in an `Advanced` expander — the same shape as `Policy de-ID`, so all three
     de-identifying tabs read alike). Only `Method`/`Advanced` are per-tab — the sidebar holds just the engine readout
     (model/backend/`is_loaded`, read directly) and the lone global `Language` filter
@@ -645,7 +682,11 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     the picker's `help` tooltip says why openmed's other profiles aren't listed, its counts derived from
     `HIDDEN_POLICIES`. Inside the form:
     text area, confidence slider, and an `Advanced` expander with the surrogate knobs
-    (consistent/seed/locale — they apply to the `replace`-based policies) + the safety-sweep toggle
+    (consistent/seed/locale — they apply to the `replace`-based policies; `Seed` is declared
+    unconditionally, like `Anonymize`'s, because inside a form the `Deterministic surrogates`
+    toggle holds its *previous* value until submit, so gating `Seed` on it hid the field until
+    after the run it was meant for and reset a custom seed to 42 — `build_policy_opts` drops it
+    when the toggle is off) + the safety-sweep toggle
     (inert for every offered profile today: all ten force the sweep, and openmed ORs
     `safety_sweep_mandatory` with the toggle in `core/pipeline.py`).
     `build_policy_opts` shapes the payload (no `method`, no `keep_mapping`); the tab submits via
@@ -665,13 +706,24 @@ re-exported by `validation.py`) must stay in sync; the guard above enforces it. 
     every tint visible on both Nord's `#2e3440` and white while holding text above WCAG AA. The
     de-identified output offers a `Download` button (**no** copy-to-clipboard — the in-process tool
     deliberately avoids sending PHI to a browser-side clipboard component); every entity table goes
-    through the shared `_render_entity_table` (confidence as a `ProgressColumn` plus a `placeholder`,
-    because zero rows here means "nothing cleared the confidence threshold", not "nothing ran");
+    through the shared `_render_entity_table` (confidence as a `ProgressColumn`, `column_order`
+    label → text → confidence → offsets, and for zero rows the sentence "No entities at or above
+    the confidence threshold." instead of a grid — `st.dataframe(placeholder=…)`, which it used to
+    pass for this, is the text for *missing cell values*, so an empty table showed a bare
+    "empty"); the de-identify tabs share `_render_deid_result(…, kpis=, out_label=, …)`, which
+    renders, in the results pane: the KPI row with the snapshot caption, then the actions
+    (`Download`, "Show re-identification key", the export caveat) *above* the output so a long
+    note can't bury them, then two constant-label view tabs — the output, and "Detected in
+    original" (the highlighted note) — replacing the old original | output column pair, since the
+    input pane beside it already shows the original, and then (`show_entities`) the table in an
+    `Entities (n)` expander, never a third view tab (see the `st.dataframe` gotcha on hidden tabs);
     metric cards sit in an `st.container(horizontal=True)` at `width="content"` carrying their own
     tab's Material Symbol (a bare `st.metric` defaults to `width="stretch"`, so under `layout="wide"`
     a lone bordered card spanned the whole page to show one number), and `Detect`/`Clinical NER`/
     `Zero-shot` add a `Distinct types` card whose bar sparkline is the per-label counts in first-seen
-    order — the order `render_legend` also uses, so the bars line up with the legend pills below;
+    order — the order `render_legend` also uses, so the bars line up with the legend pills below
+    (that row stays top-aligned, since the sparkline makes the second card taller, and
+    `Clinical NER`/`Zero-shot` end it with their "Model: …" caption via `note=`);
     the `Batch` table sets `row_height` because its two wide columns hold multi-line notes that
     otherwise truncate to one line; and `Download`/`Re-identify` confirm with an `st.toast`. The UI consumes the plain dicts `service`
     produces (`result["entities"]`, `result["deidentified_text"]`, `result.get("mapping")`). The
@@ -846,7 +898,7 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   unique-placeholder set, so repeated labels collapse onto one placeholder instead of `_2`/`_3` (see
   the occurrence-mapping gotcha). It is the **only method that leaves part of
   an identifier in the output** (the UIDAI display form keeps the last four digits), making it
-  strictly weaker than `mask`, so `_render_deid_controls` renders an `st.warning` when it is picked —
+  strictly weaker than `mask`, so `_render_method_picker` (the full-width `Method` row) renders an `st.warning` when it is picked —
   a real callout, not a caption prefixed with `:material/warning:`, which read as ordinary grey
   metadata (pinned by `tests/test_ui_app.py::test_aadhaar_mask_warns_that_it_retains_digits`, which
   also asserts the text stays *out* of the caption stream so it can't regress) and the
@@ -1238,12 +1290,30 @@ Registry helpers used by the NER picker / drift guard: `get_all_models()` (dict 
   never registered, and silently dropped — no error, no warning, and nothing `ruff` or `ty` can see.
   Verified on this app: the rendered proto's `id` stays `''`. Those tables are identified by delta
   path instead, which is already stable across reruns, so `_render_entity_table` deliberately passes
-  no key rather than imply a guarantee it doesn't provide. `placeholder` and `row_height`, by
-  contrast, *do* apply without selection.
+  no key rather than imply a guarantee it doesn't provide. `row_height`, by contrast, *does* apply
+  without selection.
+- **Three `st.dataframe` rendering traps, all browser-only** (Streamlit 1.64.0; AppTest renders no
+  frontend, so no test here can see them — look at the page). *(a) Never first-render one inside a
+  tab that isn't the selected one.* The grid sizes its columns while hidden and, once the tab is
+  opened, shows them collapsed to slivers (only a few letters of `label`, nothing else), whatever
+  the column widths — auto, explicit `"medium"`, or inside a bordered container, all tried. It
+  applies to *nested* `st.tabs` too, which is why `_render_deid_result` keeps the entity table in an
+  expander, which renders fine, and not in a third view tab. `on_change="rerun"` tabs that render
+  only the `.open` view also work, at a full rerun per click plus a keyed widget per panel. A grid
+  first rendered in the *selected* tab survives later reruns while hidden, since those update it in
+  place. *(b) `width="content"` sizes the table without its vertical scrollbar*, so beyond ~10 rows
+  the last column is clipped by the scrollbar's width, and it truncates auto-sized columns
+  (`medical_record_…`); the default `stretch` spreads unused width evenly over every column instead
+  (so a `width="small"` column widens), which is the lesser evil. *(c) `placeholder=` is the text
+  for missing cell values, not an empty-table message* — an empty table shows a bare "empty", so
+  `_render_entity_table` renders a caption for zero rows instead.
 - **All eight tab bodies run on every rerun, and that is the cheaper option here.** `st.tabs`
   defaults to `on_change="ignore"`, so every tab's body executes even while hidden. Measured on this
-  app: a full rerun is ~18 ms with nothing submitted and ~24 ms once all four persisted panels hold
-  a result, the eight tab bodies being the bulk of it (profiled at ~20 of ~26 ms). They are cheap
+  app (AppTest median): a full rerun was ~18 ms with nothing submitted and ~24 ms once all four
+  persisted panels hold a result, the eight tab bodies being the bulk of it (profiled at ~20 of
+  ~26 ms); the input | results workbench added ~5 ms to each (23 → 28 ms idle, 29 → 34 ms with
+  the four panels, old and new timed back to back on one machine), from its extra columns and
+  empty-state panels. They are cheap
   because a tab mostly just *declares* widgets — each returns before its `service.*` call unless its
   own form was submitted, and the only openmed work in a hidden tab is noise
   (`zero_shot_available()` 0.0003 ms, cached in an openmed module global; `default_labels()`

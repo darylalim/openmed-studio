@@ -32,14 +32,16 @@ The app opens with eight tabs:
 | **Detect** | Find and highlight PII/PHI without redacting — audit what the model sees before choosing a method. |
 | **Clinical NER** | Extract clinical entities (diseases, drugs, anatomy, genes, …) with a curated token-classification model per domain. |
 | **Zero-shot** | Extract *any* entity types you name, with no fine-tuned model per label, via OpenMed's [GLiNER](https://github.com/urchade/GLiNER) models. |
-| **Single note** | De-identify one note — original (PII highlighted) beside the redacted text, with a download and a re-identification key. |
+| **Single note** | De-identify one note — the redacted text beside the note, with the original (PII highlighted) one tab over, a download, and a re-identification key. |
 | **Batch** | De-identify up to 100 notes at once — a results table with per-note entity counts; a failing note is isolated as a `Failed` row instead of aborting the batch. |
 | **Anonymize** | Replace *detected* PII/PHI with realistic *fake* surrogates rather than masks; round-trips through Re-identify. |
 | **Policy de-ID** | Anonymize under one of 10 **regulatory policies** (HIPAA Safe Harbor, GDPR Art. 9 health data, China PIPL, South Africa POPIA, Nigeria NDPA, Kenya DPA, …) — the policy decides, per entity type, whether to mask or surrogate. Masking policies are irreversible; only the policies that keep a mapping (GDPR Art. 9, China PIPL) yield a re-identification key. |
 | **Re-identify** | Restore originals from a kept mapping (auto-filled from the last Single note, Anonymize, or Policy de-ID run). Each surrogate is swapped back wherever its text appears, so if an age became `2`, other `2`s in the note (a dose, a blood pressure) change too — check the result. |
 
-Detect, Clinical NER, Zero-shot, Single note, and Policy de-ID render matched entities as highlighted
-text with a color legend, plus an entity table. A few more things worth knowing:
+Every tab except Batch is laid out as a workbench: the note and its controls on the left, results on
+the right, so a run's output appears beside its input rather than below it (on a narrow screen the
+two stack, input first). Detect, Clinical NER, Zero-shot, Single note, and Policy de-ID render matched
+entities as highlighted text with a color legend, plus an entity table. A few more things worth knowing:
 
 - Clinical NER and Zero-shot each pick a domain from the same ten (Disease, Pharmaceutical,
   Chemical, Anatomy, Genomics, Protein, Oncology, Species, Pathology, Hematology).

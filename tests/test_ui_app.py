@@ -25,6 +25,17 @@ from openmed_studio import service  # noqa: E402
 
 APP = str(Path(__file__).resolve().parent.parent / "streamlit_app.py")
 
+TOP_TABS = (
+    "Detect",
+    "Clinical NER",
+    "Zero-shot",
+    "Single note",
+    "Batch",
+    "Anonymize",
+    "Policy de-ID",
+    "Re-identify",
+)
+
 
 class _StubEngine:
     """A model-free engine returning openmed-shaped objects for the service to adapt."""
@@ -128,8 +139,9 @@ def test_app_renders(monkeypatch):
     at = AppTest.from_file(APP).run(timeout=30)
     assert not at.exception
     assert at.title[0].value == "OpenMed Studio"
-    # Detect, Clinical NER, Zero-shot, Single note, Batch, Anonymize, Policy de-ID, Re-identify
-    assert len(at.tabs) == 8
+    # By label, not len(at.tabs): at.tabs also holds the de-identify panels' nested view
+    # tabs once a result renders.
+    assert [t.label.split(" ", 1)[1] for t in at.tabs] == list(TOP_TABS)
     # The sentinel model name can only appear if the stub (not a live model) was used.
     assert any("STUB/sentinel-model" in c.value for c in at.sidebar.caption)
     assert any("model loaded" in c.value for c in at.sidebar.caption)
@@ -1104,3 +1116,214 @@ def test_mapping_dialog_renders_mapping(monkeypatch):
 
     assert not at.exception
     assert any("PERSON_1" in str(getattr(j, "value", "")) for j in at.json)
+
+
+# --- workbench layout: input | results panes -----------------------------------
+def _tab(at, name):
+    """A top-level tab by name (each label carries a Material icon prefix)."""
+    return next(t for t in at.tabs if t.label.endswith(f" {name}"))
+
+
+def _input_and_results_panes(tab):
+    """The tab's two workbench panes ([2, 3] → weights 0.4 / 0.6), told apart by content.
+
+    A picker row (NER / zero-shot domain, policy) reuses the same grid, so weight alone
+    can't pick the panes: the input pane is the 0.4 column holding the note, the results
+    pane the 0.6 column holding the KPI cards.
+    """
+    cols = list(tab.columns)
+    inp = next(c for c in cols if round(c.weight, 2) == 0.4 and c.text_area)
+    res = next(c for c in cols if round(c.weight, 2) == 0.6 and c.metric)
+    return inp, res
+
+
+def test_result_panes_show_an_empty_state_before_the_first_run(monkeypatch):
+    # Every single-note tab's results pane holds a panel naming its action until the first
+    # run, so the workbench reads as two panes from the start. Pinned to the results pane
+    # (the 0.6 column, beside — not holding — the note), not just anywhere in the tab.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+
+    assert not at.exception
+    for name, button in [
+        ("Detect", "Detect"),
+        ("Clinical NER", "Analyze"),
+        ("Zero-shot", "Extract"),
+        ("Single note", "De-identify"),
+        ("Anonymize", "Anonymize"),
+        ("Policy de-ID", "Anonymize under policy"),
+        ("Re-identify", "Re-identify"),
+    ]:
+        holders = [
+            c
+            for c in _tab(at, name).columns
+            if any(f"Run **{button}**" in cap.value for cap in c.caption)
+        ]
+        assert holders, name
+        assert all(round(c.weight, 2) == 0.6 and not c.text_area for c in holders), name
+    assert not at.metric
+
+
+@pytest.mark.parametrize(
+    ("name", "area", "button"),
+    [
+        ("Detect", "Clinical note to scan", "Detect"),
+        ("Clinical NER", "Clinical note to analyze", "Analyze"),
+        ("Single note", "Clinical note", "De-identify"),
+        ("Anonymize", "Clinical note to anonymize", "Anonymize"),
+        (
+            "Policy de-ID",
+            "Clinical note to anonymize under a policy",
+            "Anonymize under policy",
+        ),
+    ],
+)
+def test_results_render_beside_the_input(monkeypatch, name, area, button):
+    # The layout's point: results land in the wider right-hand pane beside the note, not
+    # below it. Reverting to the stacked flow leaves no 0.4/0.6 pane pair and fails here.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, area, "Patient John Doe.")
+    _click(at, button)
+
+    assert not at.exception
+    inp, res = _input_and_results_panes(_tab(at, name))
+    assert any(t.label == area for t in inp.text_area)
+    assert not inp.metric
+    assert not res.text_area
+    assert "<mark" in " ".join(h.body for h in res.get("html"))
+
+
+def test_zero_shot_results_render_beside_the_input(monkeypatch):
+    # Zero-shot's note shares its label with Clinical NER's ("Clinical note to analyze"), so
+    # the parametrized test above can't reach it by label; submit its defaults and find the
+    # input pane by key instead.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _click(at, "Extract")
+
+    assert not at.exception
+    cols = list(_tab(at, "Zero-shot").columns)
+    inp = next(
+        c
+        for c in cols
+        if round(c.weight, 2) == 0.4 and any(t.key == "zs_text" for t in c.text_area)
+    )
+    res = next(c for c in cols if round(c.weight, 2) == 0.6 and c.metric)
+    assert not inp.metric
+    assert not res.text_area
+    assert "<mark" in " ".join(h.body for h in res.get("html"))
+
+
+def test_reidentify_output_renders_beside_its_inputs(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "De-identified text", "Patient [PERSON_1].")
+    _set_area(at, "Mapping (JSON)", '{"PERSON_1": "John"}')
+    _click(at, "Re-identify")
+
+    assert not at.exception
+    cols = list(_tab(at, "Re-identify").columns)
+    inp = next(c for c in cols if round(c.weight, 2) == 0.4)
+    res = next(c for c in cols if round(c.weight, 2) == 0.6)
+    assert {t.label for t in inp.text_area} == {"De-identified text", "Mapping (JSON)"}
+    assert "[[STUB-RESTORED]]" in " ".join(h.body for h in res.get("html"))
+
+
+def test_deid_result_is_two_views_plus_an_entities_expander(monkeypatch):
+    # The result panel shows the output and the highlighted original as view tabs with
+    # constant labels, and the entity table in an expander — NOT a third view tab: an
+    # st.dataframe first rendered inside a tab that isn't selected sizes its columns while
+    # hidden and shows them collapsed (a browser-only bug AppTest can't see), so this pins
+    # where the table lives.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _set_area(at, "Clinical note", "Patient John Doe.")
+    _click(at, "De-identify")
+    _set_area(at, "Clinical note to anonymize", "Patient John Doe.")
+    _click(at, "Anonymize")
+
+    assert not at.exception
+    single = _tab(at, "Single note")
+    views = [t for t in single.tabs if t is not single]
+    assert [v.label.split(" ", 1)[1] for v in views] == [
+        "De-identified",
+        "Detected in original",
+    ]
+    assert not any(v.dataframe for v in views)
+    # Icon'd expanders surface as at.status in AppTest, not at.expander.
+    assert any(s.label == "Entities (2)" for s in single.status)
+    assert single.dataframe  # the table is still there, in the expander
+    anon = _tab(at, "Anonymize")
+    assert not any(s.label.startswith("Entities") for s in anon.status)
+
+
+def test_entity_table_reads_label_text_confidence_then_offsets(monkeypatch):
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _click(at, "Detect")
+
+    assert not at.exception
+    assert list(at.dataframe[0].proto.column_order) == [
+        "label",
+        "text",
+        "confidence",
+        "start",
+        "end",
+    ]
+
+
+def test_method_picker_sits_above_the_panes(monkeypatch):
+    # Seven options need ~750px; inside a pane (a column) the control would scroll sideways
+    # instead of wrapping, so Method stays a full-width row above the panes.
+    _use_engine(monkeypatch, _StubEngine())
+    at = AppTest.from_file(APP).run(timeout=30)
+
+    assert not at.exception
+    for name in ("Single note", "Batch"):
+        tab = _tab(at, name)
+        assert tab.segmented_control, name
+        assert not any(c.segmented_control for c in tab.columns), name
+
+
+def test_policy_seed_is_declared_while_deterministic_is_off(monkeypatch):
+    # In a form, "Deterministic surrogates" holds its PREVIOUS value until submit, so a Seed
+    # gated on it stayed hidden until after the run it was meant for (and a custom seed reset
+    # to 42 on the way back). It is declared unconditionally now, like Anonymize's, and
+    # build_policy_opts drops it when Deterministic is off.
+    captured: dict = {}
+
+    class _Capturing(_StubEngine):
+        def deidentify(self, _text, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                deidentified_text="[[STUB-DEID-OUTPUT]]", pii_entities=[], mapping=None
+            )
+
+    _use_engine(monkeypatch, _Capturing())
+    at = AppTest.from_file(APP).run(timeout=30)
+    next(t for t in at.toggle if t.key == "policy_consistent").set_value(False)
+    _set_area(at, "Clinical note to anonymize under a policy", "Patient John Doe.")
+    _click(at, "Anonymize under policy")
+
+    assert not at.exception
+    assert captured.get("seed") is None
+    assert any(n.key == "policy_seed" for n in at.number_input)
+
+
+def test_empty_entity_result_says_so_instead_of_a_blank_grid(monkeypatch):
+    # st.dataframe(placeholder=…) is the text for MISSING CELL values, so an empty entity
+    # list used to render a bare "empty" grid; the helper now says what zero rows means.
+    class _NoEntities(_StubEngine):
+        def extract(self, _text, **_):
+            return []
+
+    _use_engine(monkeypatch, _NoEntities())
+    at = AppTest.from_file(APP).run(timeout=30)
+    _click(at, "Detect")
+
+    assert not at.exception
+    detect = _tab(at, "Detect")
+    assert any("No entities at or above" in c.value for c in detect.caption)
+    assert not detect.dataframe  # (the Batch tab's data_editor counts as one app-wide)
+    assert any(m.label == "Entities found" and str(m.value) == "0" for m in at.metric)
